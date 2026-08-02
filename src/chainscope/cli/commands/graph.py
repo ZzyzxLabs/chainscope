@@ -100,6 +100,46 @@ def _chain(raw: str) -> ChainId:
     return ChainId(namespace, reference)
 
 
+def _strongest(edges: list[Any], limit: int) -> list[Any]:
+    """The ``limit`` most significant edges, without comparing across assets.
+
+    Ranking by ``total_raw`` alone mixes units: raw amounts are only comparable
+    within one asset, so 0.0001 of an 18-decimal token outranks 5,000 USDC at
+    six decimals and consumes the budget with dust. A spoofed token minted with
+    a huge supply is the adversarial version of the same thing.
+
+    So: rank within each asset, where raw *is* the right comparison, then take
+    from the assets in turn. Each asset present gets representation instead of
+    one of them crowding the rest out --- which also means a stablecoin flow
+    cannot be hidden by flooding an address with a worthless token.
+
+    Prices would give a true ordering across assets. This module does not have
+    them, and inventing one from raw magnitudes would be a guess wearing a
+    number.
+    """
+    if limit <= 0 or len(edges) <= limit:
+        return list(edges)
+
+    by_asset: dict[str, list[Any]] = {}
+    for edge in edges:
+        by_asset.setdefault(edge.asset or "", []).append(edge)
+    for group in by_asset.values():
+        group.sort(key=lambda e: e.total_raw, reverse=True)
+
+    # Assets with a larger single edge go first, so the round-robin starts from
+    # the most significant flow in each. Still no cross-asset magnitude claim:
+    # this only decides the order of the turns.
+    order = sorted(by_asset.values(), key=lambda g: len(g), reverse=True)
+    out: list[Any] = []
+    for rank in range(max(len(g) for g in order)):
+        for group in order:
+            if rank < len(group):
+                out.append(group[rank])
+                if len(out) == limit:
+                    return out
+    return out
+
+
 def run(args: argparse.Namespace, render: Renderer) -> int:
     if not args.store.exists():
         _err(f"no store at {args.store}. Run an analysis first.")
@@ -198,8 +238,14 @@ def _walk(
             graph.add_node(Node(address=address, chain=str(chain), expanded=True))
             for way in ways:
                 edges = store.edges(address, chain, direction=way)
-                edges.sort(key=lambda e: e.total_raw, reverse=True)
-                for edge in edges[:per_node]:
+                kept = _strongest(edges, per_node)
+                if len(kept) < len(edges):
+                    # The counterparties beyond the cap are not merely unshown;
+                    # nothing recorded that they exist. Without this the export
+                    # presents five of twenty as the whole picture, which is the
+                    # failure this module's docstring names.
+                    graph.truncated = True
+                for edge in kept:
                     other = edge.recipient if way == "out" else edge.sender
                     if not other:
                         continue

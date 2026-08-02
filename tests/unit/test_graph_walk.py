@@ -186,3 +186,92 @@ class TestTheFrontierIsHonest:
             chain_store, A, ETHEREUM, depth=1, max_nodes=50, per_node=10, direction="out"
         )
         assert graph.frontier(), "a depth-limited walk with somewhere to go has a frontier"
+
+
+def token(sender, recipient, raw, *, block, symbol, decimals, asset):
+    return Transfer(
+        chain=ETHEREUM,
+        tx=TxRef(ETHEREUM, f"0x{block:064x}"),
+        sender=Address(ETHEREUM, sender, sender),
+        recipient=Address(ETHEREUM, recipient, recipient),
+        amount=Amount(raw, decimals, symbol),
+        kind=TransferKind.TOKEN,
+        block=block,
+        index=0,
+        asset=Address(ETHEREUM, asset, asset),
+    )
+
+
+class TestPerNodeTruncationIsRecorded:
+    """`per_node` silently dropped the counterparties beyond the cap. Five of
+    twenty rendered as the whole picture --- and this module's docstring names
+    that as the failure it exists to prevent."""
+
+    @pytest.fixture
+    def wide(self, tmp_path):
+        s = SqliteStore(tmp_path / "wide.db")
+        s.put_transfers(
+            [transfer(A, f"0x{i:040x}", TEN_ETH, block=i) for i in range(1, 21)],
+            source="t",
+        )
+        yield s
+        s.close()
+
+    def test_exceeding_the_cap_sets_truncated(self, wide):
+        graph = _walk(wide, A, ETHEREUM, depth=1, max_nodes=100, per_node=5, direction="out")
+        assert graph.truncated
+
+    def test_the_summary_carries_it(self, wide):
+        graph = _walk(wide, A, ETHEREUM, depth=1, max_nodes=100, per_node=5, direction="out")
+        assert graph.summary()["truncated"]
+
+    def test_staying_under_the_cap_does_not(self, wide):
+        """The flag has to mean something, so it must not always be set."""
+        graph = _walk(wide, A, ETHEREUM, depth=1, max_nodes=100, per_node=50, direction="out")
+        assert not graph.truncated
+
+    def test_exactly_at_the_cap_is_not_truncated(self, wide):
+        graph = _walk(wide, A, ETHEREUM, depth=1, max_nodes=100, per_node=20, direction="out")
+        assert not graph.truncated
+
+
+class TestRankingDoesNotMixUnits:
+    """Raw amounts compare only within one asset. Ranking across them let
+    0.001 of an 18-decimal token outrank 5,000 USDC and consume the budget ---
+    and minting a worthless token with a huge supply is the deliberate version
+    of that."""
+
+    @pytest.fixture
+    def mixed(self, tmp_path):
+        s = SqliteStore(tmp_path / "mixed.db")
+        rows = [
+            token(A, f"0x{i:040x}", 10**21, block=i, symbol="SHIB", decimals=18, asset="0xshib")
+            for i in range(1, 11)
+        ]
+        rows += [
+            token(
+                A,
+                f"0x{i:040x}",
+                5000 * 10**6,
+                block=i,
+                symbol="USDC",
+                decimals=6,
+                asset="0xusdc",
+            )
+            for i in range(11, 16)
+        ]
+        s.put_transfers(rows, source="t")
+        yield s
+        s.close()
+
+    def test_the_stablecoin_is_not_crowded_out(self, mixed):
+        graph = _walk(mixed, A, ETHEREUM, depth=1, max_nodes=100, per_node=4, direction="out")
+        assert {e.symbol for e in graph.edges.values()} == {"SHIB", "USDC"}
+
+    def test_the_cap_is_still_respected(self, mixed):
+        graph = _walk(mixed, A, ETHEREUM, depth=1, max_nodes=100, per_node=4, direction="out")
+        assert len(graph.edges) == 4
+
+    def test_and_it_says_it_truncated(self, mixed):
+        graph = _walk(mixed, A, ETHEREUM, depth=1, max_nodes=100, per_node=4, direction="out")
+        assert graph.truncated
