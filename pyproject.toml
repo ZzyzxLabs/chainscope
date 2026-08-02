@@ -43,7 +43,8 @@ solana = ["base58>=2.1"]
 tron = ["base58>=2.1"]
 report = ["rich>=13.0"]
 analytics = ["duckdb>=1.0"]
-all = ["chainscope[evm,bitcoin,solana,tron,report,analytics]"]
+agent = ["mcp>=1.2"]
+all = ["chainscope[evm,bitcoin,solana,tron,report,analytics,agent]"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
@@ -59,6 +60,7 @@ Issues = "https://github.com/ZzyzxLabs/chainscope/issues"
 
 [project.scripts]
 chainscope = "chainscope.cli.main:main"
+chainscope-mcp = "chainscope.agent.server:main"
 
 # ---------------------------------------------------------------- plugin points
 # Third-party packages register here. Declaring the same entry-point group is

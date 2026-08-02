@@ -27,8 +27,8 @@ class NetworkAccessAttempted(RuntimeError):
     """Raised when a test reaches for the network without declaring it."""
 
 
-def _blocked(*args: Any, **kwargs: Any) -> Any:
-    raise NetworkAccessAttempted(
+def _refuse() -> NetworkAccessAttempted:
+    return NetworkAccessAttempted(
         "This test tried to open a network connection.\n"
         "\n"
         "chainscope's suite runs offline so that it is reproducible on any "
@@ -39,13 +39,37 @@ def _blocked(*args: Any, **kwargs: Any) -> Any:
     )
 
 
+def _blocked(*args: Any, **kwargs: Any) -> Any:
+    raise _refuse()
+
+
+#: Address families that reach another machine. Everything else --- Unix
+#: sockets, and the socketpair asyncio builds for its own self-pipe --- is
+#: local IPC that happens to use the socket API.
+_NETWORK_FAMILIES = {socket.AF_INET, socket.AF_INET6}
+
+
+def _guarded_socket(family: int = socket.AF_INET, *args: Any, **kwargs: Any) -> Any:
+    """Allow local sockets, refuse networked ones.
+
+    Blocking ``socket.socket`` outright was the first attempt and it is too
+    broad: ``asyncio.run`` creates a socketpair for its own wake-up pipe, so
+    every async test failed claiming it had tried to reach the network. The
+    guard exists to stop a test depending on a remote host, and a self-pipe
+    depends on nothing.
+    """
+    if family in _NETWORK_FAMILIES:
+        raise _refuse()
+    return _real_socket(family, *args, **kwargs)
+
+
 @pytest.fixture(autouse=True)
 def _no_network(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Disable sockets unless the test is marked ``network``."""
+    """Disable networked sockets unless the test is marked ``network``."""
     if request.node.get_closest_marker("network"):
         yield
         return
-    socket.socket = _blocked  # type: ignore[assignment,misc]
+    socket.socket = _guarded_socket  # type: ignore[assignment,misc]
     socket.create_connection = _blocked  # type: ignore[assignment]
     try:
         yield

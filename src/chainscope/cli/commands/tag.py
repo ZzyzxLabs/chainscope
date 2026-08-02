@@ -76,8 +76,9 @@ def add_parser(sub: Any, name: str) -> None:
     p.add_argument(
         "--method",
         "-m",
-        default="manual",
-        help="list, label, onchain, heuristic, inference, manual",
+        default=None,
+        help="list, label, onchain, heuristic, inference, manual. Defaults to "
+        "'manual' when tagging one address and 'list' when importing a file",
     )
     p.add_argument("--chain", "-c", help="CAIP-2 id or EVM chain number")
     p.add_argument("--store", type=Path, default=Path(".chainscope/store.db"))
@@ -125,7 +126,8 @@ def _tag_one(args: argparse.Namespace, render: Renderer) -> int:
             label=args.label,
             category=Category(args.category),
             confidence=_confidence(args.confidence),
-            method=Method(args.method),
+            # A person typed this at a prompt, so it is their judgement.
+            method=Method(args.method or "manual"),
             source=args.source,
             address=args.target,
             chain=_chain(args.chain),
@@ -169,10 +171,19 @@ def _import_file(args: argparse.Namespace, render: Renderer, path: Path) -> int:
                 chain=_chain(args.chain),
                 apply=True,
                 default_confidence=_confidence(args.confidence),
-                default_method=Method(args.method),
+                # A bulk file is a list somebody compiled, not a
+                # judgement made per row while reading evidence.
+                # Recording it as MANUAL would overstate every row in it.
+                default_method=Method(args.method or "list"),
             )
         else:
-            plan = plan_import(path, source=args.source, chain=_chain(args.chain))
+            plan = plan_import(
+                path,
+                source=args.source,
+                chain=_chain(args.chain),
+                default_confidence=_confidence(args.confidence),
+                default_method=Method(args.method or "list"),
+            )
     except ImportError_ as exc:
         _err(str(exc))
         return 1
