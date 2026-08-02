@@ -124,7 +124,7 @@ class Client:
         breaker: CircuitBreaker | None = None,
         timeout: float = 30.0,
         max_retries: int = 3,
-        user_agent: str = "chainscope/0.1 (+https://github.com/chainscope/chainscope)",
+        user_agent: str = "chainscope/0.1 (+https://github.com/ZzyzxLabs/chainscope)",
     ) -> None:
         self.cache = cache
         self.throttle = throttle or Throttle()

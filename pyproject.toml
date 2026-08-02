@@ -51,9 +51,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/chainscope/chainscope"
-Documentation = "https://github.com/chainscope/chainscope/tree/main/docs"
-Issues = "https://github.com/chainscope/chainscope/issues"
+Homepage = "https://github.com/ZzyzxLabs/chainscope"
+Documentation = "https://github.com/ZzyzxLabs/chainscope/tree/main/docs"
+Issues = "https://github.com/ZzyzxLabs/chainscope/issues"
 
 [project.scripts]
 chainscope = "chainscope.cli.main:main"

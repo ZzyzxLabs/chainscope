@@ -8,11 +8,11 @@ the two or three things that actually matter here.
 ## Setup
 
 ```bash
-git clone https://github.com/chainscope/chainscope
+git clone https://github.com/ZzyzxLabs/chainscope
 cd chainscope
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,all]"
-pytest -q          # 59 tests, no network, should take under a second
+pytest -q          # ~160 tests, no network, runs in about a second
 ```
 
 Before opening a PR:
