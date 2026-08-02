@@ -250,8 +250,34 @@ That last row is the number justifying `stop_when_uncertain=True`. Stopping
 short is a bounded loss — somebody looks again. Continuing through a guess is
 unbounded, and nothing downstream marks where it went wrong.
 
-Still unmeasured: cross-chain matching. It should not be trusted at a stated
-confidence until it has ground truth.
+### Cross-chain matching
+
+The weakest signal used to make the strongest claim. Nothing links an ETH
+deposit to a BTC payout on-chain — no shared identifier, no reference, no
+common counterparty — so the match is made from time and value alone.
+
+Scored against worlds with the true payout known and decoys built to be hard:
+same window, same service-scale payer, values spread ±15% around the expected
+one, which is what a busy hot wallet actually looks like.
+
+| | |
+|---|---|
+| True payout ranks first, 30 decoys | across five seeds |
+| Across discounts 0.5%–4.2% | holds |
+| 100 decoys | holds |
+| **True payout absent from the window** | **ranks a decoy first** |
+| Two candidates at the same value and time | score alike, not picked |
+
+That fourth row is the one to read. The failure mode is not "no answer" — it is
+a confident wrong one, and nothing about the output looks different. Claims cap
+at MEDIUM for that reason.
+
+**Calibration is the stronger evidence, not the match.** Three independent
+swaps agreeing on a discount to within 0.06 percentage points is far harder to
+explain by coincidence than any single pairing, and scattered discounts are
+reported as inconsistent rather than averaged into a plausible-looking number.
+
+All four techniques now have measured ground truth.
 
 ## Open questions
 
