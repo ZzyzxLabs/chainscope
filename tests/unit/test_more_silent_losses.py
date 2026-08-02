@@ -288,3 +288,82 @@ class TestAStateFileOfTheWrongShape:
         path.write_text("[]")
         with pytest.raises(ValueError, match="not an object"):
             _state(path)
+
+
+class TestBlockscoutAsksForThePageItChecks:
+    """Etherscan sends `page=1, offset=limit`; Blockscout sent neither.
+
+    So the node returned its own default page --- around fifty rows --- and the
+    truncation check, written against `limit`, never tripped. The caller got a
+    short list that said it was complete.
+
+    It also broke corroboration, which is now the default. Etherscan answers
+    with a thousand rows and Blockscout with fifty, and `Router.corroborate`
+    reports the difference as a disagreement *between sources* when it is a
+    difference between two requests.
+    """
+
+    def _captured(self, method: str, **kwargs) -> dict:
+        from chainscope.core.chainid import ETHEREUM
+        from chainscope.providers.blockscout import BlockscoutProvider
+
+        seen: dict = {}
+
+        class Recorder:
+            def get(self, url, params, **kw):
+                seen.update(params)
+                return {"status": "1", "result": []}
+
+        provider = BlockscoutProvider(chain=ETHEREUM, client=Recorder())
+        getattr(provider, method)(ETHEREUM, "0x" + "a" * 40, **kwargs)
+        return seen
+
+    def test_history_asks_for_the_limit_it_checks(self) -> None:
+        params = self._captured("address_history", limit=1000)
+        assert params.get("offset") == 1000
+        assert params.get("page") == 1
+
+    def test_token_transfers_ask_too(self) -> None:
+        params = self._captured("asset_transfers", limit=250)
+        assert params.get("offset") == 250
+
+
+class TestEveryTopicPairGetsAnOperator:
+    """Blockscout's getLogs needs an operator for every *pair*, not adjacent ones.
+
+    Without them the extra topics are not applied, so the query answers a
+    broader question than the one asked --- and the caller receives a set, where
+    a wrong element looks like nothing.
+    """
+
+    def _params(self, topics: list[str | None]) -> dict:
+        from chainscope.core.chainid import ETHEREUM
+        from chainscope.providers.blockscout import BlockscoutProvider
+
+        seen: dict = {}
+
+        class Recorder:
+            def get(self, url, params, **kw):
+                seen.update(params)
+                return {"status": "1", "result": []}
+
+        BlockscoutProvider(chain=ETHEREUM, client=Recorder()).get_logs(
+            ETHEREUM, from_block=1, to_block=2, topics=topics
+        )
+        return seen
+
+    def test_three_topics_get_three_operators(self) -> None:
+        params = self._params(["0xa", "0xb", "0xc"])
+        assert params["topic0_1_opr"] == "and"
+        assert params["topic0_2_opr"] == "and"
+        assert params["topic1_2_opr"] == "and"
+
+    def test_a_gap_pairs_what_was_actually_supplied(self) -> None:
+        # topic1 absent: the pair is 0 and 2, not 0 and 1.
+        params = self._params(["0xa", None, "0xc"])
+        assert "topic0_2_opr" in params
+        assert "topic0_1_opr" not in params
+
+    def test_one_topic_needs_no_operator(self) -> None:
+        params = self._params(["0xa"])
+        assert not any(k.endswith("_opr") for k in params)

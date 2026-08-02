@@ -222,6 +222,19 @@ class BlockscoutProvider(ReadOnlyProvider):
             startblock=start_block,
             endblock=999_999_999 if end_block == "latest" else int(end_block),
             sort="asc",
+            # Asked for explicitly, as Etherscan does. Without these the node
+            # returns its own default page --- around fifty rows --- so the
+            # truncation check below never tripped and the caller silently got a
+            # short list.
+            #
+            # It also broke corroboration, which is now the default: Etherscan
+            # sends `offset=limit` and answers with a thousand rows while this
+            # answered with fifty, and `Router.corroborate` reported the
+            # difference as a disagreement between sources. It was a difference
+            # between two requests. The comment below says the two must agree on
+            # what a full page means; they did not.
+            page=1,
+            offset=limit,
         )
         if not isinstance(rows, list):
             raise ProviderError("txlist did not return a list")
@@ -293,9 +306,18 @@ class BlockscoutProvider(ReadOnlyProvider):
             startblock=int(start_block) if start_block != "latest" else 0,
             endblock=999_999_999 if end_block == "latest" else int(end_block),
             sort="asc",
+            page=1,
+            offset=limit,
         )
         if not isinstance(rows, list):
             raise ProviderError("tokentx did not return a list")
+
+        # Checked on the **fetched** page, before direction and contract
+        # filters. Checking the filtered list meant a full page that mostly
+        # failed the filter looked like a short, complete answer --- so an
+        # address whose thousandth inbound transfer sat behind a thousand
+        # outbound ones reported "that is all of them".
+        fetched = len(rows)
 
         key = address.lower()
         wanted_contract = contract.lower() if contract else None
@@ -338,10 +360,12 @@ class BlockscoutProvider(ReadOnlyProvider):
                     asset=self._addr(contract),
                 )
             )
-        if len(out) >= limit:
+        if fetched >= limit:
             raise ResultTruncated(
-                f"tokentx filled the {limit}-row limit. Narrow the range; any "
-                f"total from this set is a lower bound."
+                f"tokentx returned {fetched} rows, at or above the {limit} "
+                f"requested --- {len(out)} of them survived the direction and "
+                f"contract filters. There is very likely more. Narrow the "
+                f"range; any total from this set is a lower bound."
             )
         return out
 
@@ -375,9 +399,17 @@ class BlockscoutProvider(ReadOnlyProvider):
                     )
                 address = address[0]
             params["address"] = address
-        for i, topic in enumerate(topics or []):
-            if topic:
-                params[f"topic{i}"] = topic
+        supplied = [i for i, topic in enumerate(topics or []) if topic]
+        for i in supplied:
+            params[f"topic{i}"] = (topics or [])[i]
+        # Blockscout's Etherscan-compatible getLogs needs an operator for
+        # **every pair** of topics, not just adjacent ones. With topic0, topic1
+        # and topic2 and no operators, the extra topics are not applied --- so
+        # the query silently answers a broader question than the one asked, and
+        # the caller receives a *set*, where a wrong element looks like nothing.
+        for outer in range(len(supplied)):
+            for inner in range(outer + 1, len(supplied)):
+                params[f"topic{supplied[outer]}_{supplied[inner]}_opr"] = "and"
 
         rows = self._get("logs", "getLogs", **params)
         if not isinstance(rows, list):
