@@ -46,11 +46,14 @@ from ..providers.base import Capability, Provider
 from .base import Analyzer, Context
 
 __all__ = [
+    "RELAY_RESIDUE_BPS",
     "SERVICE_FUNDER_DEGREE",
     "CommonFunderAnalyzer",
     "FundingCluster",
     "FundingEvent",
+    "PassThrough",
     "cluster_by_funder",
+    "find_pass_throughs",
     "first_funders",
 ]
 
@@ -393,3 +396,122 @@ class CommonFunderAnalyzer(Analyzer):
             },
             started=started,
         )
+
+
+# ------------------------------------------------------------------ relays
+
+#: How much of what arrived may remain before an address stops looking like a
+#: pass-through, in hundredths of a percent.
+#:
+#: Not zero. A relay pays gas out of the same balance, and on a token transfer
+#: it may leave dust behind rather than compute an exact sweep. Requiring an
+#: exact zero would miss most real ones; allowing much more admits ordinary
+#: wallets that happen to be nearly empty.
+RELAY_RESIDUE_BPS = 100
+
+
+@dataclass(frozen=True, slots=True)
+class PassThrough:
+    """An address that received once, sent it onward, and stopped."""
+
+    address: str
+    funder: str
+    payee: str
+    received: int
+    sent: int
+    decimals: int
+    symbol: str
+
+    @property
+    def residue(self) -> int:
+        return max(0, self.received - self.sent)
+
+    @property
+    def residue_bps(self) -> int:
+        return (self.residue * 10_000) // self.received if self.received else 0
+
+    def summary(self) -> str:
+        return (
+            f"{self.address} received once from {self.funder} and sent onward to "
+            f"{self.payee}, keeping {self.residue_bps / 100:.2f}% of it. An address "
+            f"created for one hop: it holds nothing, has no history before or "
+            f"after, and exists to put a step between two parties. It says the "
+            f"step was deliberate --- and nothing about who took it."
+        )
+
+    def attribution(self, chain: ChainId | None = None) -> Attribution:
+        return Attribution(
+            label=f"one-hop relay between {self.funder} and {self.payee}",
+            category=Category.SERVICE,
+            confidence=Confidence.MEDIUM,
+            method=Method.HEURISTIC,
+            source="chainscope pass-through detection",
+            address=self.address,
+            chain=chain,
+            rationale=self.summary(),
+        )
+
+
+def find_pass_throughs(
+    transfers: list[Any], *, max_residue_bps: int = RELAY_RESIDUE_BPS
+) -> list[PassThrough]:
+    """Addresses whose entire history is one transfer in and one out.
+
+    The shape recorded across several traces: twelve one-time deposit addresses
+    into one exchange, twenty-one into a secondary relay. An operator creates an
+    address, funds it, sweeps it, and abandons it --- which is cheap to do and
+    leaves a signature that is hard to avoid.
+
+    **Exactly two transfers, not "few".** Three is a different thing: an address
+    that received twice was reused, and reuse is the property being tested for.
+    The rule is brittle on purpose, because a loose version admits every quiet
+    wallet in the data.
+
+    A residue allowance exists because a relay pays gas from the same balance
+    and may leave dust rather than compute an exact sweep. Requiring zero would
+    miss most real ones.
+
+    Says the hop was deliberate. Says nothing about who made it: an exchange
+    generating a deposit address per customer produces exactly this shape, which
+    is why the claim caps at MEDIUM and names the alternative.
+    """
+    history: dict[tuple[str, str], list[Any]] = {}
+    for t in transfers:
+        sender = getattr(t, "sender", None)
+        recipient = getattr(t, "recipient", None)
+        amount = getattr(t, "amount", None)
+        if sender is None or recipient is None or amount is None or amount.raw <= 0:
+            continue
+        asset_obj = getattr(t, "asset", None)
+        asset = asset_obj.key if asset_obj else ""
+        for side in (sender.key.lower(), recipient.key.lower()):
+            history.setdefault((side, asset), []).append(t)
+
+    found: list[PassThrough] = []
+    for (address, _asset), rows in history.items():
+        if len(rows) != 2:
+            continue
+        rows.sort(key=lambda t: (getattr(t, "block", 0) or 0, getattr(t, "index", 0) or 0))
+        inbound, outbound = rows
+        if not (inbound.recipient and inbound.recipient.key.lower() == address):
+            continue
+        if not (outbound.sender and outbound.sender.key.lower() == address):
+            continue
+        # Order matters: sending before receiving is a different address with a
+        # balance we never saw arrive, not a relay.
+        if outbound.amount.raw > inbound.amount.raw:
+            continue
+        relay = PassThrough(
+            address=address,
+            funder=inbound.sender.key if inbound.sender else "",
+            payee=outbound.recipient.key if outbound.recipient else "",
+            received=inbound.amount.raw,
+            sent=outbound.amount.raw,
+            decimals=inbound.amount.decimals,
+            symbol=inbound.amount.symbol,
+        )
+        if relay.residue_bps <= max_residue_bps:
+            found.append(relay)
+
+    found.sort(key=lambda r: -r.received)
+    return found
