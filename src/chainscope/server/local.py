@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -56,6 +57,37 @@ MAX_BODY = 64 * 1024
 #: Origins the extension may run from. Anything else gets no CORS headers, so
 #: the browser refuses to hand the response to the page.
 DEFAULT_ORIGINS = ("chrome-extension://", "moz-extension://")
+
+
+def origin_allowed(origin: str, allowed: Sequence[str]) -> str | None:
+    """Match an ``Origin`` header against the configured list.
+
+    Two rules, because the configured values come in two shapes.
+
+    A bare scheme --- ``chrome-extension://`` --- is a *prefix* on purpose:
+    every extension has its own id and nobody is going to enumerate them, and
+    an attacker cannot register an extension id under someone else's scheme.
+
+    Anything naming a host is matched **exactly**. Prefix-matching those meant
+    ``https://etherscan.io`` also admitted ``https://etherscan.io.evil.com``,
+    which is a domain anybody can register --- and the reply carries
+    ``Access-Control-Allow-Origin`` for it, so the page can then read the
+    responses.
+
+    A module-level function rather than a method so it can be tested without
+    binding a socket; the socket tests carry the ``network`` marker and are
+    deselected by default, which is a poor place for the rule that decides who
+    may read the label store.
+    """
+    if not origin:
+        return None
+    for entry in allowed:
+        if entry.endswith("://"):
+            if origin.startswith(entry) and len(origin) > len(entry):
+                return origin
+        elif origin == entry:
+            return origin
+    return None
 
 
 @dataclass
@@ -271,13 +303,7 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
         # -------------------------------------------------------------- utils
 
         def _origin_allowed(self) -> str | None:
-            origin = self.headers.get("Origin", "")
-            if not origin:
-                return None
-            for allowed in options.origins:
-                if origin.startswith(allowed):
-                    return origin
-            return None
+            return origin_allowed(self.headers.get("Origin", ""), options.origins)
 
         def _send(self, status: int, payload: dict[str, Any]) -> None:
             body = json.dumps(payload).encode()
@@ -310,7 +336,11 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
         # ------------------------------------------------------------ methods
 
         def do_OPTIONS(self) -> None:
-            self._send(HTTPStatus.NO_CONTENT, {})
+            # 200, not 204. `_send` always writes a JSON body and a
+            # Content-Length, and a 204 carrying either is a protocol violation
+            # -- some clients treat the body as the start of the next response
+            # on a keep-alive connection.
+            self._send(HTTPStatus.OK, {})
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
