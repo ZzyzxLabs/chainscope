@@ -533,3 +533,73 @@ class TestAQueryRefusesWhatTheBackendWouldGuessAt:
 
         with pytest.raises(ValueError, match="rarely intended"):
             Query(address="0xa", sender="0xb")
+
+
+class TestTheStrongestMixerSignalIsActuallyRun:
+    """`address_reuse` was never called by the analyzer.
+
+    It is the one signal in that module needing no inference --- the same
+    address deposited and withdrew --- and `skills/chainscope/SKILL.md` tells an
+    agent to "check that one first; it does not decay as the pool gets busy".
+    The analyzer only ran the timing heuristic, so the skill described a
+    capability that was reachable from Python and nowhere else.
+    """
+
+    def test_the_analyzer_calls_it(self) -> None:
+        import inspect
+
+        from chainscope.analysis.mixer import MixerAnalyzer
+
+        source = inspect.getsource(MixerAnalyzer.run)
+        assert "address_reuse(" in source
+
+    def test_reuse_is_reported_above_a_timing_match(self) -> None:
+        """Strictly stronger evidence, so it must not share a severity.
+
+        `Severity` is a string enum with no ordering, so this asserts the
+        distinction rather than a comparison --- the timing match uses NOTABLE
+        or INFO, and reuse uses IMPORTANT, which is not the top of the scale
+        because one pool does not earn that.
+        """
+        import inspect
+
+        from chainscope.analysis.mixer import MixerAnalyzer
+        from chainscope.core.result import Severity
+
+        source = inspect.getsource(MixerAnalyzer.run)
+        reuse_block = source.split("address_reuse(")[1].split("correlate_withdrawals")[0]
+        assert "Severity.IMPORTANT" in reuse_block
+        assert "Severity.CRITICAL" not in reuse_block
+        assert Severity.IMPORTANT is not Severity.NOTABLE
+
+
+class TestAProbeReportsItsOwnBlockRange:
+    """The run is found anywhere; the blocks came from the group's start.
+
+    For `[500, 400, 1, 2, 3, 4, 5]` the run is `[1..5]` at indices 2-6 and the
+    reported window was 0-4 --- both ends naming transfers outside the run. The
+    block range is what an investigator opens next.
+    """
+
+    def test_the_run_carries_its_offset(self) -> None:
+        from chainscope.analysis.probing import _longest_increasing_run
+
+        run, start = _longest_increasing_run([500, 400, 1, 2, 3, 4, 5])
+        assert run == [1, 2, 3, 4, 5]
+        assert start == 2
+
+    def test_a_run_at_the_start_still_starts_at_zero(self) -> None:
+        from chainscope.analysis.probing import _longest_increasing_run
+
+        assert _longest_increasing_run([1, 2, 3]) == ([1, 2, 3], 0)
+
+    def test_a_descending_sequence_has_a_run_of_one(self) -> None:
+        from chainscope.analysis.probing import _longest_increasing_run
+
+        run, start = _longest_increasing_run([5, 4, 3, 2, 1])
+        assert len(run) == 1 and start == 0
+
+    def test_an_empty_sequence_is_handled(self) -> None:
+        from chainscope.analysis.probing import _longest_increasing_run
+
+        assert _longest_increasing_run([]) == ([], 0)

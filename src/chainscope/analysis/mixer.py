@@ -438,6 +438,18 @@ class MixerAnalyzer(Analyzer):
         started = datetime.now(timezone.utc)
         address = TORNADO_ETH_POOLS.get(pool, pool).lower()
         warnings: list[str] = []
+        # Built once and used by every return. The early exits carried only
+        # `{"pool": address}`, so a result that found nothing could not be told
+        # apart from one run over a different window with different deposits ---
+        # and "nothing found" is exactly the answer whose parameters somebody
+        # will want to check.
+        params: dict[str, Any] = {
+            "pool": address,
+            "window_blocks": window_blocks,
+            "from_block": from_block,
+            "to_block": to_block,
+            "max_anonymity_set": MAX_ANONYMITY_SET,
+        }
 
         if not deposits.strip():
             raise ValueError(
@@ -483,7 +495,7 @@ class MixerAnalyzer(Analyzer):
             return self._result(
                 ctx,
                 warnings=(*warnings, f"no withdrawals found for pool {address} in range"),
-                params={"pool": address},
+                params=params,
                 started=started,
             )
 
@@ -534,12 +546,45 @@ class MixerAnalyzer(Analyzer):
                     f"none of the {len(wanted)} deposit hashes could be resolved, "
                     f"so nothing was correlated",
                 ),
-                params={"pool": address},
+                params=params,
                 started=started,
             )
 
+        # Address reuse first, and it was not run at all --- the analyzer only
+        # correlated. It is the strongest signal in this module and the one
+        # needing no inference: if 0xabc deposited and 0xabc withdrew, the pool
+        # moved value from an address back to itself. HIGH and ONCHAIN, against
+        # the timing heuristic's MEDIUM ceiling.
+        #
+        # `skills/chainscope/SKILL.md` tells an agent to "check that one first;
+        # it does not decay as the pool gets busy" --- and the analyzer never
+        # checked it. A capability nobody can reach does not exist.
+        reused = address_reuse(deposit_events, withdrawals)
+        findings: list[Finding] = [
+            Finding(
+                title=f"{withdrawal.address} deposited and withdrew from this pool",
+                # One above the timing match's NOTABLE, because it is strictly
+                # stronger --- and not the top of the scale, which a structural
+                # observation about one pool does not earn.
+                severity=Severity.IMPORTANT,
+                detail=(
+                    f"{deposit.address} deposited in {deposit.tx} and the same "
+                    f"address received {withdrawal.tx}. An observation rather "
+                    f"than a timing inference: the pool moved value from an "
+                    f"address back to itself and the cryptography was not used."
+                ),
+                data={
+                    "address": withdrawal.address,
+                    "deposit_tx": deposit.tx,
+                    "withdrawal_tx": withdrawal.tx,
+                    "basis": "address reuse",
+                },
+            )
+            for deposit, withdrawal in reused
+        ]
+
         result = correlate_withdrawals(deposit_events, withdrawals, window_blocks=window_blocks)
-        findings = [
+        findings += [
             Finding(
                 title=(
                     f"{m.withdrawal.address} is a probable withdrawal "
@@ -568,14 +613,7 @@ class MixerAnalyzer(Analyzer):
             ctx,
             findings=tuple(findings),
             warnings=tuple(warnings),
-            params={
-                "pool": address,
-                "window_blocks": window_blocks,
-                "deposits": wanted,
-                "from_block": from_block,
-                "to_block": to_block,
-                "max_anonymity_set": MAX_ANONYMITY_SET,
-            },
+            params={**params, "deposits": wanted},
             started=started,
         )
 

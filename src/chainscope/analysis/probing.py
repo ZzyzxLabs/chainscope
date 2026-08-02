@@ -269,7 +269,7 @@ def detect_probes(
         group.sort(key=lambda t: (getattr(t, "block", 0) or 0, getattr(t, "index", 0) or 0))
         amounts = [t.amount.raw for t in group]
 
-        run = _longest_increasing_prefix(amounts)
+        run, run_start = _longest_increasing_run(amounts)
         # Both, not either. Length alone fires on 38% of ordinary accumulation;
         # growth is what separates a probe from a payment schedule.
         smallest = min(run) if run else 0
@@ -283,8 +283,10 @@ def detect_probes(
                     decimals=decimals,
                     symbol=symbol,
                     kind="escalation",
-                    first_block=getattr(group[0], "block", None),
-                    last_block=getattr(group[len(run) - 1], "block", None),
+                    # The run's own span, not the group's. See
+                    # `_longest_increasing_run`.
+                    first_block=getattr(group[run_start], "block", None),
+                    last_block=getattr(group[run_start + len(run) - 1], "block", None),
                 )
             )
             continue
@@ -310,23 +312,36 @@ def detect_probes(
     return found
 
 
-def _longest_increasing_prefix(amounts: list[int]) -> list[int]:
-    """The longest strictly-increasing run anywhere in the sequence.
+def _longest_increasing_run(amounts: list[int]) -> tuple[list[int], int]:
+    """The longest strictly-increasing run, and **where it starts**.
 
     A run, not a subsequence. Picking the longest increasing *subsequence* would
     find order in almost any list --- ten random amounts contain an increasing
     subsequence of four or so by construction --- and the ``1/n!`` null model
     the confidence rests on would no longer apply to what was measured.
+
+    The offset is returned because the caller needs it and was guessing. Named
+    `_longest_increasing_prefix`, it was used as though the run began at index
+    zero: a finding's `first_block` came from the group's first transfer and its
+    `last_block` from `len(run) - 1`, so for `[500, 400, 1, 2, 3, 4, 5]` --- run
+    `[1..5]` at indices 2 to 6 --- the reported window was indices 0 to 4. Both
+    ends named transfers outside the run, and the block range is what an
+    investigator opens next.
     """
     best: list[int] = []
+    best_start = 0
     current: list[int] = []
-    for amount in amounts:
+    start = 0
+    for i, amount in enumerate(amounts):
         if current and amount <= current[-1]:
             if len(current) > len(best):
-                best = current
+                best, best_start = current, start
             current = []
+            start = i
         current.append(amount)
-    return current if len(current) > len(best) else best
+    if len(current) > len(best):
+        best, best_start = current, start
+    return best, best_start
 
 
 class ProbingAnalyzer(Analyzer):
