@@ -15,13 +15,14 @@ from ..render.base import Renderer
 from ..render.jsonout import JsonRenderer
 from ..render.markdown import MarkdownRenderer
 from ..render.terminal import TerminalRenderer
-from .commands import analyze, bundle, doctor, label
+from .commands import analyze, bundle, doctor, label, tag
 
 __all__ = ["main"]
 
 _COMMANDS = {
     "analyze": analyze,
     "label": label,
+    "tag": tag,
     "doctor": doctor,
     "bundle": bundle,
 }
