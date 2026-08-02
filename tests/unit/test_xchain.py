@@ -95,12 +95,32 @@ class TestSearchWindow:
     def test_change_outputs_are_excluded(self):
         res = run([payout("9.7", change=True)])
         assert res.is_empty
-        assert any("no non-change outputs" in w for w in res.warnings)
 
-    def test_empty_result_suggests_why(self):
+    def test_all_candidates_being_change_is_not_an_empty_band(self):
+        """These point in opposite directions and used to read the same.
+
+        Outputs in the band that were *all* classified as change means the band
+        was right --- widening it searches a region already known to contain the
+        answer. And this analyzer ranks a decoy first when the true payout is
+        absent, so sending the reader that way is worse than saying nothing.
+        """
+        res = run([payout("9.7", change=True)])
+        (w,) = [w for w in res.warnings if "classified as change" in w]
+        assert "band and window are not the problem" in w
+        assert "Widening the band will not help" in w
+
+    def test_an_empty_band_says_to_widen(self):
         res = run([])
-        (w,) = [w for w in res.warnings if "no non-change" in w]
+        (w,) = [w for w in res.warnings if "no outputs at all" in w]
         assert "different asset" in w and "fee" in w
+
+    def test_the_searched_band_is_recorded(self):
+        """It decided which outputs were even considered.
+
+        A result without it cannot be reproduced once the default changes.
+        """
+        res = run([payout("9.7")])
+        assert "band_percent" in res.params
 
 
 class TestScoring:

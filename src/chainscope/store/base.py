@@ -25,7 +25,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from ..core.attribution import Attribution
 from ..core.chainid import ChainId
@@ -71,7 +71,34 @@ class Query:
     limit: int = 1000
     offset: int = 0
     order: str = "time"
-    """``time``, ``amount``, or ``block``."""
+    """``time``, ``amount``, or ``block``.
+
+    Validated, because the backend resolves an unknown value to `timestamp ASC`
+    --- so `order="amount_desc"`, a plausible typo, silently returned
+    time-ordered rows. FIFO taint depends on arrival order, so a caller who
+    asked for one order and received another gets a different answer with
+    nothing to indicate it.
+    """
+
+    ORDERS: ClassVar[frozenset[str]] = frozenset({"time", "amount", "block"})
+
+    def __post_init__(self) -> None:
+        if self.order not in self.ORDERS:
+            raise ValueError(
+                f"order must be one of {', '.join(sorted(self.ORDERS))}, got "
+                f"{self.order!r}. The backend would fall back to time, and a "
+                f"different order is a different answer."
+            )
+        if self.address and (self.sender or self.recipient):
+            # They are combined with AND, so this asks for transfers where one
+            # address is *both* the counterparty and the sender --- almost never
+            # what somebody meant, and it returns few or no rows rather than
+            # failing.
+            raise ValueError(
+                "address is either side; combining it with sender or recipient "
+                "narrows to transfers matching both, which is rarely intended. "
+                "Use sender/recipient alone, or address alone."
+            )
 
     def describe(self) -> str:
         parts = [
@@ -92,7 +119,18 @@ class Query:
             )
             if v is not None
         ]
-        return " ".join(parts) or "everything"
+        # The caps belong in the description. `Query(limit=10, order="amount")`
+        # described itself as "everything", and that string is what lands in
+        # `Result.params` as the record of what was asked --- so a capped,
+        # reordered query was recorded as an unrestricted one.
+        #
+        # A bare `Query()` is not "everything" either: it is the first 1000 by
+        # time. Saying so is the difference between a reproducible record and a
+        # reassuring one.
+        parts.append(f"first {self.limit} by {self.order}")
+        if self.offset:
+            parts.append(f"from {self.offset}")
+        return " ".join(parts)
 
 
 @dataclass(frozen=True, slots=True)

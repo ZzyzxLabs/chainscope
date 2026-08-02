@@ -474,3 +474,62 @@ class TestTwoRowsThatDisagreeAreNotDuplicates:
         # and the resolver decides at read time anyway.
         plan = self._plan(tmp_path, "0xaaa,Binance,cex,high\n0xaaa,Binance,service,high\n")
         assert len(plan.attributions) == 1
+
+
+class TestAQueryDescribesWhatItActuallyAsked:
+    """`describe()` is what lands in `Result.params` as the record.
+
+    `Query(limit=10, order="amount")` described itself as "everything", so a
+    capped, reordered query was recorded as an unrestricted one --- and a bare
+    `Query()` is not everything either: it is the first 1000 by time.
+    """
+
+    def test_the_cap_is_in_the_description(self) -> None:
+        from chainscope.store.base import Query
+
+        assert Query(limit=10, order="amount").describe() == "first 10 by amount"
+
+    def test_a_bare_query_says_what_it_really_is(self) -> None:
+        from chainscope.store.base import Query
+
+        assert Query().describe() == "first 1000 by time"
+
+    def test_filters_still_appear(self) -> None:
+        from chainscope.store.base import Query
+
+        described = Query(sender="0xabc", limit=5).describe()
+        assert "from=0xabc" in described and "first 5" in described
+
+
+class TestAQueryRefusesWhatTheBackendWouldGuessAt:
+    def test_an_unknown_order_is_refused(self) -> None:
+        """The backend resolves anything unrecognised to `timestamp ASC`.
+
+        So `order="amount_desc"`, a plausible typo, silently returned
+        time-ordered rows --- and FIFO taint depends on arrival order, so a
+        different order is a different answer.
+        """
+        import pytest
+
+        from chainscope.store.base import Query
+
+        with pytest.raises(ValueError, match="order must be one of"):
+            Query(order="amount_desc")
+
+    def test_every_documented_order_is_accepted(self) -> None:
+        # A validator that rejects the valid values is worse than none.
+        from chainscope.store.base import Query
+
+        for order in ("time", "amount", "block"):
+            assert Query(order=order).order == order
+
+    def test_address_combined_with_a_side_is_refused(self) -> None:
+        # They are ANDed, so this asks for transfers where one address is both
+        # the counterparty and the sender --- few or no rows, rather than an
+        # error.
+        import pytest
+
+        from chainscope.store.base import Query
+
+        with pytest.raises(ValueError, match="rarely intended"):
+            Query(address="0xa", sender="0xb")

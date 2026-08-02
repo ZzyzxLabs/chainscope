@@ -205,16 +205,36 @@ class CrossChainMatcher(Analyzer):
         payouts = [c for c in candidates if not c.is_change]
 
         if not payouts:
+            # Two different facts, and they point in opposite directions.
+            #
+            # Nothing in the band at all means the band or the window is wrong,
+            # and widening is the move. Outputs in the band that were *all*
+            # classified as change means the band was right and the classifier
+            # decided against every one of them --- widening then searches a
+            # region already known to contain the answer, and this analyzer
+            # already ranks a decoy first when the true payout is absent, so
+            # sending the reader that way is worse than saying nothing.
+            if candidates:
+                explanation = (
+                    f"{len(candidates)} output(s) fell in the "
+                    f"{lo_amount:.8f}-{hi_amount:.8f} {target_asset} band and "
+                    f"every one was classified as change. The band and window "
+                    f"are not the problem --- either the payout was genuinely "
+                    f"routed as change, or the change heuristic is wrong here. "
+                    f"Widening the band will not help."
+                )
+            else:
+                explanation = (
+                    f"no outputs at all between {lo_amount:.8f} and "
+                    f"{hi_amount:.8f} {target_asset} in the {window[0]}-"
+                    f"{window[1]}s window. The swap may have targeted a "
+                    f"different asset, or the service's fee may fall outside "
+                    f"the searched band."
+                )
             return self._result(
                 ctx,
-                warnings=(
-                    *warnings,
-                    f"no non-change outputs between {lo_amount:.8f} and "
-                    f"{hi_amount:.8f} {target_asset} in the {window[0]}-{window[1]}s "
-                    f"window. The swap may have targeted a different asset, or the "
-                    f"service's fee may fall outside the searched band.",
-                ),
-                params=self._params(amount, asset, at, target_asset, window),
+                warnings=(*warnings, explanation),
+                params=self._params(amount, asset, at, target_asset, window, float(hi_pct)),
                 started=started,
             )
 
@@ -252,7 +272,7 @@ class CrossChainMatcher(Analyzer):
             findings=tuple(findings),
             hypotheses=tuple(hypotheses[:top]),
             warnings=tuple(warnings),
-            params=self._params(amount, asset, at, target_asset, window),
+            params=self._params(amount, asset, at, target_asset, window, float(hi_pct)),
             started=started,
         )
 
@@ -320,12 +340,26 @@ class CrossChainMatcher(Analyzer):
 
     @staticmethod
     def _params(
-        amount: str, asset: str, at: datetime, target: str, window: tuple[int, int]
+        amount: str,
+        asset: str,
+        at: datetime,
+        target: str,
+        window: tuple[int, int],
+        band_percent: float | None = None,
     ) -> dict[str, Any]:
+        """What the run was asked, precisely enough to run it again.
+
+        `band_percent` is the calibrated discount band, and it decided which
+        outputs were even considered --- so a result recorded without it cannot
+        be reproduced once the default changes. `None` is the rate-failure
+        path, where no band was resolved, and is recorded as itself rather than
+        omitted.
+        """
         return {
             "amount": amount,
             "asset": asset,
             "at": at.isoformat(),
             "target_asset": target,
             "window_seconds": list(window),
+            "band_percent": band_percent,
         }
