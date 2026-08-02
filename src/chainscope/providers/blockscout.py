@@ -147,6 +147,27 @@ class BlockscoutProvider(ReadOnlyProvider):
 
     # ---------------------------------------------------------------- request
 
+    def _bound(self, chain: ChainId) -> None:
+        """Refuse a chain this instance is not serving.
+
+        One instance is bound to one Blockscout deployment, and `self.chains`
+        holds exactly that chain --- but nothing checked the argument. Asked
+        about BSC, an Ethereum-bound provider queried the *Ethereum* endpoint
+        and stamped every record `eip155:56`. Measured: Ethereum transfers
+        entering the store labelled BSC.
+
+        The router only selects a provider whose `supports()` says yes, so this
+        is unreachable through it --- and reachable from every other direction: a
+        test, a plugin, an analyzer holding a provider directly. A guarantee
+        that depends on one caller behaving is not one.
+        """
+        if chain not in self.chains:
+            raise ProviderError(
+                f"this blockscout instance serves {next(iter(self.chains))}, not "
+                f"{chain}. Records from one chain stamped with another's id are "
+                f"indistinguishable from real ones once stored."
+            )
+
     def _get(self, module: str, action: str, **params: Any) -> Any:
         try:
             body = self.client.get(
@@ -215,6 +236,7 @@ class BlockscoutProvider(ReadOnlyProvider):
         limit: int = 1000,
     ) -> list[Transaction]:
         """Ordinary transactions an address sent or received."""
+        self._bound(chain)
         rows = self._get(
             "account",
             "txlist",
@@ -296,6 +318,7 @@ class BlockscoutProvider(ReadOnlyProvider):
         ``direction`` filters after fetching, because the endpoint has no side
         parameter --- it returns both and the caller narrows.
         """
+        self._bound(chain)
         if direction not in ("out", "in", "all"):
             raise ProviderError(f"direction must be 'out', 'in', or 'all', not {direction!r}")
 
@@ -384,6 +407,7 @@ class BlockscoutProvider(ReadOnlyProvider):
         query is where a silently-incomplete answer does the most damage: the
         result is a *set*, so a missing element does not look like anything.
         """
+        self._bound(chain)
         params: dict[str, Any] = {
             "fromBlock": from_block if isinstance(from_block, str) else int(from_block),
             "toBlock": to_block if isinstance(to_block, str) else int(to_block),

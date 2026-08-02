@@ -696,3 +696,86 @@ class TestEtherscanKeepsItsCapabilityPromise:
         # This endpoint does not carry one. Filling it with "now" would date a
         # settled transaction to the moment it was looked up.
         assert self._provider().get_transaction(ETHEREUM, "0x" + "1" * 64).timestamp is None
+
+
+class TestAProviderServesOnlyTheChainItIsBoundTo:
+    """One Blockscout instance is one deployment, and nothing checked.
+
+    Asked about BSC, an Ethereum-bound provider queried the *Ethereum*
+    endpoint and stamped every record `eip155:56` --- Ethereum transfers
+    entering the store labelled BSC, indistinguishable from real ones once
+    written.
+
+    The router only selects a provider whose `supports()` says yes, so this is
+    unreachable through it and reachable from every other direction: a test, a
+    plugin, an analyzer holding a provider directly. A guarantee that depends
+    on one caller behaving is not one.
+    """
+
+    class Empty:
+        def get(self, url, params, **kw):
+            return {"status": "1", "result": []}
+
+    def _provider(self):
+        from chainscope.core.chainid import ChainId
+        from chainscope.providers.blockscout import BlockscoutProvider
+
+        return BlockscoutProvider(chain=ChainId.parse("eip155:1"), client=self.Empty())
+
+    @pytest.mark.parametrize(
+        ("method", "extra"),
+        [
+            ("address_history", ("0x" + "a" * 40,)),
+            ("asset_transfers", ("0x" + "a" * 40,)),
+            ("get_logs", ()),
+        ],
+    )
+    def test_a_foreign_chain_is_refused(self, method: str, extra: tuple) -> None:
+        from chainscope.core.chainid import ChainId
+        from chainscope.providers.base import ProviderError
+
+        provider = self._provider()
+        with pytest.raises(ProviderError, match="serves eip155:1"):
+            getattr(provider, method)(ChainId.parse("eip155:56"), *extra)
+
+    def test_its_own_chain_still_works(self) -> None:
+        # A guard that refuses the valid case is worse than none.
+        from chainscope.core.chainid import ChainId
+
+        assert (
+            self._provider().address_history(ChainId.parse("eip155:1"), "0x" + "a" * 40) == []
+        )
+
+
+class TestOneWordForAnUndatedSource:
+    """`citation()` said "undated" and `Source.emit` said "unknown".
+
+    The same state, two spellings, in one file --- and source strings are
+    grouped and compared, so two spellings of one fact read as two facts about
+    two sources.
+    """
+
+    def _meta(self, snapshot=None):
+        from chainscope.attribution.base import SourceMeta
+
+        return SourceMeta(publisher="X", license="MIT", redistributable=True, snapshot=snapshot)
+
+    def test_the_citation_and_the_source_string_agree(self) -> None:
+        meta = self._meta()
+        assert meta.stamp() == meta.UNDATED
+        assert meta.UNDATED in meta.citation()
+
+    def test_a_snapshot_is_used_when_there_is_one(self) -> None:
+        from datetime import datetime, timezone
+
+        meta = self._meta(datetime(2026, 8, 1, tzinfo=timezone.utc))
+        assert meta.stamp() == "2026-08-01"
+
+    def test_the_placeholder_does_not_look_like_a_date(self) -> None:
+        # So nothing downstream tries to parse it as one.
+        from datetime import datetime
+
+        from chainscope.attribution.base import SourceMeta
+
+        with pytest.raises(ValueError):
+            datetime.strptime(SourceMeta.UNDATED, "%Y-%m-%d")

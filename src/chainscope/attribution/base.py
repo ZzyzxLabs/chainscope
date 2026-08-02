@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import ClassVar
 
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
@@ -48,9 +49,24 @@ class SourceMeta:
     adapter passes that value in. Enforced in :meth:`Source.emit`.
     """
 
+    #: What a source string carries where a snapshot date would go.
+    #:
+    #: One word, because there were two. `citation()` said "undated" and
+    #: `Source.emit` said "unknown" for the same state, in the same file --- and
+    #: source strings are grouped and compared, so two spellings of one fact
+    #: read as two facts about two sources.
+    #:
+    #: "undated" rather than "unknown": the source has no snapshot at all, which
+    #: is different from one that exists and could not be read. And it does not
+    #: look like a date, so nothing downstream will try to parse it as one.
+    UNDATED: ClassVar[str] = "undated"
+
+    def stamp(self) -> str:
+        """The snapshot date, or :data:`UNDATED`."""
+        return self.snapshot.strftime("%Y-%m-%d") if self.snapshot else self.UNDATED
+
     def citation(self) -> str:
-        stamp = self.snapshot.strftime("%Y-%m-%d") if self.snapshot else "undated"
-        return f"{self.publisher} ({stamp}, {self.license})"
+        return f"{self.publisher} ({self.stamp()}, {self.license})"
 
 
 class Source(ABC):
@@ -104,7 +120,10 @@ class Source(ABC):
 
         Sources should use this rather than constructing directly. It applies
         the ``max_confidence`` ceiling and versions the source string, so a
-        claim can always be traced back to which snapshot produced it.
+        claim can be traced back to which snapshot produced it --- or, when the
+        source carries no snapshot, says `undated` rather than implying one.
+        `observed_at` is then `None`, which is the same fact stated in the
+        field that is meant to hold it.
         """
         capped = min(confidence, self.meta.max_confidence)
         if capped != confidence:
@@ -112,7 +131,6 @@ class Source(ABC):
                 f"{rationale} (confidence capped from {confidence.name} to "
                 f"{capped.name} by source policy)"
             ).strip()
-        stamp = self.meta.snapshot.strftime("%Y-%m-%d") if self.meta.snapshot else "unknown"
         return Attribution(
             address=address,
             chain=chain,
@@ -120,7 +138,7 @@ class Source(ABC):
             category=category,
             confidence=capped,
             method=method,
-            source=f"{self.name}@{stamp}",
+            source=f"{self.name}@{self.meta.stamp()}",
             observed_at=self.meta.snapshot,
             rationale=rationale,
             tags=tags,
