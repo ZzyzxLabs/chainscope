@@ -136,6 +136,9 @@ class Status(Enum):
 _CLOSING = frozenset({Status.ANSWERED, Status.REFUSED, Status.WITHDRAWN})
 
 
+from .log import _must_be_aware  # noqa: E402  --- one definition, both files
+
+
 @dataclass(frozen=True, slots=True)
 class RequestEvent:
     """One thing that happened to a request."""
@@ -149,6 +152,7 @@ class RequestEvent:
     id: int = 0
 
     def __post_init__(self) -> None:
+        _must_be_aware(self.at, "an event's timestamp")
         if self.status.needs_content and not self.body.strip():
             raise ValueError(
                 f"a {self.status.value} request needs to say what happened "
@@ -175,6 +179,9 @@ class Request:
     events: tuple[RequestEvent, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        _must_be_aware(self.sent_at, "a request's send date")
+        if self.due_at is not None:
+            _must_be_aware(self.due_at, "a request's deadline")
         if not self.counterparty.strip():
             raise ValueError("a request needs a counterparty --- who it went to")
         if self.due_at and self.due_at < self.sent_at:

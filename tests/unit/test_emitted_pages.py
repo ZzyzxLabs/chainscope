@@ -119,8 +119,9 @@ def pages() -> dict[str, str]:
     import tempfile
     from pathlib import Path as _Path
 
-    # The dashboard reads a store from disk rather than an object.
-    disk = _Path(tempfile.mkdtemp()) / "store.db"
+    # The dashboard reads a store from disk rather than an object. One
+    # directory for the session, removed by the caller's temp handling.
+    disk = _Path(tempfile.mkdtemp(prefix="chainscope-pages-")) / "store.db"
     from chainscope.store.sqlite import SqliteStore as _S
 
     copy = _S(disk)
@@ -146,13 +147,28 @@ def blocks(html: str) -> list[tuple[str, str]]:
     ]
 
 
-ALL = pages()
+#: Named here rather than derived from `pages()`, so collection does not have
+#: to build three HTML documents and a SQLite store before any test runs --- and
+#: so a page silently disappearing from `pages()` fails loudly below instead of
+#: quietly reducing the parametrisation to nothing.
+PAGE_NAMES = ("dashboard", "flow", "graph")
 
 
-@pytest.mark.parametrize("name", sorted(ALL))
+@pytest.fixture(scope="session")
+def rendered() -> dict[str, str]:
+    return pages()
+
+
+def test_every_named_page_is_actually_rendered(rendered: dict[str, str]) -> None:
+    assert set(rendered) == set(PAGE_NAMES)
+
+
+@pytest.mark.parametrize("name", PAGE_NAMES)
 class TestEveryEmittedPage:
-    def test_its_scripts_are_valid_programs(self, name: str, tmp_path: Path) -> None:
-        for i, (kind, body) in enumerate(blocks(ALL[name])):
+    def test_its_scripts_are_valid_programs(
+        self, name: str, tmp_path: Path, rendered: dict[str, str]
+    ) -> None:
+        for i, (kind, body) in enumerate(blocks(rendered[name])):
             if kind and kind != "text/javascript":
                 continue  # a data island; checked below
             js = tmp_path / f"{name}-{i}.js"
@@ -165,24 +181,26 @@ class TestEveryEmittedPage:
                 f"it runs:\n{result.stderr}"
             )
 
-    def test_its_data_islands_are_valid_json(self, name: str) -> None:
+    def test_its_data_islands_are_valid_json(self, name: str, rendered: dict[str, str]) -> None:
         import json
 
-        for kind, body in blocks(ALL[name]):
+        for kind, body in blocks(rendered[name]):
             if kind == "application/json":
                 json.loads(body)
 
-    def test_it_has_at_least_one_script(self, name: str) -> None:
+    def test_it_has_at_least_one_script(self, name: str, rendered: dict[str, str]) -> None:
         # A page with none means the regex stopped matching --- at which point
         # every assertion above passes vacuously, which is how a check like
         # this quietly stops checking.
-        assert blocks(ALL[name]), f"{name} has no script element to check"
+        assert blocks(rendered[name]), f"{name} has no script element to check"
 
-    def test_embedded_data_cannot_end_a_script_block(self, name: str) -> None:
+    def test_embedded_data_cannot_end_a_script_block(
+        self, name: str, rendered: dict[str, str]
+    ) -> None:
         """A label containing `</script>` must not close the element early.
 
         Same class of defect as the one this file was written for --- content
         deciding where the program ends --- but arriving from the store rather
         than from the template.
         """
-        assert "</script>" not in "".join(b for _, b in blocks(ALL[name]))
+        assert "</script>" not in "".join(b for _, b in blocks(rendered[name]))

@@ -92,8 +92,16 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
 
 
 def _who(args: argparse.Namespace) -> tuple[str, str]:
-    if args.analyst:
-        return str(args.analyst).strip(), "flag"
+    """Who is asserting this.
+
+    Stripped *before* the emptiness test: `--analyst "   "` is not somebody
+    naming themselves, and taking it at face value recorded a claim signed with
+    an empty string and a source of "flag" --- which reads as a stated identity
+    and is the one thing this field must not do.
+    """
+    stated = str(args.analyst or "").strip()
+    if stated:
+        return stated, "flag"
     identity = whoami()
     return identity.name, identity.source
 

@@ -29,8 +29,11 @@ class TestSchema4Migration:
                 source TEXT NOT NULL, rationale TEXT NOT NULL DEFAULT '',
                 observed_at INTEGER, UNIQUE (address, source, label));
             INSERT INTO attributions
-                (address, chain, label, category, confidence, method, source)
-            VALUES ('0xaa', NULL, 'Binance 14', 'cex', 3, 'label', 'etherscan');
+                (address, chain, label, category, confidence, method, source,
+                 rationale, observed_at)
+            VALUES ('0xaa', 'eip155:1', 'Binance 14', 'cex', 3, 'label',
+                    'etherscan', 'matches the published hot-wallet list',
+                    1750000000);
             """
         )
         conn.commit()

@@ -28,6 +28,18 @@ def text() -> str:
     return SKILL.read_text(encoding="utf-8")
 
 
+def test_the_check_found_something() -> None:
+    """Both lists below are parametrised over discovered sets.
+
+    Empty, they collect zero cases and this file passes green while checking
+    nothing --- the same vacuous pass this project has now written a guard
+    against three times. It belongs next to every `parametrize` over a
+    discovered set, not in the one file where it was noticed.
+    """
+    assert available(), "no analyzers discovered; the entry-point lookup is stale"
+    assert _COMMANDS, "the CLI dispatch table is empty or was renamed"
+
+
 class TestItCoversWhatIsInstalled:
     @pytest.mark.parametrize("name", sorted(available()))
     def test_every_registered_analyzer_is_mentioned(self, name, text):

@@ -149,6 +149,24 @@ def whoami(env: dict[str, str] | None = None) -> Identity:
     return Identity(environ.get("USER") or environ.get("USERNAME") or "unknown", "os")
 
 
+def _must_be_aware(value: datetime, what: str) -> None:
+    """Refuse a naive datetime.
+
+    `datetime.timestamp()` reads a naive value as *local* time, so a note
+    recorded at 12:00 without a zone is stored eight hours off on a machine in
+    UTC+8 and reads back as 04:00 --- silently, and differently on the
+    colleague's machine that opens the same case file. *When* is regularly the
+    fact in dispute in a case record, so the one thing this must not do is
+    guess a zone.
+    """
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        raise ValueError(
+            f"{what} has no timezone. A naive datetime is read as local time, "
+            f"which stores a different instant on every machine --- pass one "
+            f"with tzinfo (datetime.now(timezone.utc))"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Note:
     """One line of the case narrative."""
@@ -164,6 +182,7 @@ class Note:
     id: int = 0
 
     def __post_init__(self) -> None:
+        _must_be_aware(self.at, "a note's timestamp")
         if not self.body.strip():
             raise ValueError("a note needs a body")
         if self.kind is NoteKind.CORRECTION and not self.supersedes:

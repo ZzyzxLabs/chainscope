@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -134,5 +135,61 @@ class TestWhoami:
         assert not who.is_chosen
         assert "unverified" in str(who)
 
-    def test_blank_env_falls_through(self) -> None:
-        assert whoami({"CHAINSCOPE_ANALYST": "   "}).source != "env"
+    def test_blank_env_falls_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # git is stubbed: reading the host's config makes the result depend on
+        # whoever is running the suite, and shelling out makes it slow. What is
+        # being checked is that whitespace is not an identity.
+        import subprocess as sp
+
+        monkeypatch.setattr(sp, "run", lambda *a, **k: sp.CompletedProcess(a, 1, "", ""))
+        identity = whoami({"CHAINSCOPE_ANALYST": "   ", "USER": "laptop"})
+        assert identity.source == "os"
+        assert identity.name == "laptop"
+
+    def test_git_is_used_when_no_variable_is_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess as sp
+
+        monkeypatch.setattr(
+            sp, "run", lambda *a, **k: sp.CompletedProcess(a, 0, "dev@example.com\n", "")
+        )
+        assert whoami({"USER": "laptop"}) == Identity("dev@example.com", "git")
+
+    def test_a_failing_git_does_not_break_the_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No git installed, or it hung. The fallback is fine and the identity
+        # source records that this is not a chosen name.
+        import subprocess as sp
+
+        def boom(*a: object, **k: object) -> None:
+            raise OSError("no git here")
+
+        monkeypatch.setattr(sp, "run", boom)
+        assert whoami({"USER": "laptop"}).source == "os"
+
+
+class TestTimestampsCarryTheirZone:
+    """`datetime.timestamp()` reads a naive value as *local* time.
+
+    A note recorded at 12:00 without a zone stores a different instant on every
+    machine, and reads back shifted --- eight hours, on a UTC+8 laptop. *When*
+    is regularly the fact in dispute in a case record, so guessing a zone is
+    the one thing this must not do.
+    """
+
+    def test_a_naive_timestamp_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="no timezone"):
+            note(at=datetime(2026, 8, 1, 12, 0))
+
+    def test_the_message_says_what_to_pass(self) -> None:
+        with pytest.raises(ValueError, match=re.escape("datetime.now(timezone.utc)")):
+            note(at=datetime(2026, 8, 1, 12, 0))
+
+    def test_a_non_utc_zone_is_fine_and_survives_the_round_trip(self, tmp_path: object) -> None:
+        # Refusing anything but UTC would be the wrong fix: an offset-aware
+        # value names an instant, which is all the store needs.
+        east = timezone(timedelta(hours=8))
+        log = CaseLog(tmp_path / "case.db")  # type: ignore[operator]
+        log.add(note(at=datetime(2026, 8, 1, 20, 0, tzinfo=east)))
+        assert log.notes()[0].at == datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+        log.close()

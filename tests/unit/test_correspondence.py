@@ -291,3 +291,19 @@ class TestTheClockReadsAccurately:
     def test_overdue_reads_the_same_way(self) -> None:
         assert self._at(-5) == "5h past"
         assert self._at(-49) == "2d past"
+
+
+class TestTimestampsCarryTheirZone:
+    def test_a_naive_send_date_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="no timezone"):
+            request(sent_at=datetime(2026, 7, 1, 9, 0))
+
+    def test_a_naive_deadline_is_refused(self) -> None:
+        # The deadline is the number this command exists to report; storing it
+        # against a guessed zone would put the `!` marker hours out.
+        with pytest.raises(ValueError, match="no timezone"):
+            request(due_at=datetime(2026, 7, 9, 23, 59))
+
+    def test_a_naive_event_time_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="no timezone"):
+            event(Status.ANSWERED, at=datetime(2026, 7, 4, 9, 0))

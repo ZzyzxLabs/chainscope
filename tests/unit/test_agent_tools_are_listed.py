@@ -42,6 +42,22 @@ def registered() -> set[str]:
     return found
 
 
+def write_gated() -> set[str]:
+    """Tool names defined inside the server's `if config.writable:` block."""
+    tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (isinstance(test, ast.Attribute) and test.attr == "writable"):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                found.add(inner.name)
+    return found & registered()
+
+
 def listed() -> set[str]:
     # The list carries "(only with --writable)" for gated tools; that qualifier
     # is for a human reading `doctor` and is not part of the name.
@@ -78,8 +94,21 @@ class TestTheListMatchesTheServer:
         )
 
     def test_gated_tools_say_so(self) -> None:
-        """A write tool listed without its condition reads as always available."""
-        gated = {"label_address", "record_note"}
+        """A write tool listed without its condition reads as always available.
+
+        The gated set is read from the source rather than typed here: a third
+        write tool added inside the same `if config.writable:` block would
+        otherwise be listed as unconditional and nothing would notice.
+        """
+        gated = write_gated()
+        assert gated, "no tools found inside the writable branch"
+        for name in gated:
+            entry = next(e for e in TOOLS if e.split(" ")[0] == name)
+            assert "--writable" in entry, f"{entry} does not say it is gated"
+
+    def test_ungated_tools_do_not_claim_to_be(self) -> None:
+        # The other direction: a read tool marked --writable would send an
+        # operator looking for a flag they do not need.
         for entry in TOOLS:
-            if entry.split(" ")[0] in gated:
-                assert "--writable" in entry, f"{entry} does not say it is gated"
+            if "--writable" in entry:
+                assert entry.split(" ")[0] in write_gated()

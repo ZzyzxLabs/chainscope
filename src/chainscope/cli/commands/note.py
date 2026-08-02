@@ -111,9 +111,12 @@ def _add(args: argparse.Namespace, log: CaseLog) -> int:
         print(f'give the note text: chainscope note {args.kind} "..."', file=sys.stderr)
         return 2
 
+    # Stripped before the test: `--analyst "  "` is not somebody naming
+    # themselves, and it recorded a note authored by an empty string.
+    stated = str(args.analyst or "").strip()
     who = whoami()
-    name = args.analyst.strip() if args.analyst else who.name
-    origin = "flag" if args.analyst else who.source
+    name = stated or who.name
+    origin = "flag" if stated else who.source
 
     try:
         note = Note(

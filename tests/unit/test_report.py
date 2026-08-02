@@ -16,16 +16,25 @@ NOW = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
 
 
 def args_for(tmp_path: Path, **kw: object) -> argparse.Namespace:
-    base: dict[str, object] = {
-        "title": "Test case",
-        "store": tmp_path / "store.db",
-        "case": tmp_path / "case.db",
-        "attestation": tmp_path / "attestation.json",
-        "attach": [],
-        "out": tmp_path / "report.md",
-    }
-    base.update(kw)
-    return argparse.Namespace(**base)
+    """Parse real arguments, then point the paths at a temp directory.
+
+    Built through `report.add_parser` rather than hand-assembled: a namespace
+    typed out here agrees with whatever the test author remembered, so renaming
+    a flag or adding one with a default would leave every test below passing
+    against a command that no longer exists in that shape.
+    """
+    parser = argparse.ArgumentParser()
+    report.add_parser(parser.add_subparsers(dest="command"), "report")
+    args = parser.parse_args(["report", "--title", "Test case"])
+    args.store = tmp_path / "store.db"
+    args.case = tmp_path / "case.db"
+    args.attestation = tmp_path / "attestation.json"
+    args.out = tmp_path / "report.md"
+    for key, value in kw.items():
+        if not hasattr(args, key):
+            raise AssertionError(f"report has no --{key.replace('_', '-')} option")
+        setattr(args, key, value)
+    return args
 
 
 def seed_notes(tmp_path: Path) -> CaseLog:

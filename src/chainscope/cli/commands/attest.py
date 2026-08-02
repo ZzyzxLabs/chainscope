@@ -27,6 +27,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import os
 import sqlite3
 import sys
 from collections.abc import Sequence
@@ -206,7 +207,13 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
         return _verify(args.out, entries, missing, unreadable)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(
+    # Written beside the target and renamed into place. A crash partway through
+    # a direct write leaves a truncated attestation, and the next `--verify`
+    # then refuses with "not readable JSON" --- which is recoverable, but it
+    # replaces a good manifest with a broken one at the moment somebody is
+    # trying to establish that nothing moved.
+    staged = args.out.with_name(args.out.name + ".partial")
+    staged.write_text(
         json.dumps(
             {
                 "attested": datetime.now(timezone.utc).isoformat(),
@@ -223,6 +230,7 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
         ),
         encoding="utf-8",
     )
+    os.replace(staged, args.out)
 
     print(f"{len(entries)} cached response(s) hashed from {args.cache}")
     print(f"{len(queries)} quer(ies) recorded in {args.audit}")

@@ -90,7 +90,7 @@ never do is quietly leave something out.*
 Then `save canvas`, re-run the graph one hop deeper, and `load` the file back:
 
 ```bash
-docker compose run --rm cli graph 0xSEED -f flow --depth 3 --out flow.html
+docker compose run --rm cli graph 0xSEED -f flow --depth 3 --out /case/flow.html
 ```
 
 Everything you did is still there. Say: *state is keyed by address, not by
@@ -123,13 +123,13 @@ where did this balance come from. Ten tools, including writes.
 The part a commercial tool gives you as a PDF and nothing underneath it.
 
 ```bash
-CHAINSCOPE_ANALYST=alice@lab chainscope note decision \
+docker compose run --rm -e CHAINSCOPE_ANALYST=alice@lab cli note decision \
     "not tracing past the CEX deposit; terminal"
-CHAINSCOPE_ANALYST=alice@lab chainscope note question \
+docker compose run --rm -e CHAINSCOPE_ANALYST=alice@lab cli note question \
     "who funded the gas on the first payout?"
-chainscope request send "Binance" -k freeze --about 0xSEED \
+docker compose run --rm cli request send "Binance" -k freeze --about 0xSEED \
     --sent 2026-07-02 --due 2026-07-09 --ref TICKET-9912
-chainscope request list
+docker compose run --rm cli request list
 ```
 
 Point at the `!` and the day count. Say: *this is the number a case dies of.*
@@ -137,8 +137,9 @@ Point at the `!` and the day count. Say: *this is the number a case dies of.*
 Then break something on purpose:
 
 ```bash
-chainscope note correction "the third hop is a router" --supersedes 1
-chainscope note --list
+docker compose run --rm -e CHAINSCOPE_ANALYST=alice@lab cli \
+    note correction "the third hop is a router" --supersedes 1
+docker compose run --rm cli note --list
 ```
 
 The wrong note is still there, struck through. Say: *"I thought X, then found
@@ -148,8 +149,9 @@ indistinguishable from one that was right the first time.*
 Finally:
 
 ```bash
-chainscope attest
-chainscope report --title "Case 2026-114" --attach flow.html --out case.html
+docker compose run --rm cli attest
+docker compose run --rm cli report --title "Case 2026-114" \
+    --attach /case/flow.html --out /case/case.html
 ```
 
 Open it. Three things, in this order:

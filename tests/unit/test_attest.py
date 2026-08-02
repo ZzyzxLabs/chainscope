@@ -236,3 +236,22 @@ class TestVerifyReportsHoles:
         # Still zero: a gap in what was recorded is not evidence that a
         # recorded response moved, and one exit code cannot answer both.
         assert code == 0
+
+
+class TestTheAttestationIsWrittenAtomically:
+    def test_no_partial_file_is_left_behind(self, case):
+        main(["attest"])
+        leftovers = list((case / ".chainscope").glob("*.partial"))
+        assert leftovers == []
+
+    def test_an_unreadable_attestation_is_refused_not_ignored(self, case, capsys):
+        """A truncated file must not verify as "nothing to compare".
+
+        That is the shape a crashed write leaves, and treating it as empty
+        would report a clean check against no baseline at all.
+        """
+        main(["attest"])
+        capsys.readouterr()
+        (case / ".chainscope/attestation.json").write_text('{"responses": {')
+        assert main(["attest", "--verify"]) == 2
+        assert "is not readable JSON" in capsys.readouterr().err
