@@ -49,6 +49,9 @@ from .base import (
 
 __all__ = ["BLOCKSCOUT_HOSTS", "BlockscoutProvider", "is_cacheable"]
 
+#: Page size Blockscout applies to getLogs. A full page means there is more.
+LOGS_PAGE = 1000
+
 #: Public instance per chain. Each is a separate deployment --- there is no
 #: multi-chain parameter --- so a chain absent here has no Blockscout to reach.
 #:
@@ -265,10 +268,17 @@ class BlockscoutProvider(ReadOnlyProvider):
         address: str,
         *,
         direction: str = "out",
+        start_block: int | str = 0,
+        end_block: int | str = "latest",
+        contract: str | None = None,
         limit: int = 1000,
-        **_: Any,
     ) -> list[Transfer]:
         """ERC-20 movements touching an address.
+
+        ``start_block``/``end_block`` are passed upstream rather than dropped.
+        Accepting a range and ignoring it returns the whole history under a
+        caller's belief that it was narrowed --- and the caller then attributes
+        movements to a window they never happened in.
 
         ``direction`` filters after fetching, because the endpoint has no side
         parameter --- it returns both and the caller narrows.
@@ -276,14 +286,27 @@ class BlockscoutProvider(ReadOnlyProvider):
         if direction not in ("out", "in", "all"):
             raise ProviderError(f"direction must be 'out', 'in', or 'all', not {direction!r}")
 
-        rows = self._get("account", "tokentx", address=address, sort="asc")
+        rows = self._get(
+            "account",
+            "tokentx",
+            address=address,
+            startblock=int(start_block) if start_block != "latest" else 0,
+            endblock=999_999_999 if end_block == "latest" else int(end_block),
+            sort="asc",
+        )
         if not isinstance(rows, list):
             raise ProviderError("tokentx did not return a list")
 
         key = address.lower()
+        wanted_contract = contract.lower() if contract else None
         out: list[Transfer] = []
         for row in rows:
             if not isinstance(row, dict) or not row.get("hash"):
+                continue
+            if (
+                wanted_contract
+                and str(row.get("contractAddress", "")).lower() != wanted_contract
+            ):
                 continue
             sender, recipient = row.get("from", ""), row.get("to", "")
             if direction == "out" and str(sender).lower() != key:
@@ -357,4 +380,17 @@ class BlockscoutProvider(ReadOnlyProvider):
                 params[f"topic{i}"] = topic
 
         rows = self._get("logs", "getLogs", **params)
-        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+        if not isinstance(rows, list):
+            return []
+        # Blockscout pages getLogs at 1,000. A full page is not an answer, and
+        # an enumeration is exactly where a short result does the most damage:
+        # the caller gets a *set*, so a missing element does not look like
+        # anything. Router.corroborate exists for the case where a provider
+        # will not tell you; this one can, so it does.
+        if len(rows) >= LOGS_PAGE:
+            raise ResultTruncated(
+                f"getLogs returned {len(rows)} records, Blockscout's page size. "
+                f"There is very likely more. Narrow fromBlock/toBlock; any set "
+                f"derived from this is a subset and not a complete enumeration."
+            )
+        return [r for r in rows if isinstance(r, dict)]

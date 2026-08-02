@@ -526,6 +526,7 @@ class SuiProvider(ReadOnlyProvider):
 
         out: list[Transfer] = []
         seen: set[tuple[str, str]] = set()
+        position = 0
         for coin, delta in mine.items():
             native = coin == native_type
             if native and delta < 0:
@@ -539,6 +540,15 @@ class SuiProvider(ReadOnlyProvider):
                 if (who, coin) in seen:
                     continue
                 seen.add((who, coin))
+                # A stable position, matching `asset_transfers`. Sui has no log
+                # index, and leaving every transfer at zero meant the two
+                # methods in this provider disagreed about what `index` means
+                # --- a trap for anything comparing their output.
+                #
+                # Not currently a loss: the store's identity key includes
+                # `asset`, so two coin types cannot collide. That is the store
+                # covering for the provider, and a provider should not need it.
+                position += 1
                 out.append(
                     Transfer(
                         chain=self.chain,
@@ -551,6 +561,7 @@ class SuiProvider(ReadOnlyProvider):
                             coin_symbol(coin),
                         ),
                         kind=TransferKind.NATIVE if native else TransferKind.TOKEN,
+                        index=position - 1,
                         timestamp=self._when(tx),
                         block=int(tx["checkpoint"]) if tx.get("checkpoint") else None,
                         asset=None if native else self._asset(coin),

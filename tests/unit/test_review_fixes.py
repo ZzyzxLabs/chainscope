@@ -292,3 +292,111 @@ class TestTaintSurvivesAnOverspend:
             move("0xb", "0xc", 10 * ETH, 3),
         ]
         assert trace_taint(rows, {THIEF: 10 * ETH}).tainted["0xc"] == 10 * ETH
+
+
+class TestBlockscoutHonoursWhatItIsGiven:
+    """Two gaps in a provider written this session, both of the same shape:
+    accepting an input and not using it."""
+
+    def _provider(self, reply):
+        from chainscope.providers.blockscout import BlockscoutProvider
+
+        class Stub(BlockscoutProvider):
+            captured: ClassVar[dict] = {}
+
+            def _get(self, module, action, **params):
+                Stub.captured = params
+                return reply
+
+        return Stub()
+
+    def test_a_full_page_of_logs_is_refused_not_returned(self):
+        """An enumeration is a set, so a missing element does not look like
+        anything. A provider that can tell you it capped, should."""
+        from chainscope.providers.base import ResultTruncated
+        from chainscope.providers.blockscout import LOGS_PAGE
+
+        provider = self._provider([{"topics": [], "data": "0x"}] * LOGS_PAGE)
+        with pytest.raises(ResultTruncated, match="page size"):
+            provider.get_logs(ETHEREUM, address="0xa")
+
+    def test_a_short_page_of_logs_is_an_answer(self):
+        provider = self._provider([{"topics": [], "data": "0x"}] * 3)
+        assert len(provider.get_logs(ETHEREUM, address="0xa")) == 3
+
+    def test_the_token_query_passes_its_block_range_upstream(self):
+        """Accepting a range and dropping it returns the whole history under a
+        caller's belief that it was narrowed --- and movements then get
+        attributed to a window they never happened in."""
+        provider = self._provider([])
+        provider.asset_transfers(ETHEREUM, "0xa", start_block=100, end_block=200)
+        assert type(provider).captured["startblock"] == 100
+        assert type(provider).captured["endblock"] == 200
+
+    def test_latest_becomes_the_end_of_chain_not_a_string(self):
+        provider = self._provider([])
+        provider.asset_transfers(ETHEREUM, "0xa", start_block=5)
+        assert type(provider).captured["endblock"] == 999_999_999
+
+
+class TestSuiTransactionTransfersAreIndexed:
+    """`asset_transfers` numbered its transfers and `get_transaction` did not,
+    so two methods in one provider disagreed about what `index` means. Not
+    currently a loss --- the store's identity key includes `asset` --- but that
+    is the store covering for the provider."""
+
+    def _tx(self):
+        from chainscope.chains.sui import SUI_MAINNET
+        from chainscope.providers.sui import SuiProvider
+
+        sender, recipient = "0x" + "a" * 64, "0x" + "b" * 64
+        body = {
+            "digest": "0x" + "1" * 64,
+            "checkpoint": "42",
+            "timestampMs": "1700000000000",
+            "transaction": {"data": {"sender": sender}},
+            "effects": {
+                "status": {"status": "success"},
+                "gasUsed": {
+                    "computationCost": "0",
+                    "storageCost": "0",
+                    "storageRebate": "0",
+                },
+            },
+            "balanceChanges": [
+                {
+                    "owner": {"AddressOwner": sender},
+                    "coinType": "0x2::sui::SUI",
+                    "amount": "-1000",
+                },
+                {
+                    "owner": {"AddressOwner": recipient},
+                    "coinType": "0x2::sui::SUI",
+                    "amount": "1000",
+                },
+                {
+                    "owner": {"AddressOwner": sender},
+                    "coinType": "0x9::usdc::USDC",
+                    "amount": "-1000",
+                },
+                {
+                    "owner": {"AddressOwner": recipient},
+                    "coinType": "0x9::usdc::USDC",
+                    "amount": "1000",
+                },
+            ],
+        }
+
+        class Stub(SuiProvider):
+            def _rpc(self, *a, **k):
+                return body
+
+        return Stub().get_transaction(SUI_MAINNET, "0x" + "1" * 64)
+
+    def test_each_transfer_gets_a_distinct_index(self):
+        indices = [t.index for t in self._tx().transfers]
+        assert indices == sorted(indices)
+        assert len(set(indices)) == len(indices)
+
+    def test_both_movements_survive(self):
+        assert len(self._tx().transfers) == 2
