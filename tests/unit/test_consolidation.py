@@ -210,12 +210,20 @@ class TestReproducibility:
         res = ConsolidationAnalyzer().run(
             ctx_for(router), address=SEED, min_fan_in=3, start_block=100
         )
-        assert res.params == {
-            "address": SEED,
-            "min_fan_in": 3,
-            "start_block": 100,
-            "end_block": "latest",
-        }
+        # A superset: `_result` also records the chain the run used, which a
+        # result needs to be reproducible. Asserting equality here would make
+        # every future addition to that provenance a test failure, which is the
+        # wrong incentive for the thing being encouraged.
+        assert (
+            res.params.items()
+            >= {
+                "address": SEED,
+                "min_fan_in": 3,
+                "start_block": 100,
+                "end_block": "latest",
+            }.items()
+        )
+        assert res.params["chain"] == "eip155:1"
 
     def test_result_serialises(self):
         _, router = build(4)

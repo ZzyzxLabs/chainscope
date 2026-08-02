@@ -190,14 +190,26 @@ file access, and chained statements are refused.
 
 ```bash
 chainscope sql --schema                     # the columns, and the traps in them
-chainscope sql "SELECT symbol, SUM(amount_raw) FROM transfers GROUP BY symbol"
+chainscope sql "SELECT asset, symbol, decimals, SUM(amount_raw)
+                FROM transfers GROUP BY asset, symbol, decimals"
 ```
+
+**Group by `asset`, not `symbol`.** A symbol is a label anybody can reuse, and
+a scam token calling itself USDC is routine. Measured: grouping by symbol
+summed 5,000 real USDC (6 decimals) with 1,000 impostor tokens (18 decimals)
+into one number denominated in nothing. `asset` is the contract, which is the
+identity; carry `decimals` with it, because a total is meaningless without the
+scale it is in.
 
 ```python
 from chainscope.store.analytics import AnalyticsView
 view = AnalyticsView(":memory:")
 view.build_from_sqlite(".chainscope/store.db")
-view.sql("SELECT symbol, SUM(amount_raw) FROM transfers WHERE sender = ? GROUP BY symbol", [addr])
+view.sql(
+    "SELECT asset, symbol, decimals, SUM(amount_raw) FROM transfers "
+    "WHERE sender = ? GROUP BY asset, symbol, decimals",
+    [addr],
+)
 ```
 
 Read `chainscope sql --schema` before writing a query. It documents what will

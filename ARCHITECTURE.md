@@ -310,9 +310,18 @@ That constraint pays for itself three times:
 - A corrupted or half-written store cannot silently poison an analysis, because
   it can be regenerated and compared.
 - It extends §4.7 from a single conclusion to a whole database. Ship a bundle
-  and the recipient rebuilds a byte-identical store. As far as we know nothing
-  else in this space offers that, and it follows directly from keeping the two
-  layers separate.
+  and the recipient rebuilds a **query-equivalent** store: the same rows, so
+  the same answers. As far as we know nothing else in this space offers that,
+  and it follows directly from keeping the two layers separate.
+
+  Not byte-identical, and the difference is worth stating because the stronger
+  claim was here and is false. Measured: two stores built from the same
+  transfers in the same order hash the same, and the same transfers ingested in
+  a different order do not --- rowids follow insertion, and nothing pins the
+  order a bundle replays its cached responses in. The property that matters is
+  the one the README claims, byte-identical *output*, and that holds because
+  analyzers sort. A promise about the file would be a promise about SQLite's
+  page layout, which is not what anybody is checking.
 
 It also sets the direction of a rule that is otherwise easy to get backwards:
 **the store may be derived from the cache; the cache may never be derived from

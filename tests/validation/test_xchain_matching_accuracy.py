@@ -27,6 +27,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import ClassVar
 
 import pytest
 
@@ -36,6 +37,7 @@ from chainscope.analysis.xchain import (
     PayoutCandidate,
     calibrate,
 )
+from chainscope.core.chainid import ETHEREUM
 from chainscope.core.units import Amount
 from chainscope.pricing.base import Quote
 
@@ -73,6 +75,17 @@ class World:
 
 
 class _Ctx:
+    """A stand-in for `Context`, carrying what `_result` actually reads.
+
+    It had only `evidence()`. `_result` now also records the chain and the
+    limits in `params` --- so a result can say which chain it ran on and what
+    cap truncated it --- and a double narrower than the thing it stands in for
+    fails on the first change to that thing.
+    """
+
+    chain = ETHEREUM
+    limits: ClassVar[dict[str, int]] = {}
+
     def evidence(self) -> list[object]:
         return []
 

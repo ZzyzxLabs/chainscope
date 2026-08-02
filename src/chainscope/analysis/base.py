@@ -127,6 +127,26 @@ class Analyzer(ABC):
         params: dict[str, Any] | None = None,
         started: datetime | None = None,
     ) -> Result:
+        # The context's own inputs belong in `params` alongside the analyzer's.
+        # A result recorded without them cannot say which chain it ran on or
+        # what limit truncated it --- and `max_nodes` is exactly the sort of cap
+        # that turns "funds reached three exchanges" into "where the search
+        # stopped". The caller's params win on a clash, since an analyzer that
+        # deliberately records something under one of these names meant it.
+        # Read defensively: this is a base helper and the information is
+        # additive provenance, so a context that cannot supply it should record
+        # nothing rather than fail. The validation suites drive analyzers with
+        # deliberately minimal stand-ins --- one method each --- and making them
+        # implement the whole of `Context` to gain a params key would trade a
+        # real testing property for a bookkeeping one.
+        merged: dict[str, Any] = {}
+        chain = getattr(ctx, "chain", None)
+        if chain is not None:
+            merged["chain"] = str(chain)
+        limits = getattr(ctx, "limits", None)
+        if limits:
+            merged["limits"] = dict(limits)
+        merged.update(params or {})
         return Result(
             analyzer=self.name,
             version=self.version,
@@ -134,7 +154,7 @@ class Analyzer(ABC):
             hypotheses=hypotheses,
             evidence=ctx.evidence(),
             warnings=warnings,
-            params=params or {},
+            params=merged,
             started_at=started,
             finished_at=datetime.now(timezone.utc),
         )

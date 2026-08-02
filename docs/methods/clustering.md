@@ -65,10 +65,16 @@ as "the wallet" understates holdings, sometimes by orders of magnitude.
 | Clean expansion, no CoinJoins skipped | "These N addresses share a controller" |
 | CoinJoins were skipped | Same, plus: coverage is incomplete by design |
 | Truncated | "At least N addresses" — never "N addresses" |
-| Cluster > 10,000 | "A custodial service"; do not attribute to an individual |
+| Cluster > 10,000 | "Consistent with custodial infrastructure" — a lead, not a finding; never attribute to an individual |
 
 Never write "X owns these addresses" from clustering alone. The supportable
 sentence is about shared control, not identity.
+
+And the last row is a *lead*. Size is consistent with an exchange and also with
+a widely-used contract, a CoinJoin coordinator, or a heuristic that over-merged
+--- the same over-merge this page spends its length warning about. "A custodial
+service" is a category, stated flatly, from a count; the analyzer raises
+`IMPORTANT` there so somebody looks, not so somebody concludes.
 
 ## References
 
