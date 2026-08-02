@@ -314,9 +314,21 @@ class TestCli:
         assert "etherscan" in out
         assert "sui" in out
 
-    def test_label_without_sources_is_an_error(self, capsys):
+    def test_label_without_sources_is_an_error(self, tmp_path, monkeypatch, capsys):
+        """Non-zero, and it says which of the two nothings it hit.
+
+        The message changed when `label` learnt to read the case store: "no
+        sources configured" was true of external sources and said nothing about
+        the store, which was the actual problem --- a user's own label sat there
+        unfound. The assertion moved to the property rather than the wording.
+        """
+        monkeypatch.chdir(tmp_path)
         assert main(["label", ADDR]) == 2
-        assert "no sources configured" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "nothing to search" in out
+        # Names both places it looked, so the fix is obvious from the message.
+        assert "store" in out
+        assert "--sanctions" in out
 
     def test_label_exit_code_flags_an_unreliable_lookup(self, tmp_path, capsys):
         """Non-zero on 'could not check', so a pipeline does not read it as a pass."""
