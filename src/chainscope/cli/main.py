@@ -25,6 +25,7 @@ from .commands import (
     label,
     sql,
     tag,
+    watch,
 )
 
 __all__ = ["main"]
@@ -37,6 +38,7 @@ _COMMANDS = {
     "graph": graph,
     "dashboard": dashboard,
     "sql": sql,
+    "watch": watch,
     "doctor": doctor,
     "bundle": bundle,
 }
