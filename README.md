@@ -1,32 +1,56 @@
 # chainscope
 
-**Open-source blockchain forensics — everything you can do with public data.**
+**A framework for building blockchain analysis — data access, labelling,
+storage, filtering, and alerting, with the reproducibility discipline already
+wired in.**
 
 [繁體中文](README.zh-TW.md)
 
-> ⚠️ **Alpha.** APIs will change during `0.x`. See [ARCHITECTURE.md](ARCHITECTURE.md)
-> for the design and [CHANGELOG.md](CHANGELOG.md) for what has landed.
+> ⚠️ **Alpha, and not yet end-to-end.** The spine is built and tested, but no
+> provider can enumerate address history yet, so the bundled analyzers cannot
+> run against a live chain from a clean install. That gap is stated here rather
+> than discovered an hour in — see [Status](#status).
 
 ---
 
-## Why
+## What this is
 
-Commercial blockchain analytics (Chainalysis, Elliptic, TRM) rest on a moat we
-cannot and should not try to replicate: a decade of proprietary attribution data
-built from subpoenas, exchange partnerships, and undercover purchases.
+Not a finished forensics product. A **spine you build your own on top of**.
 
-But three of their four core capabilities need no proprietary data at all:
+You bring the data sources, the labels, and the questions specific to your
+domain. chainscope supplies the parts that are tedious to write, easy to get
+subtly wrong, and near-identical in every project of this kind:
+
+| You need to | You get |
+|---|---|
+| Pull chain data | Capability-routed providers with fallback, caching, throttling, audit |
+| Normalise it | One `Transfer` / `Address` / `Amount` model across EVM, UTXO, Solana, Tron |
+| Label addresses | Multi-source resolver that merges conflicts without hiding them |
+| Store and query it | Rebuildable SQLite store with typed filters |
+| Analyse it | An `Analyzer` protocol; four techniques ship as working references |
+| Alert on it | Watches as pure functions of a block range — no daemon to run |
+| Report it | Terminal, Markdown, JSON — all preserving confidence |
+| Prove it | Case bundles anyone can replay offline |
+
+Every one of those is a plugin point, and **your extension lives in your own
+repository** — adding a chain, provider, store backend, analyzer, or label
+source should take one file and one test cassette, with no fork of this one.
+
+### Where the ceiling is
+
+Commercial platforms (Chainalysis, Elliptic, TRM) rest on a decade of
+proprietary attribution built from subpoenas, exchange partnerships, and
+undercover purchases. That corpus cannot be reproduced from public data, and
+pretending otherwise would be the most harmful thing this project could do.
+
+Their other three capabilities need no proprietary data at all:
 
 | Capability | Reproducible from public data? |
 |---|---|
-| Cross-chain matching | ✅ It is a search problem: time × amount × behaviour |
+| Cross-chain matching | ✅ A search problem: time × amount × behaviour |
 | Clustering & consolidation inference | ✅ Published algorithms |
 | Fund-flow tracing | ✅ Graph traversal |
 | Entity attribution | ⚠️ Only from public labels plus documented heuristics |
-
-chainscope implements the reproducible parts, honestly, for the people who do
-not have a six-figure license: journalists, researchers, small enforcement
-teams, hacked protocols, and CTF players.
 
 ## What this actually improves
 
@@ -120,7 +144,7 @@ enforced by the compiler instead of by whoever happens to be reading.
 
 ```bash
 pip install chainscope            # core
-pip install "chainscope[all]"     # + EVM, Bitcoin, Solana, rich output
+pip install "chainscope[all]"     # + EVM, Bitcoin, Solana, Tron, rich output
 ```
 
 ## Status
@@ -137,13 +161,19 @@ v0.1 is being built. Implemented so far:
 - [x] `analysis` — consolidation, cross-chain matching, peel chains, clustering
 - [x] `cli` and renderers — terminal, Markdown, JSON
 - [x] `case` — replayable bundles
+- [x] `store` — entity store with typed filtering, rebuildable from the cache
+      ([§4.8](ARCHITECTURE.md))
 
 Designed, not yet built. The reasoning is written down first on purpose: these
 are the decisions that are expensive to reverse once anyone depends on them.
 
-- [ ] `store` — entity store, rebuildable from the cache ([§4.8](ARCHITECTURE.md))
-- [ ] explorer-class provider — `ADDRESS_HISTORY` has no implementation yet, so
-      anything that lists an address's transactions is currently unreachable
+- [ ] **explorer-class provider** — `ADDRESS_HISTORY` has no implementation, so
+      anything that lists an address's transactions is unreachable and the
+      bundled analyzers cannot run end-to-end. This is the next thing being
+      built; until it lands they are reference implementations, not tools
+- [ ] recorded cassettes — the provider abstractions have not yet met a real
+      API response, so their shapes are unvalidated
+- [ ] fetchers for attribution sources — today they read local files you supply
 - [ ] `watch` — `evaluate()` over a block range ([§4.10](ARCHITECTURE.md))
 - [ ] plugin protocol versioning and stability tiers ([§4.11](ARCHITECTURE.md))
 - [ ] `analyze --bundle` — one-command replay; today it is `Bundle.replay_cache()`
@@ -153,9 +183,11 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and roadmap.
 
 ## Extending
 
-Adding a chain, a data provider, or an attribution source should take **one file
-and one test cassette**. That is the benchmark this architecture is measured
-against. Register via entry points; no core changes:
+Adding a chain, provider, store backend, analyzer, or attribution source should
+take **one file and one test cassette**, and you should never need to fork this
+repository. That is the benchmark the architecture is measured against.
+
+Register via entry points; no core changes:
 
 ```toml
 [project.entry-points."chainscope.analyzers"]
