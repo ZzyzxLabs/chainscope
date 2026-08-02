@@ -57,16 +57,21 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
+from ..core.result import Finding, Result, Severity
+from ..providers.base import Capability
+from .base import Analyzer, Context
 
 __all__ = [
     "MIN_ESCALATION_GROWTH",
     "MIN_ESCALATION_STEPS",
     "MIN_TEST_RATIO",
     "ProbeSequence",
+    "ProbingAnalyzer",
     "detect_probes",
 ]
 
@@ -321,3 +326,89 @@ def _longest_increasing_prefix(amounts: list[int]) -> list[int]:
             current = []
         current.append(amount)
     return current if len(current) > len(best) else best
+
+
+class ProbingAnalyzer(Analyzer):
+    """Find probing sequences in an address's outbound transfers."""
+
+    name = "probing"
+    version = "1.0"
+    description = "Find test-then-commit and escalating transfer sequences"
+
+    def applicable(self, ctx: Context) -> bool:
+        return bool(ctx.router.candidates(ctx.chain, Capability.ADDRESS_HISTORY))
+
+    def run(
+        self,
+        ctx: Context,
+        *,
+        address: str = "",
+        min_steps: int = MIN_ESCALATION_STEPS,
+        min_growth: float = MIN_ESCALATION_GROWTH,
+        start_block: int = 0,
+        end_block: int | str = "latest",
+        **_: Any,
+    ) -> Result:
+        started = datetime.now(timezone.utc)
+        if not address:
+            raise ValueError("probing detection needs an `address` to examine")
+
+        seed = address.lower()
+        per_node = ctx.limit("per_node", 1000)
+        history = ctx.router.dispatch(
+            ctx.chain,
+            Capability.ADDRESS_HISTORY,
+            lambda p: p.address_history(
+                ctx.chain, seed, start_block=start_block, end_block=end_block, limit=per_node
+            ),
+        )
+
+        warnings: list[str] = []
+        if len(history) >= per_node:
+            # A probe is a *sequence*, so a window that clips its start turns an
+            # escalation into a shorter run and can drop it below the floor
+            # entirely. Worth saying louder than the usual truncation note.
+            warnings.append(
+                f"history filled the {per_node}-row limit, so any sequence "
+                f"beginning before this window is cut short and may fall below "
+                f"the {min_steps}-step floor without appearing here at all"
+            )
+
+        # Failed transactions and zero-value calls dropped: a reverted transfer
+        # is not a step in a test sequence.
+        outbound = [
+            t
+            for tx in history
+            for t in tx.value_transfers()
+            if t.sender and t.sender.key.lower() == seed
+        ]
+        probes = detect_probes(outbound, min_steps=min_steps, min_growth=min_growth)
+
+        findings = [
+            Finding(
+                title=(
+                    f"{p.steps}-step escalation to {p.destination} ({p.growth:,.0f}x)"
+                    if p.kind == "escalation"
+                    else f"test payment then {p.growth:,.0f}x commit to {p.destination}"
+                ),
+                severity=Severity.NOTABLE,
+                detail=p.summary(),
+                data=p.to_dict(),
+            )
+            for p in probes
+        ]
+        if not probes and not warnings:
+            warnings.append(
+                f"no probing sequence found in {len(outbound)} outbound transfers. "
+                f"That is the common result and is not evidence of its absence: a "
+                f"probe split across two addresses, or paced beyond this window, "
+                f"leaves no run to find."
+            )
+
+        return self._result(
+            ctx,
+            findings=tuple(findings),
+            warnings=tuple(warnings),
+            params={"address": seed, "min_steps": min_steps, "min_growth": min_growth},
+            started=started,
+        )

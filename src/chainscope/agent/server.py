@@ -37,6 +37,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..analysis.probing import (
+    MIN_ESCALATION_GROWTH,
+    MIN_ESCALATION_STEPS,
+    detect_probes,
+)
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..store.base import Query
@@ -430,6 +435,58 @@ def build_server(config: ServerConfig) -> MCPServer:
             "chains": stats.chains,
             "rebuildable_from_cache": stats.rebuildable,
         }
+
+    @server.tool(
+        description=(
+            "Find probing sequences in an address's outbound transfers from the "
+            "store: a small test payment before a much larger one, or a run of "
+            "strictly increasing amounts to one destination. Both mark somebody "
+            "verifying a route before trusting it, which usually means the first "
+            "use of a service. Reads the store only --- no network. Returns an "
+            "empty list far more often than not, and that is not evidence the "
+            "behaviour is absent."
+        )
+    )
+    def find_probes(
+        address: str,
+        chain: str | None = None,
+        min_steps: int = MIN_ESCALATION_STEPS,
+        min_growth: float = MIN_ESCALATION_GROWTH,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        if not address.strip():
+            raise AgentError("address is required")
+        capped = _cap(limit, config.max_rows)
+        store = _store()
+        try:
+            rows = list(
+                store.transfers(
+                    Query(chain=_chain(chain), sender=address.strip().lower(), limit=capped)
+                )
+            )
+        finally:
+            store.close()
+
+        probes = detect_probes(rows, min_steps=min_steps, min_growth=min_growth)
+        result: dict[str, Any] = {
+            "address": address.strip().lower(),
+            "transfers_examined": len(rows),
+            "probes": [p.to_dict() for p in probes],
+        }
+        if len(rows) >= capped:
+            # A probe is a sequence, so a clipped window shortens runs and can
+            # push a real one below the floor without anything looking wrong.
+            result["truncated"] = (
+                f"only the first {capped} transfers were read; a sequence "
+                f"beginning earlier is cut short and may not appear at all"
+            )
+        if not probes:
+            result["note"] = (
+                "No probing sequence found. This is the common result and is not "
+                "evidence of absence: a probe split across two addresses, or "
+                "paced beyond what the store holds, leaves no run to find."
+            )
+        return result
 
     # ------------------------------------------------------------------ writing
 
