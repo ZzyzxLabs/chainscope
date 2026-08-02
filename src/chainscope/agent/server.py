@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -80,6 +81,10 @@ class ServerConfig:
     store: Path = Path(".chainscope/store.db")
     view: Path | None = None
     """DuckDB analytical view. Built on demand from the store if absent."""
+
+    case: Path = Path(".chainscope/case.db")
+    """The narrative and the correspondence ledger. Separate from the store
+    because neither is rebuildable from the cache."""
 
     writable: bool = False
     """Whether the agent may record labels. Off by default."""
@@ -616,6 +621,79 @@ def build_server(config: ServerConfig) -> MCPServer:
             )
         return out
 
+    @server.tool(
+        description=(
+            "What this case still does not know: unanswered questions, requests "
+            "sent to exchanges that have had no reply, and the reasoning recorded "
+            "so far. Read this before summarising a case --- a record listing "
+            "only conclusions reads as finished no matter how much of it is not."
+        )
+    )
+    def case_record(limit: int = 50) -> dict[str, Any]:
+        from ..case.correspondence import Ledger
+        from ..case.log import CaseLog
+
+        capped = _cap(limit, config.max_rows)
+        log = CaseLog(config.case)
+        try:
+            notes = log.notes()
+            open_questions = log.open_questions()
+            replaced = log.superseded()
+        finally:
+            log.close()
+
+        ledger = Ledger(config.case)
+        try:
+            outstanding = ledger.requests(open_only=True)
+        finally:
+            ledger.close()
+
+        now = datetime.now(timezone.utc)
+        out: dict[str, Any] = {
+            "open_questions": [
+                {"id": n.id, "asked": n.body, "by": n.analyst} for n in open_questions
+            ],
+            "awaiting_reply": [
+                {
+                    "id": r.id,
+                    "counterparty": r.counterparty,
+                    "asked_for": r.kind.value,
+                    "days_open": r.age_days(now),
+                    "overdue": r.overdue_at(now),
+                    "about": r.subject or None,
+                }
+                for r in outstanding
+            ],
+            "notes": [
+                {
+                    "id": n.id,
+                    "kind": n.kind.value,
+                    "body": n.body,
+                    "by": n.analyst,
+                    "at": n.at.isoformat(),
+                    "about": n.subject or None,
+                    # Kept and marked rather than filtered: what somebody
+                    # believed and when it changed is the record.
+                    "superseded": n.id in replaced,
+                }
+                for n in notes[-capped:]
+            ],
+        }
+        if not notes and not outstanding:
+            out["note"] = (
+                "Nothing is recorded for this case. That means nobody has written "
+                "anything down, not that there is nothing outstanding."
+            )
+        if outstanding:
+            out["reading_this"] = (
+                "A request with no reply is not a request that was refused. Only a "
+                "refusal is a decision somebody made, and only a refusal can be "
+                "escalated against --- do not report silence as a denial."
+            )
+        if len(notes) > capped:
+            out["truncated"] = f"the most recent {capped} of {len(notes)} notes"
+        return out
+
     # ------------------------------------------------------------------ writing
 
     if config.writable:
@@ -668,6 +746,54 @@ def build_server(config: ServerConfig) -> MCPServer:
                 ),
             }
 
+        @server.tool(
+            description=(
+                "Write down reasoning about this case: an observation, a "
+                "decision and why it was taken, or a question nothing has "
+                "answered yet. Append-only --- to withdraw an earlier note, "
+                "record a correction naming its id rather than expecting an "
+                "edit. Authorship is recorded as this agent, so a human can "
+                "later tell a model's reasoning from their own."
+            )
+        )
+        def record_note(
+            kind: str,
+            body: str,
+            about: str = "",
+            supersedes: int | None = None,
+        ) -> dict[str, Any]:
+            from ..case.log import CaseLog, Note, NoteKind
+
+            try:
+                note = Note(
+                    at=datetime.now(timezone.utc),
+                    analyst=f"{AGENT_SOURCE_PREFIX}{config.agent_name}",
+                    # Not "env"/"git"/"os": none of those is what happened, and
+                    # a report has to be able to show that a model wrote this.
+                    identified_by="agent",
+                    kind=NoteKind(kind.strip().lower()),
+                    body=body,
+                    subject=about,
+                    supersedes=supersedes,
+                )
+            except ValueError as exc:
+                raise AgentError(str(exc)) from exc
+
+            log = CaseLog(config.case)
+            try:
+                note_id = log.add(note)
+            except ValueError as exc:
+                raise AgentError(str(exc)) from exc
+            finally:
+                log.close()
+            return {
+                "recorded": {"id": note_id, "kind": note.kind.value},
+                "note": (
+                    "Written as an agent-authored note. It sits in the same "
+                    "narrative as a person's and is marked as this agent's."
+                ),
+            }
+
     return server
 
 
@@ -690,6 +816,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--store", type=Path, default=Path(".chainscope/store.db"))
     parser.add_argument("--view", type=Path, default=None, help="DuckDB analytical view")
     parser.add_argument(
+        "--case",
+        type=Path,
+        default=Path(".chainscope/case.db"),
+        help="the case narrative and correspondence ledger",
+    )
+    parser.add_argument(
         "--writable",
         action="store_true",
         help="allow the agent to record labels. Off by default; agent-written "
@@ -705,6 +837,7 @@ def main(argv: list[str] | None = None) -> int:
         ServerConfig(
             store=args.store,
             view=args.view,
+            case=args.case,
             writable=args.writable,
             agent_name=args.agent_name,
             max_rows=args.max_rows,
@@ -718,17 +851,30 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 
 
+#: Tools this server exposes. Hand-kept, and checked against the source by
+#: `tests/unit/test_agent_tools_are_listed.py` --- the list went three tools
+#: stale unnoticed, which is the failure this project keeps finding: a
+#: capability that exists and no surface admits to.
+#:
+#: It cannot be derived at runtime. `doctor` calls this to say what an agent
+#: would get, and the MCP SDK is an optional extra --- building a server to ask
+#: it would make that answer unavailable on exactly the install that needs it.
+TOOLS = (
+    "resolve_address",
+    "flows",
+    "search_transfers",
+    "sql",
+    "export_graph",
+    "store_stats",
+    "find_probes",
+    "trace_stolen_funds",
+    "trace_origins_of",
+    "case_record",
+    "label_address (only with --writable)",
+    "record_note (only with --writable)",
+)
+
+
 def describe_tools() -> str:
     """The tool list as text, for documentation and for `chainscope doctor`."""
-    return json.dumps(
-        [
-            "resolve_address",
-            "flows",
-            "search_transfers",
-            "sql",
-            "export_graph",
-            "store_stats",
-            "label_address (only with --writable)",
-        ],
-        indent=2,
-    )
+    return json.dumps(list(TOOLS), indent=2)

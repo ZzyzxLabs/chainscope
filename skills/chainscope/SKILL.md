@@ -1,6 +1,6 @@
 ---
 name: chainscope
-description: Blockchain forensics — trace funds across chains, label addresses with provenance, query a local store with SQL, export fund-flow graphs, and evaluate watch rules. Use when investigating on-chain activity, tracing stolen funds, attributing addresses to services, or answering questions about transfers, balances, and counterparties.
+description: Blockchain forensics — trace funds across chains, label addresses with provenance, query a local store with SQL, export fund-flow graphs, run watch rules, and keep a case record with narrative, per-analyst authorship, and exchange correspondence. Use when investigating on-chain activity, tracing stolen funds, attributing addresses to services, writing up or defending a case, or answering questions about transfers, balances, and counterparties.
 ---
 
 # chainscope
@@ -37,6 +37,21 @@ double is exact only to ~9e15), so:
   `decimals`, never by an assumed 18.
 
 ## Common tasks
+
+### Start here when you have one address and no plan
+
+```bash
+chainscope investigate 0xSUSPECT -c eth
+```
+
+Runs what applies, says what came back, and **names the next command with its
+arguments filled in**. Use it before reaching for a specific analyzer: nine
+analyzers each need parameters somebody has to already know, and this is the
+step that produces them.
+
+It exits non-zero when nothing was found, so silence is not readable as a clean
+bill of health. An empty step means *this window held no evidence of that
+pattern*, never *the pattern is absent*.
 
 ### Look up what is known about an address
 
@@ -152,12 +167,20 @@ rationale)`.
 `amount_raw` is a 128-bit integer, so `SUM()` is exact. Reads only — writes,
 file access, and chained statements are refused.
 
+```bash
+chainscope sql --schema                     # the columns, and the traps in them
+chainscope sql "SELECT symbol, SUM(amount_raw) FROM transfers GROUP BY symbol"
+```
+
 ```python
 from chainscope.store.analytics import AnalyticsView
 view = AnalyticsView(":memory:")
 view.build_from_sqlite(".chainscope/store.db")
 view.sql("SELECT symbol, SUM(amount_raw) FROM transfers WHERE sender = ? GROUP BY symbol", [addr])
 ```
+
+Read `chainscope sql --schema` before writing a query. It documents what will
+mislead you, not only what the columns are called.
 
 ### Evaluate a watch rule
 
@@ -173,6 +196,95 @@ events = evaluate(w, store, since=18_000_000, until=18_100_000)
 Pure over a block range — no scheduler, no clock. The same range always gives
 the same events, which is what makes "why did this fire?" answerable later.
 
+To run rules from a file rather than from Python:
+
+```bash
+chainscope watch rules.json --every 300      # loop; omit --every to run once
+```
+
+**A watch that could not run is not a watch that found nothing.** When a rule
+fails to evaluate, its saved position is *not* advanced, so the gap does not
+silently become a period nobody watched. There is no delivery: events go to
+stdout and an exit code, and cron or a person decides what happens next.
+
+### Refresh the sanctions snapshot
+
+```bash
+chainscope sanctions --check      # what would change, writes nothing
+chainscope sanctions             # fetch OFAC SDN and write the snapshot
+```
+
+Screening reads the **snapshot**, not the network, so a report can say which
+snapshot it was screened against. The diff is the output: a removal is reported
+as a *delisting*, which means the opposite of a deletion for an address sitting
+in an open case. If parsing yields zero addresses it refuses to overwrite —
+that means the format moved, not that sanctions were lifted.
+
+### Keep the case record
+
+The narrative, the authorship, and the clock. All of it lives in `case.db`,
+which is **separate from the store on purpose**: the store is rebuildable from
+the cache and safe to delete, and nothing a person wrote is either of those.
+
+```bash
+export CHAINSCOPE_ANALYST="you@example.com"   # who is asserting things
+
+chainscope note observation "0xabc funds three of the four drainers"
+chainscope note decision    "not tracing past the CEX deposit; terminal"
+chainscope note question    "who paid the gas for the first probe?"
+chainscope note correction  "the 3rd hop is a router" --supersedes 4
+chainscope note --open                        # what nobody has answered
+```
+
+Four kinds, not free text, and **append-only**: a note that was wrong is
+superseded rather than edited, and both stay readable. When summarising a case,
+read `chainscope note --open` — a case record listing only conclusions reads as
+finished no matter how much of it is not.
+
+Set `CHAINSCOPE_ANALYST` before writing anything. Without it the tool falls back
+to git's e-mail and then the OS account, and an OS account is **not** authorship
+— claims made that way are recorded with *no* analyst rather than signed with a
+machine login.
+
+```bash
+chainscope request send "Binance" -k freeze --about 0xabc \
+    --sent 2026-07-02 --due 2026-07-09 --ref TICKET-9912
+chainscope request update 3 answered --note "12.4 ETH held"
+chainscope request list --open
+```
+
+The clock on what was asked of an exchange. **Silence is not refusal** — a
+request nobody answered and one somebody declined are different facts, and only
+the second can be escalated against. Never report an unanswered request as a
+denial. Overdue is computed from the deadline, so it is true the moment it is
+true.
+
+```bash
+chainscope attest                 # hash the cached responses a case rests on
+chainscope attest --verify        # exits 1 if any of them moved
+chainscope report --title "Case 2026-114" --attach flow.html --out case.html
+```
+
+`attest` is a **manifest, not a signature**: it catches drift and accident, not
+somebody with write access to the case directory. Say that if you cite it.
+
+`report` puts the narrative, the claims, the coverage and the provenance in one
+file. Two things in it to preserve when you summarise: open questions and
+outstanding requests print **before** the findings, and where two sources of
+comparable strength disagree both are shown with a name against each and
+**neither is picked**. Do not pick one for the reader.
+
+### Hand the whole case to somebody else
+
+```bash
+chainscope bundle theft.chainscope      # what is inside, and whether it replays
+```
+
+A bundle carries the results *and every raw provider response that produced
+them*, so a reviewer reruns the analysis offline with no API keys and gets
+byte-identical output. A bundle you received is untrusted input — it was
+produced by somebody else.
+
 ### Serve to another agent over MCP
 
 ```bash
@@ -181,8 +293,18 @@ chainscope-mcp --writable --agent-name my-agent          # may also label
 ```
 
 Writing is off by default. When on, labels are recorded as
-`agent:<name>` with method `inference`, so a human can later tell a model's
-suggestion from their own judgement.
+`agent:<name>` with method `inference`, and notes as `agent:<name>` with an
+identity source of `agent` — so a human can later tell a model's suggestion
+from their own judgement.
+
+Twelve tools. `case_record` is the one to call before summarising anything: it
+returns the open questions and the requests still waiting on a reply, which is
+what a case record made only of conclusions leaves out.
+
+The agent can write notes and labels. It deliberately **cannot** record that a
+freeze request was sent — that is an action taken outside the tool, by a person,
+and a model asserting it happened would put a fact into the case record that
+nothing backs.
 
 ## Setup
 

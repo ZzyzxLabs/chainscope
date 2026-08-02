@@ -383,3 +383,142 @@ class TestSqlIsBoundedAtTheEngine:
     def test_a_short_result_is_not_marked_truncated(self, server):
         got = _call(server, "sql", {"query": "SELECT * FROM transfers", "limit": 100})
         assert got["truncated"] is False
+
+
+@pytest.fixture
+def case_path(tmp_path):
+    """A case with an open question and an overdue freeze request."""
+    from datetime import datetime, timedelta, timezone
+
+    from chainscope.case.correspondence import Ledger, Request, RequestKind
+    from chainscope.case.log import CaseLog, Note, NoteKind
+
+    path = tmp_path / "case.db"
+    now = datetime.now(timezone.utc)
+
+    log = CaseLog(path)
+    log.add(
+        Note(
+            at=now,
+            analyst="alice@lab",
+            identified_by="env",
+            kind=NoteKind.QUESTION,
+            body="who funded the gas on the first payout?",
+        )
+    )
+    log.add(
+        Note(
+            at=now,
+            analyst="alice@lab",
+            identified_by="env",
+            kind=NoteKind.OBSERVATION,
+            body="eleven fresh addresses",
+        )
+    )
+    log.close()
+
+    ledger = Ledger(path)
+    ledger.send(
+        Request(
+            counterparty="Binance",
+            kind=RequestKind.FREEZE,
+            sent_at=now - timedelta(days=30),
+            due_at=now - timedelta(days=23),
+            analyst="alice@lab",
+            identified_by="env",
+        )
+    )
+    ledger.close()
+    return path
+
+
+def _server(store_path, case_path, **kw):
+    from chainscope.agent.server import ServerConfig, build_server
+
+    return build_server(ServerConfig(store=store_path, case=case_path, **kw))
+
+
+class TestCaseRecord:
+    def test_open_questions_and_unanswered_requests_come_back_together(
+        self, store_path, case_path
+    ):
+        # An agent asked to summarise a case has to see both, or it will report
+        # a case as finished when it is waiting on an exchange.
+        out = _call(_server(store_path, case_path), "case_record", {})
+        assert [q["asked"] for q in out["open_questions"]] == [
+            "who funded the gas on the first payout?"
+        ]
+        assert out["awaiting_reply"][0]["counterparty"] == "Binance"
+        assert out["awaiting_reply"][0]["overdue"] is True
+
+    def test_it_warns_against_reading_silence_as_refusal(self, store_path, case_path):
+        out = _call(_server(store_path, case_path), "case_record", {})
+        assert "not a request that was refused" in out["reading_this"]
+
+    def test_an_empty_case_says_nobody_wrote_anything(self, store_path, tmp_path):
+        out = _call(_server(store_path, tmp_path / "empty.db"), "case_record", {})
+        assert "nobody has written anything down" in out["note"]
+
+    def test_superseded_notes_are_marked_not_dropped(self, store_path, case_path):
+        from datetime import datetime, timezone
+
+        from chainscope.case.log import CaseLog, Note, NoteKind
+
+        log = CaseLog(case_path)
+        log.add(
+            Note(
+                at=datetime.now(timezone.utc),
+                analyst="alice@lab",
+                identified_by="env",
+                kind=NoteKind.CORRECTION,
+                body="nine, not eleven",
+                supersedes=2,
+            )
+        )
+        log.close()
+
+        out = _call(_server(store_path, case_path), "case_record", {})
+        by_id = {n["id"]: n for n in out["notes"]}
+        assert by_id[2]["superseded"] is True
+        assert by_id[2]["body"] == "eleven fresh addresses"
+
+
+class TestRecordNote:
+    def test_it_is_off_without_writable(self, store_path, case_path):
+        message = _raises(
+            _server(store_path, case_path),
+            "record_note",
+            {"kind": "observation", "body": "x"},
+        )
+        assert "record_note" in message or "Unknown tool" in message
+
+    def test_an_agent_note_is_marked_as_one(self, store_path, case_path):
+        # Same guarantee as label_address: a human reading the narrative later
+        # must be able to tell a model's reasoning from their own.
+        from chainscope.case.log import CaseLog
+
+        server = _server(store_path, case_path, writable=True, agent_name="demo")
+        _call(
+            server,
+            "record_note",
+            {"kind": "decision", "body": "stopping at the CEX deposit"},
+        )
+        log = CaseLog(case_path)
+        try:
+            written = [n for n in log.notes() if n.body == "stopping at the CEX deposit"]
+        finally:
+            log.close()
+        assert written[0].analyst == "agent:demo"
+        assert written[0].identified_by == "agent"
+
+    def test_a_correction_without_a_target_is_refused(self, store_path, case_path):
+        server = _server(store_path, case_path, writable=True)
+        message = _raises(
+            server, "record_note", {"kind": "correction", "body": "that was wrong"}
+        )
+        assert "name the note it replaces" in message
+
+    def test_an_unknown_kind_is_refused(self, store_path, case_path):
+        server = _server(store_path, case_path, writable=True)
+        message = _raises(server, "record_note", {"kind": "hunch", "body": "maybe"})
+        assert "hunch" in message

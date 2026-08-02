@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from chainscope.cli.commands.analyze import available
+from chainscope.cli.main import _COMMANDS
 
 SKILL = Path(__file__).resolve().parents[2] / "skills" / "chainscope" / "SKILL.md"
 
@@ -35,11 +36,18 @@ class TestItCoversWhatIsInstalled:
             f"reading this will report that chainscope cannot do it."
         )
 
-    @pytest.mark.parametrize(
-        "command", ["analyze", "tag", "graph", "dashboard", "sql", "doctor", "label"]
-    )
+    @pytest.mark.parametrize("command", sorted(_COMMANDS))
     def test_every_cli_command_is_mentioned(self, command, text):
-        assert command in text
+        """Read from the dispatch table, not from a list kept by hand.
+
+        The hand-kept version named seven commands and stayed green through
+        five more being added --- which is the failure this whole file exists
+        to prevent, in the file that exists to prevent it.
+        """
+        assert f"chainscope {command}" in text, (
+            f"`{command}` is a command and the skill does not show it being run. "
+            f"An agent reading this will report that chainscope cannot do it."
+        )
 
 
 class TestItCarriesTheQualifiers:
