@@ -154,6 +154,36 @@ close enough to specified to put a number on.
 
 ---
 
+## Measured accuracy
+
+The multi-input heuristic is the oldest tool in this field (Meiklejohn et al.,
+*A Fistful of Bitcoins*, IMC 2013). It is also the one everybody cites and
+nobody measures on their own data, so `tests/validation/` builds worlds where
+ownership is known by construction and scores the analyzer against them.
+
+Twenty wallets, six addresses each, pairwise precision:
+
+| CoinJoins present | `skip_coinjoins=True` | `skip_coinjoins=False` |
+|---|---:|---:|
+| 0 | 100% | 100% |
+| 1 | **100%** | 45.5% — worst cluster merges 5 wallets |
+| 3 | **100%** | 15.6% — merges 10 |
+| 10 | **100%** | 5.2% — merges 18 of 20 |
+
+**A single collaborative spend halves undefended precision.** That is the number
+behind the defence being on by default, and it is asserted rather than merely
+recorded: making the clustering more aggressive without noticing the cost now
+fails the suite.
+
+Precision is the figure that matters here, which is the reverse of most
+classification work. A false merge asserts two strangers are one person, and
+clustering is transitive, so the error joins their whole neighbourhoods. A miss
+only leaves an address unclustered.
+
+Not yet measured: change-address heuristics, peel-chain detection, and
+cross-chain matching. Each needs its own ground truth, and none should be
+trusted at a stated confidence until it has one.
+
 ## Open questions
 
 * **Does the DuckDB view stay in sync, or get rebuilt?** Rebuilding is simpler
