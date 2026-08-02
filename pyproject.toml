@@ -1,0 +1,95 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chainscope"
+version = "0.1.0.dev0"
+description = "Open-source blockchain forensics toolkit — everything you can do with public data"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "chainscope contributors" }]
+keywords = [
+    "blockchain", "forensics", "bitcoin", "ethereum", "aml",
+    "tracing", "investigation", "osint",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+
+# Core stays deliberately thin. Chain- and provider-specific deps are extras,
+# so `pip install chainscope` never drags in a Solana SDK you will not use.
+dependencies = [
+    "httpx>=0.27",
+    "platformdirs>=4.0",
+]
+
+[project.optional-dependencies]
+evm = ["eth-utils>=5.0", "eth-abi>=5.0"]
+bitcoin = ["base58>=2.1", "bech32>=1.2"]
+solana = ["base58>=2.1"]
+report = ["rich>=13.0"]
+all = ["chainscope[evm,bitcoin,solana,report]"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.100",
+    "mypy>=1.11",
+    "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/chainscope/chainscope"
+Documentation = "https://github.com/chainscope/chainscope/tree/main/docs"
+Issues = "https://github.com/chainscope/chainscope/issues"
+
+[project.scripts]
+chainscope = "chainscope.cli.main:main"
+
+# ---------------------------------------------------------------- plugin points
+# Third-party packages register here. Declaring the same entry-point group is
+# the ONLY thing needed to extend chainscope — no core changes, no registration
+# calls. See docs/extending.md.
+
+[project.entry-points."chainscope.providers"]
+jsonrpc = "chainscope.providers.jsonrpc:JsonRpcProvider"
+
+[project.entry-points."chainscope.chains"]
+evm = "chainscope.chains.evm:EvmAdapter"
+
+[project.entry-points."chainscope.analyzers"]
+
+[project.entry-points."chainscope.attribution_sources"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chainscope"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "network: hits real APIs; skipped by default (CI must stay offline)",
+]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 96
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+files = ["src/chainscope"]
