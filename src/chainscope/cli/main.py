@@ -15,7 +15,7 @@ from ..render.base import Renderer
 from ..render.jsonout import JsonRenderer
 from ..render.markdown import MarkdownRenderer
 from ..render.terminal import TerminalRenderer
-from .commands import analyze, bundle, doctor, graph, label, tag
+from .commands import analyze, bundle, dashboard, doctor, graph, label, tag
 
 __all__ = ["main"]
 
@@ -24,6 +24,7 @@ _COMMANDS = {
     "label": label,
     "tag": tag,
     "graph": graph,
+    "dashboard": dashboard,
     "doctor": doctor,
     "bundle": bundle,
 }

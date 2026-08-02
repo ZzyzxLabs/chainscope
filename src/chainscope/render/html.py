@@ -39,6 +39,9 @@ from .graph import Graph
 
 __all__ = ["to_html"]
 
+# Also used by the dashboard: the same <script> escaping problem, and one
+# implementation is one place to get it right.
+
 
 def _json_for_script(value: Any) -> str:
     """Serialise JSON safe to embed inside a ``<script>`` element.

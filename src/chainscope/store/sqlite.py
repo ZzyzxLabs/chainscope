@@ -117,6 +117,8 @@ class _Bucket:
 
     sender: str | None
     recipient: str | None
+    symbol: str = ""
+    decimals: int = 18
     total: int = 0
     count: int = 0
     first: int | None = None
@@ -364,7 +366,7 @@ class SqliteStore(Store):
         """
         side, other = ("sender", "recipient") if direction == "out" else ("recipient", "sender")
         rows = self._fetch(
-            f"SELECT sender, recipient, asset, amount_raw, timestamp "
+            f"SELECT sender, recipient, asset, amount_raw, timestamp, symbol, decimals "
             f"FROM transfers WHERE chain = ? AND {side} = ?",
             (str(chain), address.lower()),
         )
@@ -374,7 +376,12 @@ class SqliteStore(Store):
             key = (r[other], r["asset"])
             b = buckets.get(key)
             if b is None:
-                b = _Bucket(sender=r["sender"], recipient=r["recipient"])
+                b = _Bucket(
+                    sender=r["sender"],
+                    recipient=r["recipient"],
+                    symbol=r["symbol"] or "",
+                    decimals=r["decimals"],
+                )
                 buckets[key] = b
             b.add(int(r["amount_raw"]), r["timestamp"])
 
@@ -385,6 +392,8 @@ class SqliteStore(Store):
                 asset=asset,
                 total_raw=b.total,
                 transfer_count=b.count,
+                symbol=b.symbol,
+                decimals=b.decimals,
                 first_seen=_dt(b.first),
                 last_seen=_dt(b.last),
             )

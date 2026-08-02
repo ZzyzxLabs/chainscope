@@ -82,12 +82,21 @@ def add_parser(sub: Any, name: str) -> None:
 
 
 def _chain(raw: str) -> ChainId:
+    """Parse a chain id, or refuse.
+
+    Refusing matters: a typo that resolved to "unspecified" would be
+    reinterpreted downstream as Ethereum, and the caller would get a confident
+    answer about a chain they did not ask about.
+    """
     text = raw.strip()
     if text.isdigit():
         return ChainId.evm(int(text))
     namespace, _, reference = text.partition(":")
     if not reference:
-        raise ValueError(f"not a chain id: {raw!r}")
+        raise ValueError(
+            f"not a chain id: {raw!r}. Use an EVM chain number (1, 56) or a "
+            f"CAIP-2 identifier (eip155:1, sui:mainnet)."
+        )
     return ChainId(namespace, reference)
 
 
@@ -170,6 +179,11 @@ def _walk(
     ways = ("out", "in") if direction == "both" else (direction,)
     frontier = [seed]
     expanded: set[str] = {seed.lower()}
+    # Walking both ways reaches a transfer twice --- once from the sender's
+    # outbound edges and again from the recipient's inbound ones --- and
+    # add_edge folds the second sighting into the first, doubling the displayed
+    # total and count. The pair is the same edge either way, so record it once.
+    recorded: set[tuple[str, str, str, str]] = set()
 
     for _ in range(max(0, depth)):
         following: list[str] = []
@@ -181,23 +195,23 @@ def _walk(
                     other = edge.recipient if way == "out" else edge.sender
                     if not other:
                         continue
-                    graph.add_edge(
-                        Edge(
-                            source=edge.sender,
-                            target=edge.recipient,
-                            chain=str(chain),
-                            symbol=edge.asset or "",
-                            total_raw=edge.total_raw,
-                            transfer_count=edge.transfer_count,
-                            asset=edge.asset,
-                            first_seen=int(edge.first_seen.timestamp())
-                            if edge.first_seen
-                            else None,
-                            last_seen=int(edge.last_seen.timestamp())
-                            if edge.last_seen
-                            else None,
-                        )
+                    candidate = Edge(
+                        source=edge.sender,
+                        target=edge.recipient,
+                        chain=str(chain),
+                        symbol=edge.symbol,
+                        decimals=edge.decimals,
+                        total_raw=edge.total_raw,
+                        transfer_count=edge.transfer_count,
+                        asset=edge.asset,
+                        first_seen=int(edge.first_seen.timestamp())
+                        if edge.first_seen
+                        else None,
+                        last_seen=int(edge.last_seen.timestamp()) if edge.last_seen else None,
                     )
+                    if candidate.key not in recorded:
+                        recorded.add(candidate.key)
+                        graph.add_edge(candidate)
                     graph.add_node(Node(address=other, chain=str(chain)))
                     _attribute(store, graph, other, chain)
 
@@ -219,5 +233,16 @@ def _walk(
 
 
 def _attribute(store: SqliteStore, graph: Graph, address: str, chain: ChainId) -> None:
+    """Attach the claims that apply to *this* chain.
+
+    An address string is not unique across chains --- the same twenty bytes
+    exist on Ethereum, BSC, and everything else EVM --- so a claim recorded
+    against BSC says nothing about the Ethereum address that happens to share
+    its hex. Attaching it anyway put "PancakeSwap" on an Ethereum node.
+
+    Claims with no chain are kept: those are deliberate assertions about the
+    address wherever it appears, which is how sanctions lists are published.
+    """
     for claim in store.attributions(address):
-        graph.attribute(address, str(chain), claim)
+        if claim.chain is None or claim.chain == chain:
+            graph.attribute(address, str(chain), claim)

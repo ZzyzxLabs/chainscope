@@ -298,3 +298,45 @@ class TestSeverity:
         # Four transfers, two addresses each, two watches: without memoisation
         # this would be sixteen.
         assert calls["n"] <= 4
+
+
+class TestNoSilentIncompleteness:
+    def test_an_oversized_range_refuses_rather_than_truncating(self, tmp_path, monkeypatch):
+        """Evaluating part of a range and reporting it as complete is exactly
+        the failure this whole project is built around preventing. The events
+        it did produce would look like the full answer."""
+        from chainscope.watch import base as watch_base
+
+        monkeypatch.setattr(watch_base, "MAX_TRANSFERS", 3)
+        s = SqliteStore(tmp_path / "big.db")
+        s.put_transfers(
+            [transfer(SUBJECT, CLEAN, ONE_ETH, block=b, i=b) for b in range(10)],
+            source="t",
+        )
+        try:
+            with pytest.raises(watch_base.EvaluationIncomplete, match="Narrow the block range"):
+                evaluate(watch(AmountOver(0)), s, 0, 1000)
+        finally:
+            s.close()
+
+    def test_it_is_a_distinct_type(self):
+        """So a caller cannot mistake it for "no further matches"."""
+        from chainscope.watch import EvaluationIncomplete, WatchError
+
+        assert issubclass(EvaluationIncomplete, WatchError)
+
+    def test_a_normal_range_is_unaffected(self, store):
+        assert len(evaluate(watch(AmountOver(0)), store, 0, 1000)) == 4
+
+
+class TestCounterpartyInIsAboutTheCounterparty:
+    def test_a_subject_inside_its_own_set_does_not_match_everything(self, store):
+        """An exchange's own address in a list of exchanges would otherwise
+        fire on every transfer it is part of."""
+        w = watch(CounterpartyIn(frozenset({SUBJECT.lower()}), label="self"))
+        assert evaluate(w, store, 0, 1000) == []
+
+    def test_a_real_counterparty_still_matches(self, store):
+        w = watch(CounterpartyIn(frozenset({MIXER.lower()}), label="known mixers"))
+        (event,) = evaluate(w, store, 0, 1000)
+        assert "counterparty" in event.reason

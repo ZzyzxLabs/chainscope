@@ -58,6 +58,22 @@ class WatchError(RuntimeError):
     """A watch could not be evaluated."""
 
 
+class EvaluationIncomplete(WatchError):
+    """The range held more transfers than could be examined.
+
+    A distinct type because the caller must not treat this as "no further
+    matches". An alerting system that quietly stops reading is worse than one
+    that fails: the events it did produce look like the complete answer, and
+    the miss is invisible until somebody asks why nothing fired.
+    """
+
+
+#: Transfers examined per evaluation before giving up. High enough that no
+#: ordinary subject reaches it, low enough that a runaway query does not exhaust
+#: memory. Reaching it raises rather than truncating.
+MAX_TRANSFERS = 1_000_000
+
+
 class Severity(str, Enum):
     """How much a match should interrupt somebody.
 
@@ -223,10 +239,13 @@ class CounterpartyIn:
     label: str = ""
 
     def matches(self, transfer: Transfer, ctx: Context) -> str | None:
-        for side, address in (("sender", transfer.sender), ("recipient", transfer.recipient)):
-            if address is not None and address.key.lower() in self.addresses:
-                name = f" ({self.label})" if self.label else ""
-                return f"{side} {address.key} is in the watched set{name}"
+        # The counterparty, not either side. A subject that appears in its own
+        # watched set --- an exchange's own address in a list of exchanges, say
+        # --- would otherwise match every transfer it is part of.
+        address = _counterparty(transfer, ctx)
+        if address is not None and address.key.lower() in self.addresses:
+            name = f" ({self.label})" if self.label else ""
+            return f"counterparty {address.key} is in the watched set{name}"
         return None
 
     def describe(self) -> str:
@@ -431,11 +450,21 @@ def evaluate(
         recipient=watch.subject if watch.direction == "in" else None,
         min_block=since,
         max_block=until,
-        limit=1_000_000,
+        # One past the ceiling, so hitting it is a fact rather than an
+        # inference from a full page.
+        limit=MAX_TRANSFERS + 1,
     )
 
     events: list[Event] = []
-    for transfer in store.transfers(query):
+    for examined, transfer in enumerate(store.transfers(query), start=1):
+        if examined > MAX_TRANSFERS:
+            raise EvaluationIncomplete(
+                f"{watch.name!r} over blocks {since}-{until} has more than "
+                f"{MAX_TRANSFERS:,} transfers for {watch.subject}. Evaluating "
+                f"part of a range and reporting the result as complete is the "
+                f"failure this design exists to prevent, so nothing is "
+                f"returned. Narrow the block range and evaluate in steps."
+            )
         reason = watch.predicate.matches(transfer, context)
         if reason is not None:
             events.append(

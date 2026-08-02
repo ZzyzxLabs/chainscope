@@ -107,8 +107,20 @@ class EdgeSummary:
     sender: str
     recipient: str
     asset: str | None
+    """Contract address, or ``None`` for the chain's native asset. This is the
+    identity; :attr:`symbol` is only what to print."""
+
     total_raw: int
     transfer_count: int
+
+    symbol: str = ""
+    decimals: int = 18
+    """Without these a renderer has nothing to print an amount *with*, and the
+    two defaults it would otherwise invent --- the contract address as a name,
+    and eighteen decimals --- are wrong for every native edge and every
+    six-decimal token respectively. USDC displayed at eighteen is a trillion
+    times too small."""
+
     first_seen: datetime | None = None
     last_seen: datetime | None = None
 
