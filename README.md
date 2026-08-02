@@ -75,7 +75,7 @@ v0.1 is being built. Implemented so far:
 - [x] `providers` — capability-routed data sources with fallback
 - [x] `chains` — EVM and Bitcoin adapters
 - [x] `attribution` — OFAC, explorer nametags, local labels, conflict resolution
-- [~] `analysis` — consolidation done; cross-chain, peel chains, clustering next
+- [x] `analysis` — consolidation, cross-chain matching, peel chains, clustering
 - [ ] `cli` and renderers
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and roadmap.

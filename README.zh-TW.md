@@ -74,7 +74,7 @@ v0.1 建置中。已完成:
 - [x] `providers` —— 以「能力」路由的資料源,含失敗轉移
 - [x] `chains` —— EVM 與 Bitcoin 轉接器
 - [x] `attribution` —— OFAC、瀏覽器標籤、本地標註、衝突解析
-- [~] `analysis` —— 歸集分析完成;跨鏈配對、剝離鏈、聚類進行中
+- [x] `analysis` —— 歸集、跨鏈配對、剝離鏈、共同輸入聚類
 - [ ] `cli` 與 renderers
 
 ## 擴充

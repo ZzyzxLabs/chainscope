@@ -73,6 +73,8 @@ bitcoin = "chainscope.chains.bitcoin:BitcoinAdapter"
 [project.entry-points."chainscope.analyzers"]
 consolidation = "chainscope.analysis.consolidation:ConsolidationAnalyzer"
 cross_chain = "chainscope.analysis.xchain:CrossChainMatcher"
+peel_chain = "chainscope.analysis.peel:PeelChainAnalyzer"
+co_spend_cluster = "chainscope.analysis.cluster:CoSpendClusterAnalyzer"
 
 [project.entry-points."chainscope.pricing"]
 binance = "chainscope.pricing.binance:BinanceKlines"
