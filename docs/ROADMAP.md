@@ -84,6 +84,30 @@ So Python stays, for the reason that matters most to this project: the people
 expected to write analyzers, label sources, and providers are analysts and
 researchers, and that is where they already are.
 
+**Profiled again later, at 200,000 transfers, and the answer got sharper:**
+
+| | |
+|---|---:|
+| SQLite write | 2.10 s |
+| One address's edges | 0.3 ms |
+| DuckDB view build | **150.99 s** |
+| DuckDB aggregate over the whole table | 9.8 ms |
+| Taint FIFO, pure Python | 0.08 s (594,000/s) |
+
+The analysis code runs at 594,000 transfers a second. A rewrite would have made
+an 0.08-second step faster while a 151-second step ran beside it — and that
+step was not compute at all. DuckDB's `executemany` issues one prepared
+execution per row; staging through CSV and `COPY` took it to 178,000 rows a
+second, **122x**, and 200k now builds in about a second.
+
+Alternatives ruled out by measurement rather than by argument: multi-row
+`VALUES` (1,665/s), an explicit transaction (1,583/s), dropping HUGEINT for
+BIGINT or VARCHAR (no change, so the width was never the problem).
+
+The lesson is the one the intuition keeps getting wrong: **the slow thing was
+data movement wearing a Python costume.** Reaching for another language would
+have been an expensive way to not fix it.
+
 **The case would change** if interactive traversal over tens of millions of
 edges becomes the bottleneck. If profiling ever shows that, the answer is to
 extract *that one component*, not to rewrite the framework.
