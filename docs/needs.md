@@ -166,6 +166,48 @@ and so the list is not silently empty.
 
 ---
 
+---
+
+## 7. What a working investigator has that this does not
+
+*Inferred throughout* --- these come from what forensic and compliance work
+involves, not from anything observed in this codebase's use. Ordered by how
+much of a practitioner's day they occupy.
+
+**Defensibility.** The output has to survive somewhere other than a report. A
+figure needs to trace back to *who* fetched *what* from *which source* at
+*what time* --- `AuditLog` records queries and nothing binds a number in a
+report to the query that produced it. Hashing recorded responses at export, and
+carrying that hash into the artefact, is the missing link. `bundle` exists and
+has never been tested for the thing it is for: a colleague opening it on
+another machine with different providers and re-deriving the same answer.
+
+**Watching, not just looking back.** Half the work is being told when something
+moves. `watch/` holds the rules as pure functions and nothing runs them --- no
+daemon, no schedule, no delivery. The rules were the hard part and the missing
+part is the easy one, which is a bad reason for it to still be missing.
+
+**Sanctions and screening.** OFAC publishes SDN as XML on a schedule; this
+imports label files by hand. Risk scoring --- how many hops from a sanctioned
+address, and through what --- is composable from the taint and graph code that
+already exists, and would need saying loudly that it is a heuristic, because a
+number between 0 and 100 invites being read as a measurement.
+
+**Reporting.** A one-click PDF or DOCX with the graph, the timeline, and the
+address table. Case-level narrative, which does not exist at all: rationale
+attaches to a claim and nothing attaches to the investigation. And per-analyst
+identity on every claim, so a shared case shows who said what and where two
+people disagreed --- see §4, which names the same gap from the provenance side.
+
+**Exchange correspondence.** Which KYC request went to whom, when, and whether
+it came back; freeze requests; the clock on a legal process while the money
+keeps moving. This is case management rather than chain analysis, and probably
+another table rather than another analyzer --- but a tool that traces funds and
+cannot record what was asked of the exchange holding them stops one step short
+of the point.
+
+---
+
 ## What this note is not
 
 It is not a survey of users, because none has been conducted. Every *observed*
