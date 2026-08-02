@@ -227,8 +227,31 @@ because every address exists everywhere by construction. The shared *deployer*
 is the evidence, and recovering it also enumerates what else that key built —
 including rehearsal contracts nobody has looked at.
 
-Still unmeasured: peel-chain traversal end-to-end, and cross-chain matching.
-Neither should be trusted at a stated confidence until it has ground truth.
+### Peel-chain traversal
+
+Change detection scores one decision; this scores the thing that gets
+reported. The distinction matters because **errors here do not average out**.
+75% per hop does not give a 75%-correct chain — it gives a chain that is right
+until the first mistake and then follows the wrong branch forever, in the same
+format as a correct one. Ten hops at 75% is right about 6% of the time.
+
+Against chains whose true path is known by construction, with the change index
+alternating so that "always pick output 0" cannot pass:
+
+| | |
+|---|---|
+| Clean chains, up to 12 hops | followed exactly |
+| Contested hop | **halts**, and says why |
+| Missing transaction | halts, reports truncation |
+| Cycle | detected, does not loop |
+| The round-change counter-example | leaves the true path and cannot recover |
+
+That last row is the number justifying `stop_when_uncertain=True`. Stopping
+short is a bounded loss — somebody looks again. Continuing through a guess is
+unbounded, and nothing downstream marks where it went wrong.
+
+Still unmeasured: cross-chain matching. It should not be trusted at a stated
+confidence until it has ground truth.
 
 ## Open questions
 
