@@ -36,6 +36,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..chains import address_key
 from ..core.attribution import Attribution, Category, Confidence
 
 __all__ = [
@@ -347,13 +348,20 @@ def graph_from_flows(
     further exists".
     """
     graph = Graph(seeds=[f"{chain}:{seed}"], truncated=truncated)
-    known = {a.lower() for a in expanded} | {seed.lower()}
+    # Chain-aware: lowercasing here made every Solana, Sui and Bitcoin address
+    # miss the expanded set, so every node was drawn as frontier --- the picture
+    # said "nobody looked past here" about addresses that had been walked.
+    known = {address_key(chain, a) for a in expanded} | {address_key(chain, seed)}
 
     graph.add_node(Node(address=seed, chain=chain, is_seed=True, expanded=True))
     for flow in flows:
         for address in (flow.sender, flow.recipient):
             graph.add_node(
-                Node(address=address, chain=chain, expanded=address.lower() in known)
+                Node(
+                    address=address,
+                    chain=chain,
+                    expanded=address_key(chain, address) in known,
+                )
             )
         graph.add_edge(
             Edge(

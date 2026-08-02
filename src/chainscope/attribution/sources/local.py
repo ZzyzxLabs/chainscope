@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ...chains import address_key
 from ...core.attribution import Attribution, Category, Confidence, Method
 from ...core.chainid import ChainId
 from ..base import Source, SourceError, SourceMeta
@@ -94,8 +95,11 @@ class LocalSource(Source):
             raise SourceError(f"{self.path} is not valid JSON: {exc}") from exc
         if not isinstance(raw, dict):
             raise SourceError(f"{self.path} must contain a JSON object")
+        # Kept as written. A label file mixes chains, and the chain each record
+        # applies to is inside the record --- so the *file* cannot be keyed by a
+        # rule that depends on it. Lookup normalises both sides instead.
         self._data = {
-            k.lower(): v
+            k.strip(): v
             for k, v in raw.items()
             if not k.startswith("_") and isinstance(v, dict)
         }
@@ -103,8 +107,27 @@ class LocalSource(Source):
 
     # ------------------------------------------------------------- queries
 
+    def _find(self, address: str, chain: ChainId | None) -> dict[str, Any] | None:
+        """A record for ``address``, comparing the way its chain compares.
+
+        Every path here lowercased. On Solana, Sui and Bitcoin that asks about a
+        different account --- and on a label file it fails in the direction that
+        matters least visibly: the claim is simply not found, so a sanctioned or
+        known address comes back unlabelled.
+
+        Both spellings are tried when the record carries a chain the caller did
+        not name, since the file can hold either.
+        """
+        data = self._load()
+        text = address.strip()
+        for candidate in (text, address_key(chain, text) if chain else text, text.lower()):
+            record = data.get(candidate)
+            if record is not None:
+                return record
+        return None
+
     def lookup(self, address: str, chain: ChainId | None = None) -> list[Attribution]:
-        rec = self._load().get(address.lower())
+        rec = self._find(address, chain)
         if not rec or not _applies(rec, chain):
             return []
         return [self._build(address, rec, chain)]
@@ -112,10 +135,9 @@ class LocalSource(Source):
     def lookup_many(
         self, addresses: Iterable[str], chain: ChainId | None = None
     ) -> dict[str, list[Attribution]]:
-        data = self._load()
         out: dict[str, list[Attribution]] = {}
         for a in addresses:
-            rec = data.get(a.lower())
+            rec = self._find(a, chain)
             out[a] = [self._build(a, rec, chain)] if rec and _applies(rec, chain) else []
         return out
 
@@ -173,7 +195,7 @@ class LocalSource(Source):
                 "a LOW or SPECULATIVE claim needs a rationale --- what made you think this?"
             )
         data = self._load() if self.path.exists() else {}
-        data[address.lower()] = {
+        data[address.strip()] = {
             "label": label,
             "category": category.value,
             "confidence": confidence.name.lower(),

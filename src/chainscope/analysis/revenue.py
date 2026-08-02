@@ -87,6 +87,13 @@ class Distribution:
     payouts: dict[str, int]
     """Recipient to raw amount. Only positive outgoing value."""
 
+    chain: str | None = None
+    """Which chain these addresses are on, when the caller knows.
+
+    Decides how two spellings of a recipient compare. Without it the fallback
+    folds only EVM-shaped hex --- see :func:`_fold`.
+    """
+
     @property
     def total(self) -> int:
         return sum(self.payouts.values())
@@ -103,7 +110,7 @@ class Distribution:
         total = self.total
         if total <= 0:
             return 0
-        return (self._by_key().get(address.lower(), 0) * 10_000) // total
+        return (self._by_key().get(_fold(self.chain, address), 0) * 10_000) // total
 
     def _by_key(self) -> dict[str, int]:
         """Payouts keyed comparably, summing any addresses that collapse.
@@ -113,8 +120,34 @@ class Distribution:
         """
         folded: dict[str, int] = {}
         for address, amount in self.payouts.items():
-            folded[address.lower()] = folded.get(address.lower(), 0) + amount
+            key = _fold(self.chain, address)
+            folded[key] = folded.get(key, 0) + amount
         return folded
+
+
+def _fold(chain: str | None, address: str) -> str:
+    """How two spellings of one recipient compare.
+
+    With a chain, the adapter decides --- the only correct answer, since the
+    rule is per-ecosystem.
+
+    Without one, only **EVM-shaped hex** folds: 42 characters starting `0x`,
+    where case is a checksum and two spellings are one address. Everything else
+    is compared as written, because base58 case is part of the value and
+    folding it merges two people's addresses into one recipient.
+
+    A chainless fallback of `.lower()` was what produced both halves of this
+    module's bug: shares of 0 bps on checksummed EVM input, and --- had anyone
+    run it on Solana --- two accounts reported as one.
+    """
+    if chain:
+        from ..chains import address_key
+
+        return address_key(chain, address)
+    text = address.strip()
+    if text.startswith(("0x", "0X")) and len(text) == 42:
+        return text.lower()
+    return text
 
 
 @dataclass
@@ -237,8 +270,11 @@ def analyse_splits(distributions: list[Distribution]) -> list[Recipient]:
         for address, amount in dist.payouts.items():
             if amount <= 0:
                 continue
-            key = address.lower()
-            entry = recipients.setdefault(key, Recipient(address=key))
+            key = _fold(dist.chain, address)
+            # Reported as written. Lowercasing the *output* names a different
+            # account on Solana, Sui and Bitcoin --- possibly one that does not
+            # exist --- in a finding about who takes a cut.
+            entry = recipients.setdefault(key, Recipient(address=address))
             entry.shares_bps.append(dist.share_bps(key))
             entry.received += amount
             entry.appearances += 1

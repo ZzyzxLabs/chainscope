@@ -43,6 +43,10 @@ class TestTwoNonContractsAreNotTheSameContract:
         assert compare("0x6080604052", "0x6080604052").identical
 
 
+EVM = "0xAbCdEf" + "0" * 34  # 42 characters, as a real one is
+EVM_OTHER = "0xFeDcBa" + "0" * 34
+
+
 class TestARevenueShareIsFoundOnChecksummedAddresses:
     def test_a_checksummed_key_resolves(self) -> None:
         """It lowercased the query and not the keys.
@@ -51,22 +55,22 @@ class TestARevenueShareIsFoundOnChecksummedAddresses:
         built from real data matched nothing and reported every recipient as
         0 bps --- which looks exactly like an address that takes no cut.
         """
-        d = Distribution(tx="0x1", payouts={"0xAbCdEf": 100})
-        assert d.share_bps("0xAbCdEf") == 10_000
+        d = Distribution(tx="0x1", payouts={EVM: 100})
+        assert d.share_bps(EVM) == 10_000
 
     def test_either_spelling_of_the_query_works(self) -> None:
-        d = Distribution(tx="0x1", payouts={"0xAbCdEf": 100})
-        assert d.share_bps("0xabcdef") == d.share_bps("0xABCDEF") == 10_000
+        d = Distribution(tx="0x1", payouts={EVM: 100})
+        assert d.share_bps(EVM.lower()) == d.share_bps("0x" + EVM[2:].upper()) == 10_000
 
     def test_two_spellings_of_one_address_are_one_recipient(self) -> None:
         # Adding them is the only answer that keeps `total` and the shares
         # consistent with each other.
-        d = Distribution(tx="0x1", payouts={"0xAb": 60, "0xaB": 40})
-        assert d.share_bps("0xab") == 10_000
+        d = Distribution(tx="0x1", payouts={EVM: 60, EVM.lower(): 40})
+        assert d.share_bps(EVM) == 10_000
 
     def test_a_share_of_a_split_is_still_proportional(self) -> None:
-        d = Distribution(tx="0x1", payouts={"0xAAA": 250, "0xBBB": 750})
-        assert d.share_bps("0xaaa") == 2_500
+        d = Distribution(tx="0x1", payouts={EVM: 250, EVM_OTHER: 750})
+        assert d.share_bps(EVM.lower()) == 2_500
 
 
 class TestBase58AddressesKeepTheirCase:

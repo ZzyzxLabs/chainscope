@@ -179,8 +179,22 @@ whole job.
 
 This one has an extra requirement, and CI enforces it.
 
+**Compare addresses through the chain adapter, not with `.lower()`.** This
+example used to lowercase, and that is correct on exactly one of the five
+ecosystems here. Solana, Sui and Bitcoin addresses are base58 or bech32, where
+case is part of the value --- `1BvBMSEY…` and `1bvbmsey…` are different
+addresses, and one of them may not exist. A source that lowercases finds
+nothing on those chains, which surfaces as an address coming back unlabelled
+rather than as an error.
+
+This is not hypothetical and it is not only a documentation problem: the same
+fold was found in the store, the local label source, the OFAC source, the
+revenue analyzer, the graph renderer and the memo analyzer. Copying it from
+here is how it spread.
+
 ```python
 from chainscope.attribution.base import Source
+from chainscope.chains import address_key
 from chainscope.core.attribution import (
     Attribution, Category, Confidence, Method,
 )
@@ -190,7 +204,10 @@ class MyListSource(Source):
     name = "my-list"
 
     async def lookup(self, address: str, chain=None) -> list[Attribution]:
-        hit = self._index.get(address.lower())
+        # `address_key` asks the chain's own adapter. Without a chain it
+        # returns the address as written, which is the safe direction: a miss,
+        # not a match against somebody else's address.
+        hit = self._index.get(address_key(chain, address))
         if not hit:
             return []
         return [

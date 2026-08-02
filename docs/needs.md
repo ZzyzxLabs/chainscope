@@ -440,6 +440,46 @@ package refuses everywhere else.
 
 ---
 
+## 9. One mistake, twenty-seven places
+
+**Observed.** Reviewing the whole repository rather than the latest diff turned
+up eleven critical findings, and **four of the first five were the same
+mistake**: `.lower()` on an address. It is correct on EVM, where hex case is a
+checksum, and wrong on Solana, Sui and Bitcoin, where base58 case is part of
+the value --- `1BvBMSEY…` and `1bvbmsey…` are different addresses and one of them
+may not exist.
+
+`ChainAdapter.normalize` is where the rule lives, and its docstring already
+said what an error there costs: *"it does not raise; it silently makes two
+different addresses look identical, or one address look like two."* The rule
+was written once and then bypassed everywhere.
+
+What it actually cost, measured:
+
+- an address-scoped store query returned **zero rows** on three of five chains
+- an expanded address stayed on the frontier permanently
+- every revenue share came back **0 bps** on checksummed input
+- a Solana memo could be attributed to an account that did not write it
+- a sanctions lookup could miss a listed address, or hit an innocent one
+
+A grep then found **27 sites**. Ten are correct --- an Etherscan provider only
+ever serves EVM, ENS is Ethereum-only --- and the rest are in chain-agnostic
+code: taint, temporal, mixer, the flow renderer, the resolver, watch.
+
+**What follows.** `chains.address_key` defers to the adapter, so the rule has
+one definition again. Seven sites fixed and pinned. The remaining twenty are
+**counted in a test that may shrink and never grow** --- a new one fails CI. That
+is debt, stated as debt: "twenty known, none new" is a true claim about a
+bounded problem, where a green suite with no count would be a false one.
+
+The transmission mechanism was documentation. `docs/extending.md` --- the file a
+plugin author copies from --- showed `self._index.get(address.lower())` in its
+worked example. *Inferred, and the most useful thing here:* a wrong line in a
+guide propagates further than a wrong line in a module, because every reader
+reproduces it deliberately.
+
+---
+
 ## What this note is not
 
 It is not a survey of users, because none has been conducted. Every *observed*

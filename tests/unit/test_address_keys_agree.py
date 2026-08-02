@@ -15,6 +15,8 @@ This file exists so the two cannot drift apart again.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from chainscope.chains import adapter_for, address_key
@@ -157,3 +159,89 @@ class TestWriteAndReadAgreeByConstruction:
             assert store.count(Query(chain=chain, address=checksummed.lower())) == 1
         finally:
             store.close()
+
+
+class TestTheCaseFoldDoesNotSpread:
+    """A ratchet, and it is debt rather than a pass.
+
+    `.lower()` on an address is correct on EVM and wrong on Solana, Sui and
+    Bitcoin. It was found in the store, the local label source, the OFAC
+    source, the revenue analyzer, the graph renderer, the memo analyzer and the
+    guide plugin authors copy from --- all fixed. A grep then found **27** sites
+    in total.
+
+    About ten are correct: an Etherscan or Blockscout provider only ever serves
+    EVM chains, ENS is Ethereum-only, and TRON's hex leg is hex. The rest sit in
+    chain-agnostic code --- taint, temporal, mixer, the flow renderer, the
+    resolver, watch --- and are wrong on three of the five supported chains.
+
+    They are counted here rather than quietly left. The count may **shrink and
+    never grow**: a new site fails this test, so the fold cannot spread further
+    while the existing ones are worked through. Saying "27 known, none new" is
+    a true statement about a bounded problem; a green test with no list would
+    be a false one.
+    """
+
+    import pathlib
+
+    ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+    #: Correct: these files only ever handle hex addresses.
+    EVM_ONLY: ClassVar[set[str]] = {
+        "chains/evm.py",
+        "chains/bitcoin.py",  # bech32 is defined lowercase
+        "chains/tron.py",
+        "chains/sui.py",
+        "attribution/ens.py",  # Ethereum-only by definition
+        "attribution/sources/ofac.py",  # guarded by _key
+        "attribution/sources/etherscan_dump.py",  # an Etherscan export is EVM
+        "analysis/revenue.py",  # guarded by _fold
+        "providers/jsonrpc.py",
+        "providers/etherscan.py",
+        "providers/blockscout.py",
+    }
+
+    #: Known and wrong on non-EVM chains. This number may only go down.
+    KNOWN_UNFIXED = 20
+
+    def _offenders(self) -> list[str]:
+        import re
+
+        pattern = re.compile(
+            r"address\w*\.lower\(\)|\.lower\(\) for \w*address|seed\.lower\(\)"
+        )
+        found = []
+        for path in (self.ROOT / "src").rglob("*.py"):
+            relative = str(path.relative_to(self.ROOT / "src" / "chainscope"))
+            if relative in self.EVM_ONLY:
+                continue
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                if pattern.search(line):
+                    found.append(f"{relative}:{number}")
+        return sorted(found)
+
+    def test_no_new_site_folds_case_by_hand(self) -> None:
+        offenders = self._offenders()
+        assert len(offenders) <= self.KNOWN_UNFIXED, (
+            f"{len(offenders)} sites lowercase an address outside the EVM-only "
+            f"files, up from {self.KNOWN_UNFIXED}. Use "
+            f"chainscope.chains.address_key.\n  " + "\n  ".join(offenders)
+        )
+
+    def test_the_count_is_kept_honest(self) -> None:
+        """Lower the constant when sites are fixed, so the debt is visible.
+
+        A ratchet that silently allows slack stops being a ratchet.
+        """
+        offenders = self._offenders()
+        assert len(offenders) == self.KNOWN_UNFIXED, (
+            f"{len(offenders)} sites remain but KNOWN_UNFIXED says "
+            f"{self.KNOWN_UNFIXED}. Update it --- downwards."
+        )
+
+    def test_the_extending_guide_does_not_teach_it(self) -> None:
+        # The guide is where a plugin author copies from, so a wrong example
+        # there propagates further than a wrong line anywhere else.
+        guide = (self.ROOT / "docs" / "extending.md").read_text()
+        assert "address.lower()" not in guide
+        assert "address_key" in guide
