@@ -383,11 +383,22 @@ class EtherscanProvider(ReadOnlyProvider):
                 continue
 
             for r in rows:
-                if int(r.get("value", 0)) == 0:
+                # Guarded, as the Blockscout provider already does. A row with
+                # an empty or missing `value` raised `ValueError`, which is not
+                # a `ProviderError` --- so `Router.dispatch` could not fall back
+                # and one malformed row aborted the whole call. A provider
+                # returning junk is exactly the case fallback exists for.
+                value = _hex(r.get("value"))
+                if not value:
                     continue
                 if action == "txlist" and r.get("isError", "0") == "1":
                     continue
-                decimals = int(r.get("tokenDecimal") or 18)
+                # A token whose decimals will not parse is reported in base
+                # units rather than assumed to be eighteen: a six-decimal
+                # balance shown at eighteen is a trillion times too small,
+                # which reads as dust and gets skipped.
+                decimals = _hex(r.get("tokenDecimal"))
+                decimals = 18 if decimals is None and action != "tokentx" else (decimals or 0)
                 symbol = r.get("tokenSymbol") or self.native_symbol
                 out.append(
                     Transfer(
@@ -395,10 +406,10 @@ class EtherscanProvider(ReadOnlyProvider):
                         tx=TxRef(chain, r["hash"].lower()),
                         sender=self._addr(chain, r.get("from")),
                         recipient=self._addr(chain, r.get("to")),
-                        amount=Amount(int(r["value"]), decimals, symbol),
+                        amount=Amount(value, decimals, symbol),
                         kind=kind,
                         timestamp=self._when(r),
-                        block=int(r["blockNumber"]) if r.get("blockNumber") else None,
+                        block=_hex(r.get("blockNumber")),
                         asset=self._addr(chain, r.get("contractAddress")),
                         # What distinguishes two movements in one transaction.
                         #

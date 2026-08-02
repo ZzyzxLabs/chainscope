@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from importlib.metadata import entry_points
 from typing import Any
 
@@ -178,7 +179,17 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
             print("\n  no providers are installed for this chain")
         return 2
 
-    result = instance.run(ctx, **_parse_params(args.param))
+    try:
+        params = _parse_params(args.param)
+    except ValueError as exc:
+        # 2, matching "unknown analyzer" above. Both are the caller getting the
+        # arguments wrong, and a script should be able to tell that from an
+        # analysis that ran and failed. It reached `main`'s catch-all and came
+        # back as 1, which conflates the two.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    result = instance.run(ctx, **params)
     print(render.render(result))
     # Warnings mean the result is qualified. Exiting zero would let a pipeline
     # treat a truncated search as a complete one.

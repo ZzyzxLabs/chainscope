@@ -21,6 +21,7 @@ import pytest
 
 _real_socket = socket.socket
 _real_create_connection = socket.create_connection
+_real_getaddrinfo = socket.getaddrinfo
 
 
 class NetworkAccessAttempted(RuntimeError):
@@ -102,11 +103,41 @@ class _GuardedSocket(_real_socket):  # type: ignore[misc,valid-type]
             raise _refuse()
         return int(super().sendto(data, *args))
 
+    def sendmsg(self, *args: Any, **kwargs: Any) -> int:
+        """The same route as `sendto`, and it was open.
+
+        `sendmsg(buffers, ancdata, flags, address)` carries its destination in
+        the fourth positional argument. The reasoning written above for
+        `sendto` --- an unconnected socket never touches `connect`, so guarding
+        that alone leaves a route out --- applies here unchanged, and this one
+        was not guarded. Measured: `sendmsg` to 8.8.8.8 went straight through.
+        """
+        destination = args[3] if len(args) > 3 else kwargs.get("address")
+        if destination is not None and not _is_local(destination):
+            raise _refuse()
+        return int(super().sendmsg(*args, **kwargs))
+
 
 def _guarded_create_connection(address: Any, *args: Any, **kwargs: Any) -> Any:
     if not _is_local(address):
         raise _refuse()
     return _real_create_connection(address, *args, **kwargs)
+
+
+def _guarded_getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+    """Resolution is network access, and it happens before any connect.
+
+    A test that resolved `example.com` reached a DNS server and the guard never
+    saw it --- `connect` is where the *destination* is known, and a lookup has
+    already left the machine by then. Measured: `getaddrinfo("example.com")`
+    escaped.
+
+    Loopback names still resolve, because the local server tests need them and
+    `localhost` reaches nobody.
+    """
+    if not _is_local((host, 0)):
+        raise _refuse()
+    return _real_getaddrinfo(host, *args, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -117,11 +148,13 @@ def _no_network(request: pytest.FixtureRequest) -> Iterator[None]:
         return
     socket.socket = _GuardedSocket  # type: ignore[assignment,misc]
     socket.create_connection = _guarded_create_connection  # type: ignore[assignment]
+    socket.getaddrinfo = _guarded_getaddrinfo  # type: ignore[assignment]
     try:
         yield
     finally:
         socket.socket = _real_socket  # type: ignore[misc]
         socket.create_connection = _real_create_connection
+        socket.getaddrinfo = _real_getaddrinfo
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:

@@ -779,3 +779,123 @@ class TestOneWordForAnUndatedSource:
 
         with pytest.raises(ValueError):
             datetime.strptime(SourceMeta.UNDATED, "%Y-%m-%d")
+
+
+class TestTheNetworkGuardHasNoSideDoors:
+    """Two routes out that the guard did not name.
+
+    `sendto`'s docstring explains why a per-call destination needs guarding ---
+    "an unconnected UDP socket never touches `connect`, so guarding that alone
+    leaves a route out" --- and `sendmsg` is the identical shape, unguarded.
+    Measured: `sendmsg` to 8.8.8.8 went straight through.
+
+    And resolution happens *before* any connect, so `getaddrinfo("example.com")`
+    reached a DNS server without the guard seeing it.
+    """
+
+    def _install(self, monkeypatch):
+        import socket
+        import sys
+
+        sys.path.insert(0, "tests")
+        import conftest as guard
+
+        monkeypatch.setattr(socket, "socket", guard._GuardedSocket)
+        monkeypatch.setattr(socket, "getaddrinfo", guard._guarded_getaddrinfo)
+        return guard
+
+    def test_sendmsg_to_a_remote_address_is_refused(self, monkeypatch) -> None:
+        import socket
+
+        guard = self._install(monkeypatch)
+        sock = guard._GuardedSocket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            with pytest.raises(guard.NetworkAccessAttempted):
+                sock.sendmsg([b"x"], [], 0, ("8.8.8.8", 53))
+        finally:
+            sock.close()
+
+    def test_resolving_a_remote_name_is_refused(self, monkeypatch) -> None:
+        import socket
+
+        guard = self._install(monkeypatch)
+        with pytest.raises(guard.NetworkAccessAttempted):
+            socket.getaddrinfo("example.com", 80)
+
+    @pytest.mark.parametrize("host", ["localhost", "127.0.0.1"])
+    def test_loopback_still_resolves(self, monkeypatch, host: str) -> None:
+        # The local server tests need it, and `localhost` reaches nobody.
+        import socket
+
+        self._install(monkeypatch)
+        assert socket.getaddrinfo(host, 80)
+
+
+class TestOneBadRowDoesNotAbortTheCall:
+    """`int("")` raises `ValueError`, which is not a `ProviderError`.
+
+    So `Router.dispatch` could not fall back and one malformed row from
+    Etherscan aborted the whole call --- a provider returning junk is exactly
+    the case fallback exists for. Blockscout already parsed defensively.
+    """
+
+    def _rows(self):
+        return [
+            {
+                "hash": "0x" + "1" * 64,
+                "from": "0x" + "a" * 40,
+                "to": "0x" + "b" * 40,
+                "value": "",
+                "blockNumber": "",
+                "isError": "0",
+            },
+            {
+                "hash": "0x" + "2" * 64,
+                "from": "0x" + "a" * 40,
+                "to": "0x" + "b" * 40,
+                "value": "1000",
+                "blockNumber": "5",
+                "logIndex": "3",
+                "tokenDecimal": "",
+                "tokenSymbol": "WEIRD",
+                "isError": "0",
+            },
+        ]
+
+    def _transfers(self):
+        from chainscope.providers.etherscan import EtherscanProvider
+
+        rows = self._rows()
+
+        class Fake:
+            def get(self, url, params, **kw):
+                return {
+                    "status": "1",
+                    "result": rows if params["action"] == "tokentx" else [],
+                }
+
+        return EtherscanProvider(api_key="x", client=Fake()).asset_transfers(
+            ETHEREUM, "0x" + "a" * 40, limit=10
+        )
+
+    def test_the_bad_row_is_skipped_not_fatal(self) -> None:
+        assert len(self._transfers()) == 1
+
+    def test_unparseable_decimals_report_base_units(self) -> None:
+        # Not eighteen. A six-decimal balance shown at eighteen is a trillion
+        # times too small, which reads as dust and gets skipped.
+        assert self._transfers()[0].amount.decimals == 0
+
+
+class TestArgumentErrorsShareAnExitCode:
+    def test_a_malformed_param_exits_two(self) -> None:
+        """The same code as "unknown analyzer".
+
+        Both are the caller getting the arguments wrong, and a script should be
+        able to tell that from an analysis that ran and failed. It reached
+        `main`'s catch-all and came back as 1.
+        """
+        from chainscope.cli.main import main
+
+        assert main(["analyze", "temporal", "-p", "notakeyvalue"]) == 2
+        assert main(["analyze", "nosuchanalyzer"]) == 2
