@@ -520,6 +520,18 @@ class TaintAnalyzer(Analyzer):
             ctx,
             findings=tuple(findings),
             warnings=tuple(warnings),
-            params={"source": seed, "policy": rule.value},
+            params={
+                "source": seed,
+                "policy": rule.value,
+                "amount": amount,
+                "start_block": start_block,
+                "end_block": end_block,
+                "per_node": per_node,
+                "max_nodes": max_nodes,
+                # Which addresses the walk actually reached. Without it a rerun
+                # against a different provider silently covers different ground
+                # and the two results are not comparable.
+                "addresses_walked": sorted(seen),
+            },
             started=started,
         )

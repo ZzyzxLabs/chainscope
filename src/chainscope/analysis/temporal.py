@@ -452,7 +452,13 @@ class TemporalAnalyzer(Analyzer):
                     f"only {profile.samples} timestamped {direction}bound transfers, "
                     f"below the {MIN_SAMPLES} needed before any pattern claim is made",
                 ),
-                params={"address": seed, "direction": direction},
+                params={
+                    "address": seed,
+                    "direction": direction,
+                    "start_block": start_block,
+                    "end_block": end_block,
+                    "per_node": per_node,
+                },
                 started=started,
             )
 
@@ -481,6 +487,12 @@ class TemporalAnalyzer(Analyzer):
             ctx,
             findings=tuple(findings),
             warnings=tuple(warnings),
-            params={"address": seed, "direction": direction},
+            params={
+                "address": seed,
+                "direction": direction,
+                "start_block": start_block,
+                "end_block": end_block,
+                "per_node": per_node,
+            },
             started=started,
         )

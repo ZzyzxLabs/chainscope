@@ -567,7 +567,14 @@ class MixerAnalyzer(Analyzer):
             ctx,
             findings=tuple(findings),
             warnings=tuple(warnings),
-            params={"pool": address, "window_blocks": window_blocks},
+            params={
+                "pool": address,
+                "window_blocks": window_blocks,
+                "deposits": wanted,
+                "from_block": from_block,
+                "to_block": to_block,
+                "max_anonymity_set": MAX_ANONYMITY_SET,
+            },
             started=started,
         )
 

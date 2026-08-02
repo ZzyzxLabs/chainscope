@@ -400,3 +400,82 @@ class TestSuiTransactionTransfersAreIndexed:
 
     def test_both_movements_survive(self):
         assert len(self._tx().transfers) == 2
+
+
+class TestResultsCarryEnoughToRerun:
+    """`Result.params` is documented as carrying the parameters that produced
+    it --- that is the reproducibility claim. Several analyzers recorded the
+    address and dropped the block range, the row cap, and the thresholds, so a
+    saved result asserted it could be re-run and could not."""
+
+    def test_every_analyzer_that_takes_a_window_uses_it(self):
+        """Checked against the function body rather than a literal string.
+
+        The first version of this test looked for `"start_block"` in the source
+        and failed on `consolidation`, which records it through a helper ---
+        an assertion written against an assumed shape, which is the mistake
+        this file is otherwise about. What matters is that an accepted
+        parameter is referenced somewhere after the signature, not how.
+        """
+        import ast
+        import inspect
+
+        from chainscope.cli.commands.analyze import available
+
+        for name, cls in sorted(available().items()):
+            taken = inspect.signature(cls.run).parameters
+            body = ast.parse(inspect.getsource(cls.run).lstrip()).body[0]
+            assert isinstance(body, ast.FunctionDef)
+            used = {
+                node.id
+                for node in ast.walk(ast.Module(body=body.body, type_ignores=[]))
+                if isinstance(node, ast.Name)
+            }
+            for arg in ("start_block", "end_block"):
+                if arg in taken:
+                    assert arg in used, (
+                        f"{name} accepts {arg} and never references it; a saved "
+                        f"result would claim to be reproducible and would not be"
+                    )
+
+    def test_taint_records_which_addresses_it_walked(self):
+        """Its walk is capped, so two runs can cover different ground. Without
+        the list, results from different providers are not comparable and
+        nothing says so."""
+        import inspect
+
+        from chainscope.analysis.taint import TaintAnalyzer
+
+        assert '"addresses_walked"' in inspect.getsource(TaintAnalyzer.run)
+
+
+class TestThirdPartyActionsArePinned:
+    """A tag is a mutable pointer. Whoever controls the repository can move v31
+    to different code, and that code runs with this workflow's token."""
+
+    def _workflow(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        return (root / ".github" / "workflows" / "ci.yml").read_text()
+
+    def test_no_third_party_action_is_on_a_bare_tag(self):
+        import re
+
+        for line in self._workflow().splitlines():
+            match = re.search(r"uses:\s*([\w.-]+)/([\w.-]+)@(\S+)", line)
+            if not match or match.group(1) == "actions":
+                continue
+            ref = match.group(3)
+            assert re.fullmatch(r"[0-9a-f]{40}", ref), (
+                f"{match.group(1)}/{match.group(2)} is pinned to {ref!r}, which can be moved"
+            )
+
+    def test_each_pin_says_which_version_it_was(self):
+        """A bare SHA is unreviewable. The comment is how anyone tells whether
+        it is current."""
+        import re
+
+        for line in self._workflow().splitlines():
+            if re.search(r"uses:\s*(?!actions/)[\w.-]+/[\w.-]+@[0-9a-f]{40}", line):
+                assert "#" in line

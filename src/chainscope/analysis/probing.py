@@ -409,6 +409,13 @@ class ProbingAnalyzer(Analyzer):
             ctx,
             findings=tuple(findings),
             warnings=tuple(warnings),
-            params={"address": seed, "min_steps": min_steps, "min_growth": min_growth},
+            params={
+                "address": seed,
+                "min_steps": min_steps,
+                "min_growth": min_growth,
+                "start_block": start_block,
+                "end_block": end_block,
+                "per_node": per_node,
+            },
             started=started,
         )

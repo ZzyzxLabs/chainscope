@@ -340,7 +340,16 @@ class CommonFunderAnalyzer(Analyzer):
             return self._result(
                 ctx,
                 warnings=(*warnings, "no funding events found for any of the given addresses"),
-                params={"addresses": seeds},
+                params={
+                    "addresses": seeds,
+                    "service_degree": service_degree,
+                    "exclude": sorted(
+                        {a.strip().lower() for a in exclude.split(",") if a.strip()}
+                    ),
+                    "start_block": start_block,
+                    "end_block": end_block,
+                    "per_node": per_node,
+                },
                 started=started,
             )
 
@@ -378,6 +387,9 @@ class CommonFunderAnalyzer(Analyzer):
                 "addresses": seeds,
                 "service_degree": service_degree,
                 "exclude": sorted(excluded),
+                "start_block": start_block,
+                "end_block": end_block,
+                "per_node": per_node,
             },
             started=started,
         )

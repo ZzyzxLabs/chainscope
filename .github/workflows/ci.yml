@@ -31,6 +31,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Third-party actions are pinned to commit SHAs, not tags. A tag is a mutable
+# pointer: whoever controls the repository can move v31 to different code, and
+# that code runs with this workflow's token. GitHub's own actions/* are left on
+# tags -- same reasoning would apply, but the trust anchor is the same platform
+# already running the job.
 permissions:
   contents: read
 
@@ -167,7 +172,7 @@ jobs:
           echo "$reply" | grep -q '"protocolVersion"'
           echo "$reply" | grep -q 'chainscope'
 
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342  # v31
         with:
           extra_nix_config: "experimental-features = nix-command flakes"
       # The flake was written on a machine without Nix, so this is its only
@@ -176,7 +181,7 @@ jobs:
       - run: nix build .#chainscope --print-build-logs
       - run: ./result/bin/chainscope --help
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
       # The zero-install path. If this breaks, the console scripts or the extras
       # are wrong, and the first thing a new user tries fails.
       - run: uvx --from '.[all]' chainscope --help
