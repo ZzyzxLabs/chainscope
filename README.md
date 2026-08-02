@@ -179,6 +179,14 @@ authorship, and historical token decimals.
   *every* route from the seed, click `+n` to open one more ring, drag the
   slider to watch the case develop. Dashed boxes are frontier — seen, never
   expanded.
+- **It is a canvas, not an export.** Hide what you are not working on, name a
+  node in your own words, drag it — then save it as JSON and load it into a
+  wider re-run of the same graph. State is keyed by address, so it survives.
+  The header says how many nodes you hid: a picture quietly missing things
+  looks complete and is not. A name you typed is marked as yours and is never
+  shown as an attribution.
+- Case notes appear on the node they are about, **with their author** —
+  `chainscope note observation "…" --about 0xabc`.
 - `dashboard` for a case overview that states the unattributed share out loud.
 
 **Writing the case down**

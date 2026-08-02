@@ -59,6 +59,42 @@ def _err(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def _notes(case: Path) -> dict[str, list[dict[str, str]]]:
+    """Case notes keyed by the address they are about.
+
+    Only notes with a subject: a note about the case as a whole belongs in the
+    report, not pinned to whichever node happens to be near the cursor.
+
+    Superseded ones travel too, marked. Dropping them would leave the canvas
+    showing only the final position, which is the same picture as one that was
+    right the first time --- and the canvas is where somebody rereads what they
+    were thinking.
+    """
+    if not case.exists():
+        return {}
+    from ...case.log import CaseLog
+
+    log = CaseLog(case)
+    try:
+        replaced = log.superseded()
+        out: dict[str, list[dict[str, str]]] = {}
+        for note in log.notes():
+            if not note.subject:
+                continue
+            out.setdefault(note.subject, []).append(
+                {
+                    "kind": note.kind.value,
+                    "body": note.body,
+                    "by": note.analyst,
+                    "at": note.at.strftime("%Y-%m-%d"),
+                    "superseded": note.id in replaced,  # type: ignore[dict-item]
+                }
+            )
+        return out
+    finally:
+        log.close()
+
+
 def add_parser(sub: Any, name: str) -> None:
     p = sub.add_parser(name, help="export the fund-flow graph around an address")
     p.add_argument("address")
@@ -87,6 +123,13 @@ def add_parser(sub: Any, name: str) -> None:
     p.add_argument("--direction", default="out", choices=["out", "in", "both"])
     p.add_argument("--store", type=Path, default=Path(".chainscope/store.db"))
     p.add_argument("--title", help="heading for the HTML view")
+    p.add_argument(
+        "--case",
+        type=Path,
+        default=Path(".chainscope/case.db"),
+        help="case log to attach notes from. Notes appear on the node they are "
+        "about, with their author; absent is fine",
+    )
     p.add_argument(
         "--visible-depth",
         type=int,
@@ -186,6 +229,7 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
             graph,
             title=args.title or f"{args.address[:12]}… — flow",
             visible_depth=args.visible_depth,
+            notes=_notes(args.case),
         )
     elif args.format == "html":
         content = to_html(graph, title=args.title or f"{args.address[:12]}… — chainscope")

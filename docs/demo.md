@@ -83,6 +83,19 @@ window straddles the cursor is drawn --- the money had begun moving.
 Point at a dashed box: *that is the frontier. Nobody looked past it. It is not
 a leaf.*
 
+**Untick something in the roster, then reload the page.** It stays hidden, and
+the header reads *"7 of 7, 1 hidden by you"*. Say: *the one thing a canvas must
+never do is quietly leave something out.*
+
+Then `save canvas`, re-run the graph one hop deeper, and `load` the file back:
+
+```bash
+docker compose run --rm cli graph 0xSEED -f flow --depth 3 --out flow.html
+```
+
+Everything you did is still there. Say: *state is keyed by address, not by
+position — so it survives a different question about the same case.*
+
 ---
 
 ## Act 4 — somebody else can build on it (2 min)

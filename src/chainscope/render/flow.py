@@ -40,6 +40,7 @@ machine with no internet, which is where forensic work often happens.
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .graph import Edge, Graph, Node
@@ -142,9 +143,17 @@ def _edge_payload(edge: Edge) -> dict[str, Any]:
 
 
 def to_flow_html(
-    graph: Graph, *, title: str = "chainscope flow", visible_depth: int | None = None
+    graph: Graph,
+    *,
+    title: str = "chainscope flow",
+    visible_depth: int | None = None,
+    notes: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> str:
     """Render ``graph`` as a self-contained layered flow page.
+
+    ``notes`` attaches case-log entries to addresses, keyed by lowercase
+    address. They are shown with their author, because a note on a canvas with
+    no name against it is a scratchpad and this is a record two people share.
 
     ``visible_depth`` collapses everything past that hop count. The rows still
     ship inside the page --- a file:// document cannot fetch --- so expanding is
@@ -183,6 +192,7 @@ def to_flow_html(
         "undated": sum(1 for e in graph.edges.values() if not e.first_seen),
         "nodes": nodes,
         "edges": edges,
+        "notes": {k: list(v) for k, v in (notes or {}).items()},
         "assets": list(assets.values()),
         "seeds": [s.split(":", 2)[-1].lower() if ":" in s else s.lower() for s in graph.seeds],
         "visible_depth": cut,
@@ -248,11 +258,27 @@ border:1px solid var(--line)}
 .node rect{cursor:pointer}
 .node text{pointer-events:none}
 .muted{color:var(--muted)}
+#roster{border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:12px}
+#rosterlist{max-height:34vh;overflow:auto;margin:6px 0 0}
+#rosterlist label{display:flex;gap:7px;align-items:center;padding:2px 0;
+font-size:12px;cursor:pointer}
+#rosterlist label span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#find{width:100%;font:inherit;font-size:12px;padding:4px 7px;border-radius:6px;
+border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+.rowbtn{font-size:11px;padding:2px 7px;margin-right:5px}
+.mine{border-left:3px solid #a855f7;padding-left:7px}
+.note{border-left:2px solid var(--line);padding-left:9px;margin:8px 0;font-size:12px}
+.note b{font-weight:600}
+.note .by{color:var(--muted);font-size:11px}
+.gone{text-decoration:line-through;color:var(--muted)}
 </style></head><body>
 <header>
   <h1>__TITLE__</h1>
   <label>size by <select id="asset"></select></label>
   <button id="reset">clear route</button>
+  <button id="save" title="download this canvas as JSON">save canvas</button>
+  <button id="load" title="restore a saved canvas">load</button>
+  <input id="file" type="file" accept="application/json" hidden>
   <label id="scrubwrap" hidden>up to <input id="scrub" type="range" min="0" max="1000"
     value="1000" style="vertical-align:middle"> <span id="scrublabel"></span></label>
   <div class="legend" id="legend"></div>
@@ -260,7 +286,13 @@ border:1px solid var(--line)}
   <div class="warn" id="warn" hidden></div>
 </header>
 <main><div id="wrap"><svg id="svg"></svg></div>
-<aside><h2>selection</h2><div id="panel" class="muted">Click an address for its
+<aside>
+<section id="roster">
+  <h2>on this canvas <span id="rostercount" class="muted"></span></h2>
+  <input id="find" placeholder="filter by label or address">
+  <div id="rosterlist"></div>
+</section>
+<h2>selection</h2><div id="panel" class="muted">Click an address for its
 routes, or a flow for what it is made of.</div></aside></main>
 <script>
 const DATA = __DATA__, PALETTE = __PALETTE__;
@@ -285,7 +317,11 @@ if (DATA.collapsed_nodes) notes.push(DATA.collapsed_nodes +
   " are folded. A node showing +n has that many counterparties in this file, " +
   "not drawn until clicked.");
 if (DATA.note) notes.push(DATA.note);
-if (notes.length) { warn.textContent = notes.join(" "); warn.hidden = false; }
+function render(){
+  warn.textContent = notes.join("  ");
+  warn.hidden = notes.length === 0;
+}
+render();
 
 const cats = [...new Set(DATA.nodes.map(n => n.category).filter(Boolean))];
 document.getElementById("legend").innerHTML = cats.map(c =>
@@ -312,6 +348,79 @@ let selected = null;
 // Vertical offsets from dragging. Kept out of the layout so a redraw --- an
 // asset switch, a scrub --- keeps what the reader arranged.
 const nudge = new Map();
+
+// --------------------------------------------------------------- the canvas
+//
+// What makes this a document rather than a rendering. Everything a person did
+// to the picture --- what they hid, what they opened, what they dragged, what
+// they renamed --- keyed by **address**, never by position in the arrays.
+//
+// That is the whole property: re-run `chainscope graph` at a greater depth,
+// load the saved canvas into the new page, and the work survives. Keyed by
+// index it would silently reattach somebody's note to a different address,
+// which is worse than losing it.
+const KEY = "chainscope:canvas:" + DATA.seeds.join(",");
+const CANVAS_VERSION = 1;
+const hidden = new Set();
+const renamed = new Map();
+
+function canvasState(){
+  return {
+    version: CANVAS_VERSION,
+    seeds: DATA.seeds,
+    hidden: [...hidden],
+    opened: [...opened],
+    renamed: [...renamed],
+    nudge: [...nudge],
+    asset: sel.value,
+  };
+}
+
+// State for an address this view does not contain is **kept**, not dropped. A
+// narrower depth is a different question about the same case, and discarding
+// somebody's work because a limit changed is the failure this project exists
+// to avoid --- so it stays dormant and is counted out loud below.
+let dormant = 0;
+
+function applyState(raw){
+  if (!raw || raw.version !== CANVAS_VERSION) return false;
+  const here = new Set(DATA.nodes.map(n => n.id));
+  dormant = 0;
+  const take = (list, add) => (list || []).forEach(v => {
+    const id = Array.isArray(v) ? v[0] : v;
+    if (here.has(id)) add(v); else dormant++;
+  });
+  hidden.clear(); opened.clear(); renamed.clear(); nudge.clear();
+  take(raw.hidden, id => hidden.add(id));
+  take(raw.opened, id => opened.add(id));
+  take(raw.renamed, ([id, text]) => renamed.set(id, text));
+  take(raw.nudge, ([id, dy]) => nudge.set(id, dy));
+  if (raw.asset && [...sel.options].some(o => o.value === raw.asset)) sel.value = raw.asset;
+  return true;
+}
+
+function saveLocal(){
+  try { localStorage.setItem(KEY, JSON.stringify(canvasState())); }
+  catch (err) { /* private mode, or full. The canvas still works; it is the
+                   convenience copy that is lost, and the explicit save is the
+                   one that matters. */ }
+}
+
+function restoreLocal(){
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw) return applyState(JSON.parse(raw));
+  } catch (err) { /* corrupt or unreadable: start clean rather than half-apply */ }
+  return false;
+}
+
+// A person's own name for a node is not an attribution and must never look
+// like one. It is drawn with a marker, and the panel says whose it is --- the
+// same rule the type system applies to every claim, applied to the picture.
+function displayOf(n){
+  const mine = renamed.get(n.id);
+  return mine ? "\u270e " + mine : n.display;
+}
 // Scrub position as a fraction of the case's span. An edge is an aggregate
 // over a window, so "active by T" means it *started* by T -- an edge whose
 // span straddles the cursor is shown, because the money had begun moving.
@@ -383,6 +492,43 @@ function pathsTo(target, edges) {
   DATA.seeds.forEach(s => walk(s, [], new Set([s])));
   return {nodes, edges: used, hops: out, capped};
 }
+const find = document.getElementById("find");
+const rosterList = document.getElementById("rosterlist");
+const rosterCount = document.getElementById("rostercount");
+
+function roster(){
+  const q = find.value.trim().toLowerCase();
+  const rows = DATA.nodes
+    .filter(n => !q || n.id.includes(q) || displayOf(n).toLowerCase().includes(q))
+    .sort((a,b) => a.depth - b.depth || displayOf(a).localeCompare(displayOf(b)));
+  rosterList.textContent = "";
+  rows.forEach(n => {
+    const label = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = !hidden.has(n.id);
+    box.addEventListener("change", () => {
+      if (box.checked) hidden.delete(n.id); else hidden.add(n.id);
+      saveLocal(); roster(); draw();
+    });
+    const text = document.createElement("span");
+    text.textContent = displayOf(n) + "  \u00b7 h" + n.depth;
+    text.title = n.address;
+    if (renamed.has(n.id)) text.className = "mine";
+    if (hidden.has(n.id)) text.classList.add("gone");
+    label.appendChild(box); label.appendChild(text);
+    rosterList.appendChild(label);
+  });
+
+  // Said out loud, always. A picture quietly missing nodes somebody hid is a
+  // picture that looks complete and is not --- which is the single failure
+  // this whole view is arranged against.
+  const parts = [rows.length + " of " + DATA.nodes.length];
+  if (hidden.size) parts.push(hidden.size + " hidden by you");
+  if (dormant) parts.push(dormant + " saved for addresses not in this view");
+  rosterCount.textContent = "\u2014 " + parts.join(", ");
+}
+
 function draw(){
   const asset = sel.value;
   const edges = DATA.edges.filter(
@@ -394,7 +540,13 @@ function draw(){
   // does not leave a field of disconnected boxes.
   const live = new Set(DATA.seeds);
   edges.forEach(e => { live.add(e.source); live.add(e.target); });
-  const shown = DATA.nodes.filter(n => live.has(n.id) && isShown(n));
+  // Two separate questions, deliberately not merged. `isShown` is about
+  // coverage --- has the walk revealed this node yet. `hidden` is a view
+  // choice somebody made. Folding them into one predicate would make the fold
+  // logic untestable on its own and would let a display preference read as a
+  // fact about what was reached.
+  const shown = DATA.nodes.filter(
+    n => live.has(n.id) && isShown(n) && !hidden.has(n.id));
   const visible = new Set(shown.map(n => n.id));
 
   const cols = new Map();
@@ -403,7 +555,7 @@ function draw(){
     cols.get(n.depth).push(n); });
   const pos = new Map();
   [...cols.keys()].sort((a,b)=>a-b).forEach(d => {
-    cols.get(d).sort((a,b) => a.display.localeCompare(b.display))
+    cols.get(d).sort((a,b) => displayOf(a).localeCompare(displayOf(b)))
       .forEach((n,i) => pos.set(n.id, {x: PAD + d*COL, y: PAD + i*ROW}));
   });
 
@@ -471,8 +623,9 @@ function draw(){
     // A claim below HIGH is rendered as a claim. "Binance" and "maybe Binance"
     // must not read as the same statement.
     const hedge = n.label && n.confidence >= 0 && n.confidence < 3 ? "? " : "";
+    const shownName = displayOf(n);
     tx.textContent = hedge +
-      (n.display.length > 24 ? n.display.slice(0,23) + "\\u2026" : n.display);
+      (shownName.length > 24 ? shownName.slice(0,23) + "\\u2026" : shownName);
     grp.appendChild(tx);
     const t = document.createElementNS(NS,"title");
     t.textContent = n.address + (n.label ? "  \\u2014 " + n.label : "") +
@@ -535,8 +688,8 @@ function showEdge(e) {
   const where = "sender = '" + e.source + "' AND recipient = '" + e.target + "'" +
     (e.asset ? " AND asset = '" + e.asset + "'" : " AND asset IS NULL");
   out.push('<dt>the individual transfers</dt><dd class="muted">not in this file. Run:</dd>');
-  out.push("<dd><code>chainscope sql \"SELECT tx_hash, amount_raw, block, timestamp " +
-    "FROM transfers WHERE " + esc(where) + " ORDER BY block\"</code></dd>");
+  out.push('<dd><code>chainscope sql "SELECT tx_hash, amount_raw, block, ' +
+    'timestamp FROM transfers WHERE ' + esc(where) + ' ORDER BY block"</code></dd>');
   panel.innerHTML = out.join("");
 }
 
@@ -577,9 +730,50 @@ function show(n){
       + 'were never fetched \\u2014 the picture stops here because nobody looked, '
       + 'not because there is nothing.</dd>');
   if (n.tags.length) out.push("<dt>tags</dt><dd>" + n.tags.map(esc).join(", ") + "</dd>");
+  const mine = renamed.get(n.id);
+  if (mine) {
+    // Marked as yours every time it is shown. A name somebody typed and a
+    // sourced attribution must never read as the same statement --- that
+    // confusion is what `Attribution` exists to prevent, and a canvas that
+    // allowed it here would undo the guarantee at the last step.
+    out.push('<dt>your name for it</dt><dd class="mine">' + esc(mine) +
+      '</dd><dd class="muted">Yours, not an attribution. It is not stored as a ' +
+      'claim and travels only in this canvas. To assert it, run ' +
+      '<code>chainscope tag</code> with a source.</dd>');
+  }
+  (DATA.notes[n.id] || []).forEach(note => {
+    out.push('<dd class="note' + (note.superseded ? " gone" : "") + '"><b>' +
+      esc(note.kind) + "</b> " + esc(note.body) +
+      '<div class="by">' + esc(note.by) + " \u00b7 " + esc(note.at) +
+      (note.superseded ? " \u00b7 superseded" : "") + "</div></dd>");
+  });
   out.push("</dl>");
   // Assembled from escaped parts only; no untrusted value reaches innerHTML raw.
   panel.innerHTML = out.join("");
+
+  const bar = document.createElement("div");
+  bar.style.marginTop = "12px";
+  const rename = document.createElement("button");
+  rename.className = "rowbtn";
+  rename.textContent = mine ? "rename" : "name it";
+  rename.addEventListener("click", () => {
+    const next = window.prompt(
+      "Your name for this node. It is not an attribution and is not stored as " +
+      "one --- to assert what this address is, use `chainscope tag`.",
+      mine || "");
+    if (next === null) return;
+    if (next.trim()) renamed.set(n.id, next.trim()); else renamed.delete(n.id);
+    saveLocal(); roster(); draw(); show(n);
+  });
+  bar.appendChild(rename);
+  const hide = document.createElement("button");
+  hide.className = "rowbtn";
+  hide.textContent = "hide from canvas";
+  hide.addEventListener("click", () => {
+    hidden.add(n.id); saveLocal(); roster(); draw();
+  });
+  bar.appendChild(hide);
+  panel.appendChild(bar);
 }
 
 if (DATA.t_min !== null && DATA.t_max !== null && DATA.t_max > DATA.t_min) {
@@ -629,9 +823,55 @@ window.addEventListener("keydown", ev => {
 
 document.getElementById("reset").addEventListener("click", () => {
   selected = null; opened.clear();
-  route = {nodes: new Set(), edges: new Set(), hops: []}; draw();
+  route = {nodes: new Set(), edges: new Set(), hops: []};
+  saveLocal(); roster(); draw();
   const p = document.getElementById("panel");
   p.className="muted"; p.textContent="Click an address."; });
+
+// Two kinds of saving, and they are for different things. localStorage is the
+// one nobody should have to think about --- it survives a refresh and a closed
+// tab. The file is the one that leaves this machine: it goes next to the case,
+// into version control, or to a colleague, and it is the only one that can.
+document.getElementById("save").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify(canvasState(), null, 2)],
+    {type: "application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (DATA.title || "canvas").replace(/[^a-z0-9._-]+/gi, "-") + ".canvas.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+const fileInput = document.getElementById("file");
+document.getElementById("load").addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", () => {
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    let parsed;
+    try { parsed = JSON.parse(String(reader.result)); }
+    catch (err) { notes.push("that file is not readable JSON"); render(); return; }
+    if (!applyState(parsed)) {
+      notes.push("that canvas was written by a different version and was not applied");
+    } else if (dormant) {
+      // Not silent. A canvas that quietly dropped a third of somebody's work
+      // would look like it restored cleanly.
+      notes.push(dormant + " saved item(s) refer to addresses this graph does " +
+        "not contain. They are kept and will apply again if you re-run the " +
+        "graph wider.");
+    }
+    render();
+    saveLocal(); roster(); draw();
+  };
+  reader.readAsText(file);
+  fileInput.value = "";
+});
+
+restoreLocal();
+if (dormant) notes.push(dormant + " item(s) in the restored canvas refer to " +
+  "addresses outside this view --- kept, not discarded.");
+render();
+roster();
 draw();
 </script></body></html>
 """

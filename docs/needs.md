@@ -138,6 +138,21 @@ Node in the test suite. They are the substantive half of this view and they
 live in JavaScript, where the Python suite cannot reach --- shipping them
 unexercised would repeat what this project keeps finding elsewhere.
 
+**And it was not enough.** *Observed:* the emitted page had **never parsed**. A
+`\"` inside the Python template collapsed to a bare quote in the JavaScript, so
+the whole `<script>` was a syntax error and nothing in it ran --- no graph, no
+click-to-expand, no scrub. The file opened, drew a header, and showed an empty
+canvas. Every JavaScript test passed throughout, because they extract
+individual functions with a regex and run those: **a fragment that parses says
+nothing about the file.** It was found by opening the page in a browser, which
+no test did.
+
+The fix is one test that renders a real graph, takes the script tag a browser
+would take, and asks `node --check` whether it is a program. This is the same
+lesson as §2 in a new place: a check that exercises a *part* of an artefact is
+not a check on the artefact, and the gap it leaves is invisible from inside the
+suite.
+
 **Still open.** Click-to-expand reveals what was walked and cannot walk
 further; going past the outermost ring needs a live fetch, which needs the
 loopback server and a token. *Inferred:* worth doing, and it trades away the
@@ -160,13 +175,27 @@ their own copy, and a toggle decides whether your private labels travel with it.
 
 Two of those are worth taking as they are, and one is worth refusing:
 
-- **The roster.** Cheap, and it turns the canvas into something that can be
-  audited rather than only looked at. *Inferred:* the highest ratio of value to
-  work in this list.
-- **Persistence.** The real one, and architectural rather than cosmetic: the
-  layout, the folds, the scrub position and the annotations have to round-trip,
-  which means the view stops being a rendering of a query and starts being
-  state. Everything else here is downstream of it.
+- **The roster.** *Shipped.* A searchable list of every node with a visibility
+  checkbox, and the header states the count out loud --- "7 of 7, 1 hidden by
+  you". That sentence is the point: a picture quietly missing what somebody hid
+  is a picture that looks complete and is not.
+- **Persistence.** *Shipped.* Hidden nodes, opened folds, dragged offsets, the
+  chosen asset and per-node names round-trip --- to `localStorage` for a
+  refresh, and to a `.canvas.json` file for anything that leaves the machine.
+
+  The design decision worth naming: **state is keyed by address, never by
+  position in the arrays.** Re-run `chainscope graph` at a greater depth, load
+  the saved canvas into the new page, and the work survives. Keyed by index it
+  would silently reattach somebody's note to a different address, which is
+  worse than losing it. State for an address the current view does not contain
+  is **kept and counted**, not dropped --- a narrower depth is a different
+  question about the same case.
+
+  Renaming is allowed and is marked as yours every time it is shown, with the
+  panel saying it is not an attribution and does not travel outside the canvas.
+  A name somebody typed and a sourced claim must not read as the same
+  statement; that is what the type system enforces everywhere else, applied to
+  the picture.
 - **The hand-drawn edge, as they have it, is not worth copying.** An edge
   somebody drew is a hypothesis; an edge from a transfer is a record. Their
   canvas draws them identically, and this whole package exists because that
