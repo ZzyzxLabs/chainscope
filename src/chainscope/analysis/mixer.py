@@ -50,13 +50,22 @@ quoted as though it had.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
+from ..core.result import Finding, Result, Severity
+from ..providers.base import Capability
+from .base import Analyzer, Context
 
 __all__ = [
+    "DEPOSIT_TOPIC",
     "MAX_ANONYMITY_SET",
+    "TORNADO_ETH_POOLS",
+    "TORNADO_ROUTER",
+    "WITHDRAWAL_TOPIC",
+    "MixerAnalyzer",
     "MixerEvent",
     "MixerMatch",
     "correlate_withdrawals",
@@ -266,3 +275,215 @@ def correlate_withdrawals(
         )
 
     return result
+
+
+# --------------------------------------------------------------------- pools
+
+#: Tornado Cash ETH pools, by denomination. OFAC-sanctioned since August 2022;
+#: they are listed here because tracing funds *through* a sanctioned mixer is
+#: the ordinary work of an investigation, and an analyst who has to paste
+#: addresses from a blog post will paste one wrong eventually.
+TORNADO_ETH_POOLS: dict[str, str] = {
+    "0.1": "0x12d66f87a04a9e220743712ce6d9bb1b5616b8fc",
+    "1": "0x47ce0c6ed5b0ce3d3a51fdb1c52dc66a7c3c2936",
+    "10": "0x910cbd523d972eb0a6f4cae4618ad62622b39dbf",
+    "100": "0xa160cdab225685da1d56aa342ad8841c3b53f291",
+}
+
+#: The Router almost everything goes through since 2021.
+#:
+#: This is the trap worth writing down. Deposits are made by calling the
+#: *Router*, not the pool, so a filter that matches only pool addresses finds
+#: nothing at all --- and finds it silently, which reads as "this address never
+#: touched Tornado". Field notes record a whole case where every deposit went
+#: through the Router.
+TORNADO_ROUTER = "0xd90e2f925da726b50c4ed8d0fb90ad053324f31b"
+
+#: ``Withdrawal(address to, bytes32 nullifierHash, address indexed relayer,
+#: uint256 fee)``. ``to`` is the first non-indexed word of the data, which is
+#: what makes withdrawals enumerable without touching each transaction.
+WITHDRAWAL_TOPIC = "0xe9e508bad6d4c3227e881ca19068f099da81b5164dd6d62b2eaf1e8bc6c34931"
+
+#: ``Deposit(bytes32 indexed commitment, uint32 leafIndex, uint256 timestamp)``.
+#:
+#: The depositor is **not** in this event. It is the transaction sender, so
+#: enumerating deposits gives transaction hashes and each one still has to be
+#: resolved to find who made it --- which is a real cost and the reason this
+#: analyzer caps how many it will do.
+DEPOSIT_TOPIC = "0xa945e51eec50ab98c161376f0db4cf2aeba3ec92755fe2fcd388bdbbb80ff196"
+
+
+def _word(data: str, index: int) -> str:
+    """The ``index``-th 32-byte word of a log's data field."""
+    body = data[2:] if data.startswith("0x") else data
+    start = index * 64
+    return body[start : start + 64]
+
+
+def parse_withdrawal(log: dict[str, Any], chain_hint: str = "") -> MixerEvent | None:
+    """Turn a ``Withdrawal`` log into an event, or ``None`` if it is not one.
+
+    ``None`` rather than a guess. A log that does not parse is not a withdrawal
+    to nobody --- it is something this function does not understand, and
+    inventing an event for it would put an address in a correlation that never
+    withdrew anything.
+    """
+    topics = log.get("topics") or []
+    if not topics or str(topics[0]).lower() != WITHDRAWAL_TOPIC:
+        return None
+    data = str(log.get("data") or "")
+    recipient = _word(data, 0)
+    if len(recipient) != 64:
+        return None
+    try:
+        block = int(
+            str(log.get("blockNumber")), 16 if "x" in str(log.get("blockNumber")) else 10
+        )
+        index = int(
+            str(log.get("logIndex") or "0"), 16 if "x" in str(log.get("logIndex")) else 10
+        )
+    except (TypeError, ValueError):
+        return None
+    return MixerEvent(
+        tx=str(log.get("transactionHash") or ""),
+        block=block,
+        # Last twenty bytes of the word. Taking the whole word would produce a
+        # 32-byte string that matches no address anywhere downstream.
+        address="0x" + recipient[-40:],
+        index=index,
+    )
+
+
+class MixerAnalyzer(Analyzer):
+    """Correlate deposits and withdrawals for one mixer pool."""
+
+    name = "mixer"
+    version = "1.0"
+    description = "Pair mixer deposits with withdrawals by timing, with the anonymity set"
+
+    def applicable(self, ctx: Context) -> bool:
+        return bool(ctx.router.candidates(ctx.chain, Capability.LOGS))
+
+    def run(
+        self,
+        ctx: Context,
+        *,
+        pool: str = "10",
+        from_block: int = 0,
+        to_block: int | str = "latest",
+        window_blocks: int = 100,
+        deposits: str = "",
+        **_: Any,
+    ) -> Result:
+        """Enumerate a pool's withdrawals and pair them with known deposits.
+
+        ``deposits`` is a comma-separated list of deposit transaction hashes.
+        They are required rather than discovered, and that is a deliberate
+        limit: the ``Deposit`` event does not carry the depositor --- it is the
+        transaction sender --- so discovering them means resolving every deposit
+        in the range, and a busy pool has tens of thousands. An investigation
+        arrives here already knowing which deposits are its own.
+        """
+        started = datetime.now(timezone.utc)
+        address = TORNADO_ETH_POOLS.get(pool, pool).lower()
+        warnings: list[str] = []
+
+        if not deposits.strip():
+            raise ValueError(
+                "mixer correlation needs `deposits`: a comma-separated list of "
+                "deposit transaction hashes. The Deposit event does not name the "
+                "depositor, so they cannot be discovered from logs alone."
+            )
+
+        # The whole reason corroborate exists. An enumerative log query that
+        # silently returns a short list produces a *smaller anonymity set*,
+        # which inflates every confidence in the result -- the failure mode
+        # here is not a missing row but a stronger claim than the data supports.
+        found = ctx.router.corroborate(
+            ctx.chain,
+            Capability.LOGS,
+            lambda p: p.get_logs(
+                ctx.chain,
+                address=address,
+                topics=[WITHDRAWAL_TOPIC],
+                from_block=from_block,
+                to_block=to_block,
+            ),
+            key=lambda log: (
+                str(log.get("transactionHash", "")).lower(),
+                str(log.get("logIndex", "")),
+            ),
+        )
+        if not found.corroborated:
+            warnings.append(
+                f"withdrawal enumeration {found.summary()} A short list here does "
+                f"not merely lose rows --- it shrinks the anonymity set, and every "
+                f"confidence below is computed from that number."
+            )
+
+        withdrawals = [w for w in (parse_withdrawal(log) for log in found.rows) if w]
+        unparsed = len(found.rows) - len(withdrawals)
+        if unparsed:
+            warnings.append(
+                f"{unparsed} of {len(found.rows)} logs did not parse as Withdrawal "
+                f"events and were dropped rather than guessed at"
+            )
+        if not withdrawals:
+            return self._result(
+                ctx,
+                warnings=(*warnings, f"no withdrawals found for pool {address} in range"),
+                params={"pool": address},
+                started=started,
+            )
+
+        wanted = {h.strip().lower() for h in deposits.split(",") if h.strip()}
+        by_tx = {w.tx.lower(): w for w in withdrawals}
+        deposit_events = [
+            MixerEvent(tx=h, block=by_tx[h].block, address=h)
+            for h in sorted(wanted)
+            if h in by_tx
+        ]
+        missing = wanted - set(by_tx)
+        if missing:
+            # Deposit blocks have to come from somewhere. Rather than fetch each
+            # transaction, unknown hashes are reported as unresolvable -- which
+            # is honest, and better than a correlation built on a guessed block.
+            warnings.append(
+                f"{len(missing)} deposit hashes could not be placed in a block "
+                f"from the withdrawal logs alone and were skipped: they need "
+                f"`chainscope tx` to resolve first"
+            )
+
+        result = correlate_withdrawals(deposit_events, withdrawals, window_blocks=window_blocks)
+        findings = [
+            Finding(
+                title=(
+                    f"{m.withdrawal.address} is a probable withdrawal "
+                    f"({m.anonymity_set} candidate"
+                    f"{'' if m.anonymity_set == 1 else 's'})"
+                ),
+                severity=Severity.NOTABLE if m.anonymity_set <= 1 else Severity.INFO,
+                detail=m.summary(),
+                data={
+                    "recipient": m.withdrawal.address,
+                    "withdrawal_tx": m.withdrawal.tx,
+                    "gap_blocks": m.gap_blocks,
+                    "anonymity_set": m.anonymity_set,
+                    "confidence": m.confidence.name,
+                },
+            )
+            for m in result.matches
+        ]
+        if result.ambiguous:
+            warnings.append(
+                f"{len(result.ambiguous)} deposits had more than "
+                f"{MAX_ANONYMITY_SET} candidate withdrawals and were left unpaired"
+            )
+
+        return self._result(
+            ctx,
+            findings=tuple(findings),
+            warnings=tuple(warnings),
+            params={"pool": address, "window_blocks": window_blocks},
+            started=started,
+        )

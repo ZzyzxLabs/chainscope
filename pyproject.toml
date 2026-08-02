@@ -94,6 +94,7 @@ co_spend_cluster = "chainscope.analysis.cluster:CoSpendClusterAnalyzer"
 common_funder = "chainscope.analysis.funding:CommonFunderAnalyzer"
 temporal = "chainscope.analysis.temporal:TemporalAnalyzer"
 probing = "chainscope.analysis.probing:ProbingAnalyzer"
+mixer = "chainscope.analysis.mixer:MixerAnalyzer"
 
 [project.entry-points."chainscope.stores"]
 sqlite = "chainscope.store.sqlite:SqliteStore"
