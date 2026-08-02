@@ -59,8 +59,20 @@ class BinanceKlines(PriceSource):
         self._conn: sqlite3.Connection | None = None
 
     def is_offline(self) -> bool:
-        """True once a cache exists --- prefetched cases need no network."""
-        return self.path.exists()
+        """True once the cache holds something --- prefetched cases need no network.
+
+        It used to answer on the *file* existing. Opening the cache creates an
+        empty one, so a case that had never prefetched anything was told it
+        could run offline and then failed on every rate lookup. "Offline" is a
+        claim about having the data, not about having the file.
+        """
+        if not self.path.exists():
+            return False
+        try:
+            row = self._db().execute("SELECT 1 FROM klines LIMIT 1").fetchone()
+        except sqlite3.Error:
+            return False
+        return row is not None
 
     def _db(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -142,9 +154,16 @@ class BinanceKlines(PriceSource):
         stop = int(end.timestamp() * 1000)
         total = 0
         while cursor < stop:
-            rows = self._fetch(symbol, cursor, min(cursor + 1000 * 60_000, stop))
+            window = min(cursor + 1000 * 60_000, stop)
+            rows = self._fetch(symbol, cursor, window)
             if not rows:
-                break
+                # A window with no candles is a gap, not the end. Halting here
+                # left every minute *after* the gap uncached, so a prefetch
+                # covering a year silently stopped at the first quiet weekend
+                # --- and the case then valued nothing past it while reporting
+                # itself as prefetched.
+                cursor = window
+                continue
             total += self._store(symbol, rows)
             cursor = int(rows[-1][0]) + 60_000
             time.sleep(0.1)

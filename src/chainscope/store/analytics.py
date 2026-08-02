@@ -658,15 +658,31 @@ class AnalyticsView:
         return [(r[0], int(r[1]), r[2]) for r in rows]
 
     def counterparties(self, address: str, *, limit: int = 50) -> list[tuple[str, int, int]]:
-        """Everyone this address touched, either direction, by transfer count."""
+        """Everyone this address touched, either direction, by transfer count.
+
+        The third element is the number of **distinct assets** moved, not a sum
+        of amounts. It used to be `SUM(amount_raw)` across every asset, which
+        adds 18-decimal wei to 6-decimal USDC and produces a number denominated
+        in nothing --- and one that a caller ranking by it would read as size.
+
+        §3 of `docs/needs.md` records the same bug being found and fixed in the
+        graph renderer, where 18-decimal dust outranked 5,000 USDC and consumed
+        the traversal budget. This is the second copy. Raw amounts compare
+        within an asset and nowhere else, so a per-counterparty total is only
+        meaningful once the asset is chosen --- and choosing it here would be
+        guessing on the caller's behalf.
+
+        Use :meth:`flows`, which keeps the asset, when the amount is the
+        question.
+        """
         rows = (
             self.connect()
             .execute(
                 """
-            SELECT other, COUNT(*) n, SUM(amount_raw) FROM (
-                SELECT recipient AS other, amount_raw FROM transfers WHERE sender = ?
+            SELECT other, COUNT(*) n, COUNT(DISTINCT COALESCE(asset, symbol)) assets FROM (
+                SELECT recipient AS other, asset, symbol FROM transfers WHERE sender = ?
                 UNION ALL
-                SELECT sender AS other, amount_raw FROM transfers WHERE recipient = ?
+                SELECT sender AS other, asset, symbol FROM transfers WHERE recipient = ?
             ) WHERE other IS NOT NULL
             GROUP BY other ORDER BY n DESC LIMIT ?
             """,
@@ -674,7 +690,7 @@ class AnalyticsView:
             )
             .fetchall()
         )
-        return [(r[0], r[1], int(r[2])) for r in rows]
+        return [(r[0], int(r[1]), int(r[2])) for r in rows]
 
     def stats(self) -> dict[str, Any]:
         conn = self.connect()

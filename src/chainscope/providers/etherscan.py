@@ -91,6 +91,24 @@ def is_cacheable(body: Any) -> bool:
     return any(n in str(body.get("message", "")).lower() for n in _NO_DATA)
 
 
+def _row_index(action: str, row: dict[str, Any]) -> int:
+    """What separates two movements inside one transaction.
+
+    Token rows carry `logIndex`, which is the real discriminator. `txlist` and
+    `txlistinternal` produce no log, so `transactionIndex` is used --- it does
+    not separate two internal calls within one transaction, and nothing in the
+    API does. That residue is a known limit rather than a silent one: the
+    remaining collision is two internal transfers of an identical amount
+    between the same pair in the same transaction.
+    """
+    field = "logIndex" if action == "tokentx" else "transactionIndex"
+    raw = row.get(field)
+    try:
+        return int(str(raw), 0) if raw not in (None, "") else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 class EtherscanProvider(ReadOnlyProvider):
     """Explorer-backed history for EVM chains."""
 
@@ -372,6 +390,19 @@ class EtherscanProvider(ReadOnlyProvider):
                         timestamp=self._when(r),
                         block=int(r["blockNumber"]) if r.get("blockNumber") else None,
                         asset=self._addr(chain, r.get("contractAddress")),
+                        # What distinguishes two movements in one transaction.
+                        #
+                        # Left at the default 0, so the store's uniqueness key
+                        # --- which carries `log_index` precisely to keep these
+                        # apart --- could not do its job: two identical token
+                        # transfers in one transaction, an ordinary batched
+                        # payout, collapsed to one row with no error. Measured:
+                        # two rows in, one row out, the same shape the `asset`
+                        # and `kind` fixes were written for.
+                        #
+                        # `logIndex` for token rows; `transactionIndex` for
+                        # `txlist` and `txlistinternal`, which have no log.
+                        index=_row_index(action, r),
                     )
                 )
 
