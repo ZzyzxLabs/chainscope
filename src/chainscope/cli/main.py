@@ -17,6 +17,7 @@ from ..render.markdown import MarkdownRenderer
 from ..render.terminal import TerminalRenderer
 from .commands import (
     analyze,
+    attest,
     bundle,
     dashboard,
     doctor,
@@ -34,6 +35,7 @@ __all__ = ["main"]
 _COMMANDS = {
     "investigate": investigate,
     "analyze": analyze,
+    "attest": attest,
     "label": label,
     "tag": tag,
     "graph": graph,
