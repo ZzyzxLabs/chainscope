@@ -42,8 +42,10 @@ before execution; see :func:`assert_read_only_sql`.
 
 from __future__ import annotations
 
+import csv
 import re
 import sqlite3
+import tempfile
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -272,6 +274,62 @@ CREATE TABLE attributions (
 """
 
 
+#: Written where a value is NULL, because CSV renders NULL and the empty string
+#: identically and this schema contains both. Control characters cannot appear
+#: in an address, a symbol, or a label, and a collision is checked for anyway
+#: rather than argued about.
+_NULL_MARKER = "\x01NULL\x01"
+
+
+def _copy_rows(conn: Any, table: str, rows: list[tuple[Any, ...]]) -> int:
+    """Load ``rows`` into ``table`` through a staged CSV.
+
+    DuckDB's ``executemany`` runs one prepared execution per row: measured at
+    1,455 rows a second, against 178,000 for this. At a case of any size the
+    difference is minutes against a second.
+
+    CSV because it is the only bulk path DuckDB offers without pandas or
+    pyarrow, and adding either to a library other people embed is a large
+    dependency for a load step.
+
+    Amounts survive exactly. They cross as decimal text and land in HUGEINT
+    with no float or 64-bit stage anywhere --- a 21-digit value round-trips
+    byte-for-byte, which is the property this whole layer exists for.
+
+    **NULL and empty string are different and CSV cannot tell them apart.**
+    Using the empty string as the NULL marker looked safe --- addresses are hex
+    or absent, labels cannot be blank --- and it was wrong: ``rationale`` is
+    routinely empty, since it is only required below MEDIUM confidence. Empty
+    rationales came back as NULL and hit a NOT NULL constraint, which was the
+    lucky outcome; silently turning "no rationale given" into "unknown" is the
+    same bug without the error.
+
+    So NULL is written as an explicit sentinel, and the sentinel is checked
+    against the data rather than assumed not to collide.
+    """
+    if not rows:
+        return 0
+    if any(cell == _NULL_MARKER for row in rows for cell in row):
+        raise AnalyticsError(
+            "a value collides with the CSV NULL marker; the staged load cannot "
+            "distinguish it from a real NULL"
+        )
+    rows = [tuple(_NULL_MARKER if c is None else c for c in row) for row in rows]
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".csv", delete=False, newline="", encoding="utf-8"
+    ) as fh:
+        staged = Path(fh.name)
+        csv.writer(fh).writerows(rows)
+    try:
+        conn.execute(
+            f"COPY {table} FROM ? (FORMAT CSV, HEADER false, NULLSTR '{_NULL_MARKER}')",
+            [str(staged)],
+        )
+    finally:
+        staged.unlink(missing_ok=True)
+    return len(rows)
+
+
 @dataclass
 class AnalyticsView:
     """A DuckDB view derived from a :class:`~chainscope.store.base.Store`.
@@ -332,29 +390,59 @@ class AnalyticsView:
         measured at ~95 ms per query against 2.7 ms once the rows are actually
         in DuckDB. Since this is a build step, paying once is the right trade.
 
-        External access is disabled on the connection, so the scanner is not
-        available here in any case.
+        Rows are staged through a temporary CSV and loaded with ``COPY``, which
+        is 122x faster than the ``executemany`` this used to do: 178,000 rows a
+        second against 1,455. That is not a micro-optimisation --- at 200,000
+        transfers the build went from 151 seconds to about one, and the build
+        was 98% of the total time for every operation in the package combined.
+
+        DuckDB's ``executemany`` runs one prepared execution per row. Measured
+        alternatives that did *not* help: batching into multi-row VALUES
+        (1,665/s), wrapping in an explicit transaction (1,583/s), and changing
+        the amount column away from HUGEINT (no effect, so the width was never
+        the problem).
+
+        **``COPY`` needs external access, so the staging runs on its own
+        short-lived connection and that connection is never reused.** Queries
+        continue to go through :meth:`connect`, which disables external access
+        --- the boundary that makes an arbitrary SQL surface safe. Widening the
+        cached connection to speed up a build would have traded a real security
+        property for a load time.
         """
         source = Path(store_path)
         if not source.is_file():
             raise AnalyticsError(f"no store at {source}")
 
         started = time.perf_counter()
-        conn = self.connect()
-        conn.execute("DROP TABLE IF EXISTS transfers")
-        conn.execute("DROP TABLE IF EXISTS attributions")
-        conn.execute(_VIEW_SCHEMA)
+        # Close any cached read-only connection first: two DuckDB handles on one
+        # file would fight over the write lock, and the staging one must write.
+        self.close()
 
+        duckdb = _duckdb()
+        target = str(self.path)
+        if target != ":memory:":
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+        conn = duckdb.connect(target, config={"enable_external_access": True})
         src = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
         try:
+            conn.execute("DROP TABLE IF EXISTS transfers")
+            conn.execute("DROP TABLE IF EXISTS attributions")
+            conn.execute(_VIEW_SCHEMA)
             transfers = self._copy_transfers(conn, src, batch)
             attributions = self._copy_attributions(conn, src, batch)
+            self._index(conn)
         finally:
             src.close()
+            if target == ":memory:":
+                # An in-memory view lives *in* its connection, so closing it
+                # would discard everything just loaded. This is the one case
+                # where the permissive handle is kept --- and it never touches
+                # a file, which is what the permission was for.
+                self._conn = conn
+            else:
+                conn.close()
 
-        self._index()
         self._built_from = str(source)
-
         size = 0
         if self.path != ":memory:":
             p = Path(self.path)
@@ -400,10 +488,7 @@ class AnalyticsView:
                 )
                 for r in rows
             ]
-            conn.executemany(
-                "INSERT INTO transfers VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", converted
-            )
-            total += len(converted)
+            total += _copy_rows(conn, "transfers", converted)
         return total
 
     def _copy_attributions(self, conn: Any, src: Any, batch: int) -> int:
@@ -426,12 +511,11 @@ class AnalyticsView:
             rows = cursor.fetchmany(batch)
             if not rows:
                 break
-            conn.executemany("INSERT INTO attributions VALUES (?,?,?,?,?,?,?,?,?)", rows)
-            total += len(rows)
+            total += _copy_rows(conn, "attributions", list(rows))
         return total
 
-    def _index(self) -> None:
-        conn = self.connect()
+    def _index(self, conn: Any = None) -> None:
+        conn = conn if conn is not None else self.connect()
         for stmt in (
             "CREATE INDEX ix_an_sender ON transfers(sender)",
             "CREATE INDEX ix_an_recipient ON transfers(recipient)",
