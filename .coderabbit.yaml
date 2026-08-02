@@ -160,6 +160,31 @@ reviews:
         returns is what equality checks use, so an error here silently breaks
         every comparison downstream.
 
+    - path: "src/chainscope/store/**"
+      instructions: >
+        Two invariants govern this layer.
+
+        First: the store must remain fully rebuildable from the cache. Flag any
+        write path that puts data into the store which could not be regenerated
+        from recorded provider responses -- that silently turns a derived index
+        into a source of truth, and the case-bundle guarantee stops holding.
+
+        Second: amounts are stored as zero-padded decimal text, not INTEGER.
+        SQLite integers are 64-bit and overflow at ~9.2e18, which a single 10
+        ETH transfer (1e19 wei) already exceeds. Flag any SUM(), CAST(... AS
+        INTEGER), or arithmetic on amounts performed in SQL -- aggregation must
+        happen in Python where integers are arbitrary precision. This defect
+        occurred twice during development.
+
+        Ingestion is demand-driven and re-walks the same ranges constantly, so
+        writes must be idempotent. Flag an INSERT without OR IGNORE or an
+        equivalent conflict clause.
+
+        `frontier` distinguishes addresses that were seen from addresses that
+        were expanded. Flag anything that erases that distinction: a traversal
+        that stopped at a limit and one that found nothing further look
+        identical without it.
+
     - path: "src/chainscope/render/**"
       instructions: >
         Renderers must preserve the confidence distinction. Anything below

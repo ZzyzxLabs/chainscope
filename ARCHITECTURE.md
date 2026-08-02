@@ -175,6 +175,18 @@ The transport layer has no signing path. `Query` is a closed union of read
 operations, and the wire layer additionally rejects `eth_send*`, `eth_sign*`,
 `personal_*`, `miner_*`, and `admin_*`.
 
+The check lives at `Client._send`, the one point every outbound request passes
+through, and it inspects the request *body* rather than a method argument. That
+placement is the whole guarantee. An earlier version checked only inside `rpc()`,
+which left two ordinary paths open: a hand-built `post()`, and a JSON-RPC batch,
+where the method names sit inside a list and there is no single method argument
+to inspect. Explorer APIs need the same treatment, since the Etherscan family
+exposes `?module=proxy&action=eth_sendRawTransaction` over a plain `GET`.
+
+The rule generalises: a guarantee enforced at the convenient entry point is a
+convention. Enforced where every path converges, it is a property — and it has
+to hold for a provider written by someone who never read this document.
+
 A forensics tool that can move funds is a liability to its users. Several
 research and competition contexts also mandate read-only analysis outright; a
 tool that cannot violate the rule is better than one that merely should not.

@@ -45,7 +45,11 @@ through three tools and emerge looking like a fact.
 ### Security properties
 
 - Read-only by construction. The transport layer rejects `eth_send*`,
-  `eth_sign*`, `personal_*`, `miner_*`, and `admin_*` before a request is built
+  `eth_sign*`, `personal_*`, `miner_*`, and `admin_*` before a request is built.
+  Enforced at `Client._send` — the single point every outbound request passes
+  through — by inspecting the request body, so JSON-RPC batches, hand-built
+  `post()` calls, and explorer `?action=eth_sendRawTransaction` over `GET` are
+  covered, not only `rpc()`
 - Case bundles are treated as untrusted input: JSON only, no pickle, no dynamic
   import, manifest version checked
 - API keys are redacted from the audit log, including keys embedded in URL paths
@@ -62,6 +66,15 @@ of failure this project is specifically meant to avoid.
   `eth-utils` delegates keccak to `eth-hash`, which ships no backend
 - `Throttle.acquire` deadlocked under concurrency by taking a non-reentrant lock
   twice; single-threaded tests never noticed
+- JSON-RPC responses were cached under a key derived from the endpoint *host*,
+  so `host/eth` and `host/bsc` collided and the second chain silently received
+  the first chain's answer. Tracing one contract deployed at the same address on
+  several networks walks straight into it. Keyed on chain identity now, which
+  also makes a recorded cache replayable against a different node
+- The read-only guarantee was enforced inside `rpc()` only, leaving `post()` and
+  JSON-RPC batches unchecked. Moved to `Client._send` and made to inspect the
+  request body; the regression test shows the pre-fix code putting a broadcast
+  on the wire
 - Peel-chain change detection awarded a decisive "largest output" bonus to
   whichever of two equal outputs came first — an arbitrary tiebreak in the one
   place the analyzer exists to refuse to make one
