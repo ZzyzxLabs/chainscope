@@ -116,17 +116,32 @@ renders a five-hop laundering chain and a five-way split identically.
 **What follows.** Shipped: the layered flow view, columns by hop distance,
 per-asset edge widths, frontier drawn as frontier, truncation on the canvas.
 
-**Still open, and named honestly.** MetaSleuth and MistTrack have things this
-does not: a time axis you can scrub, path highlighting from source to sink, and
-click-to-expand that fetches more rather than only revealing what was already
-walked. *Inferred* priority order, from what the challenge work actually needed:
+The three things MetaSleuth and MistTrack had that this did not --- a scrubable
+time axis, path highlighting, and click-to-expand --- are **all three shipped**,
+in the *inferred* priority order below. The order came from what the challenge
+work actually needed rather than from feature parity, which is why the one
+those products lead with came last here:
 
 1. **Path highlight** --- the CH08 case is a tree of routes and reading one
-   route at a time is the whole task.
-2. **Click to expand** --- the frontier is honest but static; expanding from
-   the picture is how anyone would use it.
-3. **Time scrubbing** --- valuable, and the least often needed of the three:
-   `temporal` already answers the timing questions in text.
+   route at a time is the whole task. Every route from a seed, not the
+   shortest: a split that rejoins is the structure worth seeing.
+2. **Click to expand** --- folded hops ship inside the page, since a file://
+   document cannot fetch. One ring per click, so there is always either a `+n`
+   or a frontier marker and never a picture that merely stops.
+3. **Time scrubbing** --- last, because `temporal` already answers timing
+   questions in text. An edge is an aggregate over a span, so "active by T"
+   means it *started* by T, and an undated edge is shown at every position:
+   a provider omitting a timestamp is not evidence about when money moved.
+
+The route finder, the reveal rule, and the scrub predicate all execute under
+Node in the test suite. They are the substantive half of this view and they
+live in JavaScript, where the Python suite cannot reach --- shipping them
+unexercised would repeat what this project keeps finding elsewhere.
+
+**Still open.** Click-to-expand reveals what was walked and cannot walk
+further; going past the outermost ring needs a live fetch, which needs the
+loopback server and a token. *Inferred:* worth doing, and it trades away the
+property that the file works with no network.
 
 ---
 

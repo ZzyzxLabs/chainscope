@@ -133,6 +133,11 @@ def _edge_payload(edge: Edge) -> dict[str, Any]:
         # would round them. Formatting happens with BigInt on the page.
         "raw": str(edge.total_raw),
         "transfers": edge.transfer_count,
+        # Unix seconds. An edge is an aggregate over a span, not a moment, so
+        # both ends travel: scrubbing to a point in the middle of a span has to
+        # be able to say the flow had started and not finished.
+        "first": edge.first_seen,
+        "last": edge.last_seen,
     }
 
 
@@ -167,8 +172,15 @@ def to_flow_html(
         if int(edge.total_raw) > int(entry["max"]):
             entry["max"] = str(edge.total_raw)
 
+    stamps = [s for e in graph.edges.values() for s in (e.first_seen, e.last_seen) if s]
     payload = {
         "title": title,
+        "t_min": min(stamps) if stamps else None,
+        "t_max": max(stamps) if stamps else None,
+        # How many edges carry no timestamp at all. They are shown at every
+        # position rather than hidden, because a provider that omitted a
+        # timestamp is not evidence the flow happened outside the window.
+        "undated": sum(1 for e in graph.edges.values() if not e.first_seen),
         "nodes": nodes,
         "edges": edges,
         "assets": list(assets.values()),
@@ -238,6 +250,8 @@ border:1px solid var(--line)}
   <h1>__TITLE__</h1>
   <label>size by <select id="asset"></select></label>
   <button id="reset">clear route</button>
+  <label id="scrubwrap" hidden>up to <input id="scrub" type="range" min="0" max="1000"
+    value="1000" style="vertical-align:middle"> <span id="scrublabel"></span></label>
   <div class="legend" id="legend"></div>
   <div class="warn" id="warn" hidden></div>
 </header>
@@ -290,6 +304,23 @@ function fmt(raw, decimals){
 }
 
 let selected = null;
+// Scrub position as a fraction of the case's span. An edge is an aggregate
+// over a window, so "active by T" means it *started* by T -- an edge whose
+// span straddles the cursor is shown, because the money had begun moving.
+let cutoff = null;
+
+function activeAt(e) {
+  if (cutoff === null) return true;
+  // No timestamp is not evidence the flow happened later. A provider that
+  // omitted one leaves the edge visible at every position rather than hidden
+  // at all of them, and the banner says how many are in that state.
+  if (!e.first) return true;
+  return e.first <= cutoff;
+}
+
+function stamp(t) {
+  return new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
 // Addresses the reader has opened. A node ships collapsed when it lies past
 // the drawn depth; revealing it costs nothing because the rows are already
 // here, and a file:// page cannot fetch anyway.
@@ -346,7 +377,8 @@ function pathsTo(target, edges) {
 }
 function draw(){
   const asset = sel.value;
-  const edges = DATA.edges.filter(e => (e.asset || e.symbol || "native") === asset);
+  const edges = DATA.edges.filter(
+    e => (e.asset || e.symbol || "native") === asset && activeAt(e));
   const meta = DATA.assets.find(a => a.key === asset) || {max:"1", decimals:18, symbol:""};
   const maxRaw = BigInt(meta.max || "1") || 1n;
 
@@ -482,6 +514,26 @@ function show(n){
   panel.innerHTML = out.join("");
 }
 
+if (DATA.t_min !== null && DATA.t_max !== null && DATA.t_max > DATA.t_min) {
+  const wrap = document.getElementById("scrubwrap");
+  const bar = document.getElementById("scrub");
+  const label = document.getElementById("scrublabel");
+  wrap.hidden = false;
+  const setCut = () => {
+    const f = Number(bar.value) / 1000;
+    cutoff = f >= 1 ? null : Math.round(DATA.t_min + (DATA.t_max - DATA.t_min) * f);
+    label.textContent = cutoff === null ? "all of it" : stamp(cutoff);
+    // Selection is cleared: a highlighted route through an edge that is no
+    // longer shown would leave a lit path with a hole in it.
+    selected = null; route = {nodes: new Set(), edges: new Set(), hops: []};
+    draw();
+  };
+  bar.addEventListener("input", setCut);
+  setCut();
+}
+if (DATA.undated) notes.push(DATA.undated +
+  " flow(s) carry no timestamp and stay visible at every scrub position \u2014 " +
+  "a provider omitting one is not evidence the money moved later.");
 sel.addEventListener("change", draw);
 document.getElementById("reset").addEventListener("click", () => {
   selected = null; opened.clear();

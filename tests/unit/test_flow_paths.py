@@ -194,3 +194,59 @@ class TestClickToExpand:
         edges = [edge(A, B), edge(A, C), edge(B, D), edge(C, D)]
         assert D in reveal(nodes, edges, [B])["shown"]
         assert D in reveal(nodes, edges, [C])["shown"]
+
+
+def _active_script() -> str:
+    page = to_flow_html(Graph(seeds=[]))
+    body = page.split("<script>", 1)[1].split("</script>", 1)[0]
+    m = re.search(r"function activeAt.*?\n}\n", body, re.DOTALL)
+    assert m, "activeAt not found in the generated page"
+    return m.group(0)
+
+
+def active(edges, cutoff):
+    js = f"""
+let cutoff = {json.dumps(cutoff)};
+{_active_script()}
+console.log(JSON.stringify({json.dumps(edges)}.filter(activeAt).map(e => e.id)));
+"""
+    out = subprocess.run(
+        ["node", "-e", js], capture_output=True, text=True, timeout=30, check=True
+    )
+    return json.loads(out.stdout)
+
+
+class TestTimeScrubbing:
+    """An edge is an aggregate over a span, not a moment, so "active by T"
+    means it started by T. An edge whose span straddles the cursor is shown ---
+    the money had begun moving, and hiding it would misreport the case as
+    quieter than it was."""
+
+    EDGES: ClassVar = [
+        {"id": "early", "first": 100, "last": 200},
+        {"id": "straddling", "first": 250, "last": 500},
+        {"id": "late", "first": 600, "last": 700},
+        {"id": "undated", "first": None, "last": None},
+    ]
+
+    def test_no_cutoff_shows_everything(self):
+        assert set(active(self.EDGES, None)) == {"early", "straddling", "late", "undated"}
+
+    def test_a_cutoff_hides_what_had_not_started(self):
+        assert "late" not in active(self.EDGES, 300)
+
+    def test_an_edge_spanning_the_cursor_is_shown(self):
+        """It started before T and finished after. The money had begun."""
+        assert "straddling" in active(self.EDGES, 300)
+
+    def test_the_boundary_is_inclusive(self):
+        assert "late" in active(self.EDGES, 600)
+
+    def test_an_undated_edge_is_never_hidden(self):
+        """A provider omitting a timestamp is not evidence the flow happened
+        later. Hiding it would turn a gap in the data into a claim about time."""
+        for cut in (0, 100, 650, None):
+            assert "undated" in active(self.EDGES, cut)
+
+    def test_the_earliest_cutoff_still_shows_the_earliest_flow(self):
+        assert "early" in active(self.EDGES, 100)

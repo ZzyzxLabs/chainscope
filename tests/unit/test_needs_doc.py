@@ -70,7 +70,18 @@ class TestItCoversWhatTheSessionFound:
     def test_each_measured_failure_is_recorded(self, evidence, text):
         assert evidence in text
 
-    def test_the_visualization_gap_is_named_not_glossed(self, text):
+    def test_the_visualization_comparison_is_still_named(self, text):
+        """The reference point stays even now the gap is closed. Deleting it
+        would leave three shipped features with no record of what they were
+        measured against."""
         assert "MetaSleuth" in text
-        for missing in ("time axis", "Path highlight", "Click to expand"):
-            assert missing in text
+        for item in ("time axis", "Path highlight", "Click to expand"):
+            assert item in text
+
+    def test_each_visualisation_item_carries_its_reasoning(self, text):
+        """Shipped is not the interesting part. Why time scrubbing came last,
+        and what an undated edge does, is what a reader needs."""
+        section = text.split("professional visualization", 1)[1]
+        assert "temporal` already answers" in section
+        assert "not evidence about when money moved" in section
+        assert "file://" in section
