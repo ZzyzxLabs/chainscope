@@ -175,6 +175,27 @@ whole job.
 
 ---
 
+**Check your own registration, in your own test suite.** An entry point can
+resolve to anything, and pointing it at a function instead of a class fails at
+the *point of use* with a message about a different problem --- this package did
+it twice to itself:
+
+```python
+from importlib.metadata import entry_points
+
+from chainscope.analysis.base import Analyzer
+from tests.unit.test_entry_point_contract import check_entry_point
+
+for ep in entry_points(group="chainscope.analyzers"):
+    check_entry_point(ep, Analyzer)
+```
+
+chainscope will report a broken plugin under `analyze --list` as *registered but
+unusable*, with the reason --- but it exits **zero**, because a defect in your
+package is not chainscope failing, and a user should not have every
+`analyze --list` in their scripts break over a package they cannot fix from
+there. The failure belongs in your suite, which is why the check is exported.
+
 ## Adding an attribution source
 
 This one has an extra requirement, and CI enforces it.

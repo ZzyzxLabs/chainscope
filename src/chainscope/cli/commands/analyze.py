@@ -34,6 +34,7 @@ def _discover() -> tuple[dict[str, type[Analyzer]], dict[str, str]]:
             obj = ep.load()
         except Exception as exc:
             broken[ep.name] = f"failed to import ({type(exc).__name__}: {exc})"
+            _BROKEN_SOURCE[ep.name] = ep.value
             continue
         if not (isinstance(obj, type) and issubclass(obj, Analyzer)):
             kind = "function" if callable(obj) else type(obj).__name__
@@ -41,9 +42,19 @@ def _discover() -> tuple[dict[str, type[Analyzer]], dict[str, str]]:
                 f"{ep.value} is a {kind}, not an Analyzer subclass; "
                 f"the entry point points at the wrong object"
             )
+            _BROKEN_SOURCE[ep.name] = ep.value
             continue
         found[ep.name] = obj
     return found, broken
+
+
+#: Where a broken registration came from, recorded at discovery so the exit
+#: code can tell this package's packaging mistake from a plugin author's.
+_BROKEN_SOURCE: dict[str, str] = {}
+
+
+def _is_ours(name: str, broken: dict[str, str]) -> bool:
+    return _BROKEN_SOURCE.get(name, "").startswith("chainscope.")
 
 
 def available() -> dict[str, type[Analyzer]]:
@@ -114,9 +125,16 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
             print("\nregistered but unusable\n")
             for name, why in sorted(broken.items()):
                 print(f"  {name:20} {why}")
-        # A broken registration is a real defect in whatever registered it, and
-        # exiting zero would let a packaging mistake ship unnoticed.
-        return 1 if broken else 0
+        # Non-zero for *our own* broken registrations, which is what this was
+        # written for: two of this package's entry points once pointed at plain
+        # functions, and exiting zero would let that ship again.
+        #
+        # A third-party plugin's mistake is reported above and does not fail the
+        # command. Otherwise installing somebody's broken plugin makes every
+        # `chainscope analyze --list` in a user's scripts exit 1 forever, for a
+        # defect in a package they cannot fix from here --- and the question
+        # `--list` asks, "what is available", was answered.
+        return 1 if any(_is_ours(name, broken) for name in broken) else 0
 
     if args.analyzer in broken:
         print(f"{args.analyzer} is registered but unusable: {broken[args.analyzer]}")

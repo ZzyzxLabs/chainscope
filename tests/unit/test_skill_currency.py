@@ -20,6 +20,20 @@ import pytest
 from chainscope.cli.commands.analyze import available
 from chainscope.cli.main import _COMMANDS
 
+
+def ours() -> list[str]:
+    """Analyzers **this package** ships.
+
+    `available()` includes installed plugins, and the skill documents
+    chainscope --- so a user's third-party analyzer would otherwise fail this
+    file for not being mentioned in a document that is not about it. Verified
+    by installing one.
+    """
+    return sorted(
+        name for name, cls in available().items() if cls.__module__.startswith("chainscope.")
+    )
+
+
 SKILL = Path(__file__).resolve().parents[2] / "skills" / "chainscope" / "SKILL.md"
 
 
@@ -36,12 +50,12 @@ def test_the_check_found_something() -> None:
     against three times. It belongs next to every `parametrize` over a
     discovered set, not in the one file where it was noticed.
     """
-    assert available(), "no analyzers discovered; the entry-point lookup is stale"
+    assert ours(), "no analyzers discovered; the entry-point lookup is stale"
     assert _COMMANDS, "the CLI dispatch table is empty or was renamed"
 
 
 class TestItCoversWhatIsInstalled:
-    @pytest.mark.parametrize("name", sorted(available()))
+    @pytest.mark.parametrize("name", ours())
     def test_every_registered_analyzer_is_mentioned(self, name, text):
         assert name in text, (
             f"{name} is installed and the skill does not mention it. An agent "
