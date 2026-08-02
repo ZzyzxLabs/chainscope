@@ -467,10 +467,21 @@ ever serves EVM, ENS is Ethereum-only --- and the rest are in chain-agnostic
 code: taint, temporal, mixer, the flow renderer, the resolver, watch.
 
 **What follows.** `chains.address_key` defers to the adapter, so the rule has
-one definition again. Seven sites fixed and pinned. The remaining twenty are
-**counted in a test that may shrink and never grow** --- a new one fails CI. That
-is debt, stated as debt: "twenty known, none new" is a true claim about a
-bounded problem, where a green suite with no count would be a false one.
+one definition again, and `chains.fold_if_hex` is the documented fallback for
+the few places that compare two addresses from the same feed with no `ChainId`
+to hand.
+
+The count went into a test that may shrink and never grow. It started at twenty
+and is now **zero**: taint and temporal derive the comparison from the
+transfers' own chain; the analyzer seeds go through `ctx.chain`; the mixer,
+funding cluster, watch rules and flow renderer use the shared fallback; the
+resolver's cache key is chain-aware. What is left on the allow-list is
+genuinely correct --- an Etherscan export is EVM by definition, `CREATE`
+derivation is nonce-based, and `TaintResult.share` tries both spellings on
+purpose.
+
+The test stays at zero rather than being deleted. This spread by being copied,
+and the cheapest way to stop the eighth copy is a check that fails on it.
 
 The transmission mechanism was documentation. `docs/extending.md` --- the file a
 plugin author copies from --- showed `self._index.get(address.lower())` in its

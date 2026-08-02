@@ -65,7 +65,7 @@ FIFO reference implementation: ``TaintChain/RustyTaintChain``.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -166,10 +166,19 @@ class TaintResult:
         return sum(self.tainted.values())
 
     def share(self, address: str, balance: int) -> float:
-        """Fraction of ``balance`` that is tainted, 0.0--1.0."""
+        """Fraction of ``balance`` that is tainted, 0.0--1.0.
+
+        Both spellings are tried rather than lowercasing. `tainted` is keyed by
+        whatever the transfers carried, and lowercasing a base58 address asks
+        about a different account --- so on Solana, Sui and Bitcoin this
+        returned 0.0 for every address that did hold tainted value.
+        """
         if balance <= 0:
             return 0.0
-        return min(1.0, self.tainted.get(address.lower(), 0) / balance)
+        held = self.tainted.get(address)
+        if held is None:
+            held = self.tainted.get(address.lower(), 0)
+        return min(1.0, held / balance)
 
     def summary(self) -> str:
         return (
@@ -190,6 +199,28 @@ class TaintResult:
             # into an exact integer.
             "addresses": {a: str(v) for a, v in sorted(self.tainted.items())},
         }
+
+
+def _keying(transfers: list[Any]) -> Callable[[str], str]:
+    """How to compare an address against these transfers.
+
+    Derived from the transfers' own chain. They arrive from a chain-scoped
+    query and already carry normalised keys, so the only question is how to
+    normalise what the *caller* passed --- and `.lower()` answers it correctly
+    for EVM and wrongly for Solana, Sui and Bitcoin, where it asks about a
+    different account entirely.
+
+    With no transfers, or a mix of chains, the address is compared as written.
+    That is the safe direction: a miss rather than a match against somebody
+    else's address.
+    """
+    chains = {str(t.chain) for t in transfers if getattr(t, "chain", None)}
+    if len(chains) != 1:
+        return lambda address: address.strip()
+    from ..chains import address_key
+
+    only = next(iter(chains))
+    return lambda address: address_key(only, address)
 
 
 def trace_taint(
@@ -222,8 +253,13 @@ def trace_taint(
     # so a single queue is arithmetic on mismatched units.
     holdings: dict[tuple[str, str], deque[Lot]] = {}
 
+    # The chain the transfers are on decides how an address compares. Taken
+    # from the data rather than lowercased: these rows come from one
+    # chain-scoped query, and `.lower()` is right on exactly one ecosystem.
+    as_key = _keying(transfers)
+
     def bucket(address: str, asset: str) -> deque[Lot]:
-        return holdings.setdefault((address.lower(), asset), deque())
+        return holdings.setdefault((as_key(address), asset), deque())
 
     # Opening balances are the native asset unless said otherwise; a caller
     # with token balances passes a (address, asset) mapping.
@@ -236,7 +272,7 @@ def trace_taint(
     result = TaintResult(policy=policy)
     for seed_key, seed_amount in seeded.items():
         address, asset = seed_key if isinstance(seed_key, tuple) else (seed_key, "")
-        result.touched.add(address.lower())
+        result.touched.add(as_key(address))
         if seed_amount > 0:
             bucket(address, asset).append(Lot(seed_amount, seed_amount))
 
@@ -409,7 +445,7 @@ def trace_origins(
     examination and an unbounded walk would return the chain's history.
     """
     address, asset = target if isinstance(target, tuple) else (target, "")
-    address = address.lower()
+    address = _keying(transfers)(address)
 
     # Replay forward, tracking provenance per lot. A lot's origin is whoever
     # sent it; a lot spent onward carries its origin with it, which is what

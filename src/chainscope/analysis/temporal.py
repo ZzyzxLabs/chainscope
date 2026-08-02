@@ -40,11 +40,12 @@ import itertools
 import math
 import statistics
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from ..chains import address_key
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..core.result import Finding, Result, Severity
@@ -323,6 +324,19 @@ class Timed(Protocol):
     def recipient(self) -> Any: ...
 
 
+def _keying(transfers: Sequence[Any]) -> Callable[[str], str]:
+    """How to compare an address against these transfers --- from their chain.
+
+    With no transfers, or a mix of chains, the address is compared as written:
+    a miss rather than a match against somebody else's address.
+    """
+    chains = {str(t.chain) for t in transfers if getattr(t, "chain", None)}
+    if len(chains) != 1:
+        return lambda address: address.strip()
+    only = next(iter(chains))
+    return lambda address: address_key(only, address)
+
+
 def profile_activity(
     transfers: Iterable[Timed], address: str, *, direction: str = "out"
 ) -> ActivityProfile:
@@ -332,14 +346,19 @@ def profile_activity(
     else's timing, and folding them in measures the union of two schedules ---
     which is nobody's.
     """
-    key = address.lower()
+    # Compared the way the transfers' own chain compares. `.lower()` on both
+    # sides is right on EVM and asks about a different account on Solana, Sui
+    # and Bitcoin --- where it produced an empty series, which `profile` then
+    # reports as "not enough timestamps to place anyone".
+    rows = list(transfers)
+    key = _keying(rows)(address)
     times: list[datetime] = []
-    for t in transfers:
+    for t in rows:
         if t.timestamp is None:
             continue
-        if direction == "out" and not (t.sender and t.sender.key.lower() == key):
+        if direction == "out" and not (t.sender and t.sender.key == key):
             continue
-        if direction == "in" and not (t.recipient and t.recipient.key.lower() == key):
+        if direction == "in" and not (t.recipient and t.recipient.key == key):
             continue
         times.append(t.timestamp.astimezone(timezone.utc))
 
@@ -456,7 +475,7 @@ class TemporalAnalyzer(Analyzer):
         if direction not in ("out", "in"):
             raise ValueError(f"direction must be 'out' or 'in', got {direction!r}")
 
-        seed = address.lower()
+        seed = address_key(ctx.chain, address)
         per_node = ctx.limit("per_node", 1000)
         history, completeness = history_of(
             ctx,

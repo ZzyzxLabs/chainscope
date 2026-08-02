@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
+from ..chains import address_key
 from ..core.attribution import Attribution, Category, Confidence, ResolvedEntity, merge
 from ..core.chainid import ChainId
 from .base import Source, SourceError
@@ -104,7 +105,9 @@ class Resolver:
         return self
 
     def resolve(self, address: str, chain: ChainId | None = None) -> Resolution:
-        key = (address.lower(), str(chain) if chain else None)
+        # Chain-aware: two distinct base58 addresses shared one cache entry,
+        # so the second lookup returned the first one's claims.
+        key = (address_key(chain, address), str(chain) if chain else None)
         if (hit := self._cache.get(key)) is not None:
             return hit
 

@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ...chains import address_key
 from ...core.chainid import ChainId
 from ...render.base import Renderer
 from ...render.flow import to_flow_html
@@ -286,7 +287,7 @@ def _walk(
 
     ways = ("out", "in") if direction == "both" else (direction,)
     frontier = [seed]
-    expanded: set[str] = {seed.lower()}
+    expanded: set[str] = {address_key(chain, seed)}
     # Walking both ways reaches a transfer twice --- once from the sender's
     # outbound edges and again from the recipient's inbound ones --- and
     # add_edge folds the second sighting into the first, doubling the displayed

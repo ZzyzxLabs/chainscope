@@ -80,6 +80,7 @@ from datetime import datetime, timezone
 from functools import partial
 from typing import Any
 
+from ..chains import fold_if_hex
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..core.result import Finding, Result, Severity
@@ -614,11 +615,11 @@ def address_reuse(
     """
     seen: dict[str, list[MixerEvent]] = {}
     for w in withdrawals:
-        seen.setdefault(w.address.lower(), []).append(w)
+        seen.setdefault(fold_if_hex(w.address), []).append(w)
 
     out: list[tuple[MixerEvent, MixerEvent]] = []
     for d in sorted(deposits, key=lambda e: e.order):
-        for w in sorted(seen.get(d.address.lower(), ()), key=lambda e: e.order):
+        for w in sorted(seen.get(fold_if_hex(d.address), ()), key=lambda e: e.order):
             # Only withdrawals *after* the deposit. An earlier one is a
             # different round trip, and pairing it would invert the direction
             # of the claim.
@@ -649,8 +650,8 @@ def transactional_linkage(
     and sweeping into it afterwards are both ordinary operator behaviour, and
     either one links the pair.
     """
-    depositors = {d.address.lower(): d for d in deposits}
-    recipients = {w.address.lower(): w for w in withdrawals}
+    depositors = {fold_if_hex(d.address): d for d in deposits}
+    recipients = {fold_if_hex(w.address): w for w in withdrawals}
 
     out: list[tuple[MixerEvent, MixerEvent, str]] = []
     seen_pairs: set[tuple[str, str]] = set()

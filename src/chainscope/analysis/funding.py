@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from functools import partial
 from typing import Any
 
+from ..chains import fold_if_hex
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..core.models import Transaction
@@ -193,7 +194,7 @@ def cluster_by_funder(
 
     clusters: list[FundingCluster] = []
     for key, group in by_funder.items():
-        addresses = {e.address.lower() for e in group}
+        addresses = {fold_if_hex(e.address) for e in group}
         # Distinct addresses, not events: an operator topping one address up
         # forty times is not forty pieces of evidence.
         is_service = key in known_services or len(addresses) > service_degree

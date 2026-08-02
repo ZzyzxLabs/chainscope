@@ -144,10 +144,9 @@ def _fold(chain: str | None, address: str) -> str:
         from ..chains import address_key
 
         return address_key(chain, address)
-    text = address.strip()
-    if text.startswith(("0x", "0X")) and len(text) == 42:
-        return text.lower()
-    return text
+    from ..chains import fold_if_hex
+
+    return fold_if_hex(address)
 
 
 @dataclass

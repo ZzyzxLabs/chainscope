@@ -43,6 +43,7 @@ from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ..chains import address_key
 from .graph import Edge, Graph, Node
 from .html import _json_for_script
 
@@ -96,7 +97,7 @@ def layer_nodes(graph: Graph) -> dict[str, int]:
 
     furthest = max(depth.values(), default=0)
     for node in graph.nodes.values():
-        address = node.address.lower()
+        address = address_key(node.chain, node.address)
         if address not in depth:
             depth[address] = furthest + 1
     return depth
@@ -108,7 +109,9 @@ def _node_payload(node: Node, depth: int, visible_depth: int) -> dict[str, Any]:
         # `frontier`, which means nobody looked: this one was looked at and is
         # merely folded away.
         "collapsed": depth > visible_depth,
-        "id": node.address.lower(),
+        # Keyed the way the node's own chain compares. Lowercasing merged
+        # two distinct base58 addresses into one node on the canvas.
+        "id": address_key(node.chain, node.address),
         "address": node.address,
         "display": node.display,
         "label": node.label,
@@ -167,7 +170,8 @@ def to_flow_html(
     depth = layer_nodes(graph)
     cut = visible_depth if visible_depth is not None else max(depth.values(), default=0)
     nodes = [
-        _node_payload(n, depth.get(n.address.lower(), 0), cut) for n in graph.nodes.values()
+        _node_payload(n, depth.get(address_key(n.chain, n.address), 0), cut)
+        for n in graph.nodes.values()
     ]
     edges = [_edge_payload(e) for e in graph.edges.values()]
 

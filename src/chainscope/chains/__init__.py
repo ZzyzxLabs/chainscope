@@ -24,7 +24,7 @@ from functools import cache
 from ..core.chainid import ChainId
 from .base import ChainAdapter
 
-__all__ = ["ChainAdapter", "adapter_for", "address_key"]
+__all__ = ["ChainAdapter", "adapter_for", "address_key", "fold_if_hex"]
 
 #: CAIP-2 namespace to adapter. Imported lazily so the store does not pay for
 #: every chain package on first use.
@@ -56,6 +56,26 @@ def adapter_for(namespace: str) -> ChainAdapter | None:
         return None
     adapter: ChainAdapter = getattr(module, class_name)()
     return adapter
+
+
+def fold_if_hex(raw: str) -> str:
+    """Compare-form for an address when the chain genuinely is not known.
+
+    Folds **only EVM-shaped hex** --- 42 characters starting `0x`, where case is
+    a checksum and two spellings are one address. Everything else is returned as
+    written, because base58 case is part of the value and folding it merges two
+    people's addresses into one.
+
+    For the handful of places that compare two addresses from the same feed and
+    have no `ChainId` to hand: the mixer's deposit/withdrawal correlation, the
+    funding cluster's distinct-address count, a `Distribution` built without
+    one. Prefer :func:`address_key` wherever a chain is available --- this is the
+    fallback, not the rule.
+    """
+    text = raw.strip()
+    if text.startswith(("0x", "0X")) and len(text) == 42:
+        return text.lower()
+    return text
 
 
 def address_key(chain: ChainId | str | None, raw: str) -> str:

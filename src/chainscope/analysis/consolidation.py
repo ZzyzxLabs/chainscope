@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from ..chains import address_key
 from ..core.attribution import Confidence
 from ..core.models import Transaction
 from ..core.result import Finding, Result, Severity
@@ -106,7 +107,7 @@ class ConsolidationAnalyzer(Analyzer):
         if not address:
             raise ValueError("consolidation analysis needs an `address` to start from")
         started = datetime.now(timezone.utc)
-        seed = address.lower()
+        seed = address_key(ctx.chain, address)
         max_dests = ctx.limit("max_nodes", 200)
         per_node = ctx.limit("per_node", 500)
 

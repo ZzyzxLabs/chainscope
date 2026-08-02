@@ -175,11 +175,20 @@ class TestTheCaseFoldDoesNotSpread:
     chain-agnostic code --- taint, temporal, mixer, the flow renderer, the
     resolver, watch --- and are wrong on three of the five supported chains.
 
-    They are counted here rather than quietly left. The count may **shrink and
-    never grow**: a new site fails this test, so the fold cannot spread further
-    while the existing ones are worked through. Saying "27 known, none new" is
-    a true statement about a bounded problem; a green test with no list would
-    be a false one.
+    Counted rather than quietly left. The count may **shrink and never grow**,
+    so a new site fails this test.
+
+    It started at 20 and is now **0**: taint and temporal derive the comparison
+    from the transfers' own chain, the analyzer seeds go through `ctx.chain`,
+    the mixer, funding cluster, watch rules and flow renderer use the shared
+    fallback, and the resolver's cache key is chain-aware. What remains in
+    `EVM_ONLY` is correct --- an Etherscan export is EVM by definition, `CREATE`
+    derivation is nonce-based, and `TaintResult.share` tries both spellings on
+    purpose.
+
+    The constant stays at zero rather than the check being deleted. The mistake
+    spread by being copied, and the cheapest way to stop the eighth copy is a
+    test that fails on it.
     """
 
     import pathlib
@@ -199,10 +208,12 @@ class TestTheCaseFoldDoesNotSpread:
         "providers/jsonrpc.py",
         "providers/etherscan.py",
         "providers/blockscout.py",
+        "analysis/multichain.py",  # CREATE derivation is nonce-based, so EVM
+        "analysis/taint.py",  # a deliberate both-spellings fallback in `share`
     }
 
     #: Known and wrong on non-EVM chains. This number may only go down.
-    KNOWN_UNFIXED = 20
+    KNOWN_UNFIXED = 0
 
     def _offenders(self) -> list[str]:
         import re

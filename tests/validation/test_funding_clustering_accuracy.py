@@ -279,14 +279,36 @@ class TestCaseIsNotIdentity:
         assert len(clusters) == 1
         assert clusters[0].size == 3
 
-    def test_the_same_address_in_two_cases_is_one_member(self):
+    def test_the_same_evm_address_in_two_cases_is_one_member(self):
         """Otherwise a cluster's size --- which is what the service guard reads
-        --- counts one address twice, and the guard trips early."""
+        --- counts one address twice, and the guard trips early.
+
+        A full-length address, because folding is decided by shape: 42
+        characters starting `0x` is hex, where case is a checksum. A shorter
+        stand-in is not an EVM address and is compared as written, which is the
+        correct answer for the base58 chains the same code runs on.
+        """
+        evm = "0xAbCdEf" + "0" * 34
         events = [
-            FundingEvent(address="0xAAA", funder="0xf"),
-            FundingEvent(address="0xaaa", funder="0xf"),
+            FundingEvent(address=evm, funder="0xf"),
+            FundingEvent(address=evm.lower(), funder="0xf"),
         ]
         assert cluster_by_funder(events)[0].size == 1
+
+    def test_two_base58_addresses_differing_only_in_case_are_two_members(self):
+        """The other half, and the reason the rule is by shape.
+
+        `7xKX…` and `7xkx…` are both valid Solana accounts and belong to
+        different people. Folding them undercounts the cluster, which makes the
+        service guard *less* likely to trip --- so an exchange funding its
+        customers reads as a linked cluster.
+        """
+        sol = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"
+        events = [
+            FundingEvent(address=sol, funder="0xf"),
+            FundingEvent(address=sol.lower(), funder="0xf"),
+        ]
+        assert cluster_by_funder(events)[0].size == 2
 
     def test_exclusion_ignores_case(self):
         events = [FundingEvent(address=f"0xa{i}", funder="0xEXCHANGE") for i in range(3)]

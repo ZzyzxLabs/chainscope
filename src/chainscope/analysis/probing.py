@@ -60,6 +60,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from ..chains import address_key
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..core.result import Finding, Result, Severity
@@ -353,7 +354,7 @@ class ProbingAnalyzer(Analyzer):
         if not address:
             raise ValueError("probing detection needs an `address` to examine")
 
-        seed = address.lower()
+        seed = address_key(ctx.chain, address)
         per_node = ctx.limit("per_node", 1000)
         history, completeness = history_of(
             ctx,

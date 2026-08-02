@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
+from ..chains import fold_if_hex
 from ..core.attribution import Category, Confidence
 from ..core.chainid import ChainId
 from ..core.models import Address, Transfer
@@ -123,7 +124,10 @@ class StoreContext:
     _cache: dict[str, list[Any]] = field(default_factory=dict, repr=False)
 
     def attributions(self, address: str) -> list[Any]:
-        key = address.lower()
+        # A watch on a Solana address matched nothing: the subject was
+        # lowered and the transfers' keys were not, so the rule never fired ---
+        # and a silent monitor reads as a quiet one.
+        key = fold_if_hex(address)
         if key not in self._cache:
             self._cache[key] = self.store.attributions(address)
         return self._cache[key]
