@@ -270,24 +270,37 @@ def correlate_withdrawals(
     result = CorrelationResult()
 
     for deposit in ordered_deposits:
-        candidates = [
+        # The anonymity set counts every withdrawal that *could* be the answer,
+        # including ones an earlier deposit has already been paired with.
+        #
+        # Excluding claimed withdrawals shrank the set as the walk progressed,
+        # so the last deposit in a busy pool looked unopposed and came out at
+        # MEDIUM. Claiming is this function's bookkeeping; the pool does not
+        # know about it, and confidence has to describe the pool.
+        in_window = [
             w
             for w in ordered_withdrawals
-            if w.tx not in claimed
-            and w.order > deposit.order
-            and w.block - deposit.block <= window_blocks
+            if w.order > deposit.order and w.block - deposit.block <= window_blocks
         ]
-        if not candidates:
+        candidates = [w for w in in_window if w.tx not in claimed]
+        if not in_window:
             result.unmatched.append(deposit)
             continue
 
-        if len(candidates) > max_anonymity_set:
+        if len(in_window) > max_anonymity_set:
             # Refused, not weakened. At this much competition the nearest
             # withdrawal is barely likelier than any other, and a SPECULATIVE
             # claim recorded here sits beside real ones with nothing to tell
             # them apart six months later.
             result.unmatched.append(deposit)
-            result.ambiguous[deposit.tx] = len(candidates)
+            result.ambiguous[deposit.tx] = len(in_window)
+            continue
+
+        if not candidates:
+            # Everything in range is already spoken for. Reported rather than
+            # paired with something twice, which would put one withdrawal in
+            # two traces.
+            result.unmatched.append(deposit)
             continue
 
         chosen = candidates[0]
@@ -296,7 +309,7 @@ def correlate_withdrawals(
             MixerMatch(
                 deposit=deposit,
                 withdrawal=chosen,
-                anonymity_set=len(candidates),
+                anonymity_set=len(in_window),
                 gap_blocks=chosen.block - deposit.block,
             )
         )

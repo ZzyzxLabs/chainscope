@@ -87,12 +87,14 @@ class BlockscoutProvider(ReadOnlyProvider):
 
     name = "blockscout"
     ecosystems = frozenset({"eip155"})
-    capabilities = (
-        Capability.ADDRESS_HISTORY
-        | Capability.ASSET_TRANSFERS
-        | Capability.TRANSACTION
-        | Capability.LOGS
-    )
+    # TRANSACTION is deliberately absent. This provider has no
+    # `get_transaction`, and declaring a capability you do not implement makes
+    # the router select you and fail rather than choose something that works.
+    #
+    # Written after fixing exactly this in the Sui provider, and repeated here
+    # anyway --- which is why the entry-point contract test exists and why a
+    # capability declaration deserves the same kind of check.
+    capabilities = Capability.ADDRESS_HISTORY | Capability.ASSET_TRANSFERS | Capability.LOGS
     #: Free and unkeyed, so the router reaches for it before anything metered.
     cost = CostTier.FREE_PUBLIC
 

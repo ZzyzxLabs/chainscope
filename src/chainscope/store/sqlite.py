@@ -77,12 +77,18 @@ CREATE TABLE IF NOT EXISTS transfers (
 -- native transfer has no asset -- without it, native transfers would stop
 -- deduplicating entirely, which trades a silent loss for a silent duplicate.
 --
+-- `kind` is here for the same reason `asset` is. A native transfer and an
+-- internal one of the same value in the same transaction between the same pair
+-- are two different movements -- that is exactly how swap proceeds and
+-- withdrawal payouts appear -- and without it one of them was dropped
+-- silently. Measured: two rows in, one row out.
+--
 -- sender and recipient stay bare. They are NULL for mints and burns, where
 -- NULL-is-distinct is the behaviour that was already in place; changing it
 -- here would quietly start merging rows this store has always kept apart, and
 -- that is a separate decision from the one being fixed.
 CREATE UNIQUE INDEX IF NOT EXISTS ux_tr_identity ON transfers(
-    chain, tx_hash, log_index, sender, recipient, amount_raw, COALESCE(asset, '')
+    chain, tx_hash, log_index, sender, recipient, amount_raw, COALESCE(asset, ''), kind
 );
 
 CREATE INDEX IF NOT EXISTS ix_tr_sender    ON transfers(chain, sender, timestamp);

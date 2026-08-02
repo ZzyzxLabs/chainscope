@@ -35,7 +35,7 @@ __all__ = ["EdgeSummary", "Query", "Store", "StoreError", "StoreStats"]
 
 #: Bumped when the on-disk shape changes. A store carrying an older version is
 #: migrated or rebuilt; it is never read optimistically.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class StoreError(RuntimeError):

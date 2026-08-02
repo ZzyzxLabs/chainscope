@@ -141,3 +141,116 @@ class TestCsvOutputIsEscaped:
     def test_a_comma_does_not_create_a_column(self):
         rows = list(csvmod.reader(io.StringIO(self._emit_csv())))
         assert rows[1][1] == "5"
+
+
+class TestNativeAndInternalAreDifferentMovements:
+    """`kind` was missing from the store's identity, so a native transfer and
+    an internal one of the same value in the same transaction between the same
+    pair collided and one was dropped. That is precisely how swap proceeds and
+    withdrawal payouts appear --- the shape the ASSET_TRANSFERS capability
+    exists to capture."""
+
+    def _pair(self, kind):
+        return Transfer(
+            chain=ETHEREUM,
+            tx=TxRef(ETHEREUM, "0x" + "1" * 64),
+            sender=Address(ETHEREUM, "0xa", "0xa"),
+            recipient=Address(ETHEREUM, "0xb", "0xb"),
+            amount=Amount(ETH, 18, "ETH"),
+            kind=kind,
+            block=1,
+            index=0,
+        )
+
+    def test_both_survive(self, tmp_path):
+        from chainscope.store.base import Query
+
+        store = SqliteStore(tmp_path / "s.db")
+        try:
+            store.put_transfers(
+                [self._pair(TransferKind.NATIVE), self._pair(TransferKind.INTERNAL)],
+                source="t",
+            )
+            assert len(list(store.transfers(Query(chain=ETHEREUM)))) == 2
+        finally:
+            store.close()
+
+    def test_deduplication_still_works_within_a_kind(self, tmp_path):
+        from chainscope.store.base import Query
+
+        store = SqliteStore(tmp_path / "s.db")
+        try:
+            store.put_transfers([self._pair(TransferKind.NATIVE)], source="t")
+            store.put_transfers([self._pair(TransferKind.NATIVE)], source="t")
+            assert len(list(store.transfers(Query(chain=ETHEREUM)))) == 1
+        finally:
+            store.close()
+
+
+class TestBlockscoutDoesNotClaimTransactions:
+    """Declaring a capability without implementing it makes the router select
+    you and fail rather than choose something that works. Fixed in the Sui
+    provider earlier in the session, then repeated here in a provider written
+    afterwards."""
+
+    def test_transaction_is_not_declared(self):
+        from chainscope.providers.base import Capability
+        from chainscope.providers.blockscout import BlockscoutProvider
+
+        assert not BlockscoutProvider().capabilities.covers(Capability.TRANSACTION)
+
+    def test_what_it_does_declare_is_implemented(self):
+        from chainscope.providers.base import Capability
+        from chainscope.providers.blockscout import BlockscoutProvider
+
+        provider = BlockscoutProvider()
+        for capability, method in (
+            (Capability.ADDRESS_HISTORY, "address_history"),
+            (Capability.ASSET_TRANSFERS, "asset_transfers"),
+            (Capability.LOGS, "get_logs"),
+        ):
+            assert provider.capabilities.covers(capability)
+            assert method in type(provider).__dict__
+
+
+class TestAnonymitySetCountsThePoolNotTheBookkeeping:
+    """Claimed withdrawals were excluded from the candidate count, so the set
+    shrank as the walk progressed and the last deposit in a busy pool looked
+    unopposed. Claiming is this function's bookkeeping; the pool does not know
+    about it, and confidence has to describe the pool."""
+
+    def _world(self):
+        from chainscope.analysis.mixer import MixerEvent
+
+        deposits = [
+            MixerEvent(tx="d0", block=100, address="0xa"),
+            MixerEvent(tx="d1", block=101, address="0xb"),
+        ]
+        withdrawals = [
+            MixerEvent(tx=f"w{i}", block=110 + i, address=f"0xr{i}") for i in range(3)
+        ]
+        return deposits, withdrawals
+
+    def test_both_deposits_see_the_same_competition(self):
+        from chainscope.analysis.mixer import correlate_withdrawals
+
+        deposits, withdrawals = self._world()
+        sets = [m.anonymity_set for m in correlate_withdrawals(deposits, withdrawals).matches]
+        assert sets == [3, 3]
+
+    def test_confidence_follows_it_down(self):
+        from chainscope.analysis.mixer import correlate_withdrawals
+        from chainscope.core.attribution import Confidence
+
+        deposits, withdrawals = self._world()
+        for match in correlate_withdrawals(deposits, withdrawals).matches:
+            assert match.confidence is Confidence.LOW
+
+    def test_a_withdrawal_is_still_claimed_only_once(self):
+        """Counting the pool honestly must not start assigning one withdrawal
+        to two deposits."""
+        from chainscope.analysis.mixer import correlate_withdrawals
+
+        deposits, withdrawals = self._world()
+        result = correlate_withdrawals(deposits, withdrawals)
+        assert len({m.withdrawal.tx for m in result.matches}) == len(result.matches)
