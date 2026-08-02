@@ -99,6 +99,20 @@ class ServerOptions:
 
     port: int = 8787
     token: str = ""
+
+    analyst: str = ""
+    """Who is tagging from the browser.
+
+    The *request* cannot supply this, for the same reason it cannot supply
+    `source`: any page in the browser can reach this endpoint, and a claim that
+    picks its own authorship is worse than one carrying none. But the person
+    running this server is identifiable --- their machine, their loopback, their
+    token --- so it is taken at startup and applied to everything written here.
+
+    Empty means nobody was recorded, which is what an OS account yields: a
+    machine login is not authorship, and `report` says "no analyst recorded"
+    rather than signing somebody's name to it.
+    """
     writable: bool = False
     origins: tuple[str, ...] = DEFAULT_ORIGINS
     agent_name: str = "browser-extension"
@@ -274,6 +288,11 @@ class _Handlers:
                 address=address,
                 chain=self._chain(body.get("chain")),
                 rationale=str(body.get("rationale", "")),
+                # From the server, never the request --- the same reasoning as
+                # `source` above. A browser-written claim carried no analyst, so
+                # `report` filed a label a person had typed alongside bulk
+                # imports and heuristics.
+                analyst=self.options.analyst,
             )
         except KeyError as exc:
             raise ValueError(f"unknown confidence: {exc}") from exc
@@ -456,6 +475,22 @@ class LocalServer:
         self.stop()
 
 
+def _analyst(stated: str) -> str:
+    """Who to record on claims written through this server.
+
+    Same rule as `chainscope tag`: an explicit value, then an identity somebody
+    chose. An OS account yields empty --- a machine login is not authorship, and
+    a claim signed with one is worse than a claim signed with nothing because it
+    looks attributed.
+    """
+    from ..case.log import whoami
+
+    if stated.strip():
+        return stated.strip()
+    identity = whoami()
+    return identity.name if identity.is_chosen else ""
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -478,6 +513,13 @@ def main(argv: list[str] | None = None) -> int:
         help="allow the extension to record labels. Off by default.",
     )
     parser.add_argument(
+        "--analyst",
+        default="",
+        help="who is tagging from the browser. Defaults to $CHAINSCOPE_ANALYST, "
+        "then git's user.email. An OS account is not used --- a machine login "
+        "is not authorship",
+    )
+    parser.add_argument(
         "--token",
         default="",
         help="reuse a token instead of generating one. Handy while developing; "
@@ -492,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
             port=args.port,
             writable=args.writable,
             token=args.token,
+            analyst=_analyst(args.analyst),
         )
     ).start()
 
