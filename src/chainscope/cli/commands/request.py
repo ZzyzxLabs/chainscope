@@ -199,6 +199,25 @@ def _update(args: argparse.Namespace, ledger: Ledger) -> int:
     return 0
 
 
+def _left(due: datetime, now: datetime) -> str:
+    """How long is left, or how long it is late.
+
+    Hours below a day, not `timedelta.days`. That attribute floors towards
+    negative infinity, so anything with under twenty-four hours left came out
+    as "1d left" --- including a request due *this afternoon*. On the one
+    command whose whole purpose is reporting a clock accurately, a day of slack
+    invented by a rounding rule is the wrong error to have.
+    """
+    delta = due - now
+    hours = delta.total_seconds() / 3600
+    if hours < 0:
+        overdue = -hours
+        return f"{int(overdue // 24)}d past" if overdue >= 24 else f"{int(overdue)}h past"
+    if hours < 24:
+        return f"{int(hours)}h left" if hours >= 1 else "under an hour"
+    return f"{int(hours // 24)}d left"
+
+
 def _list(args: argparse.Namespace, ledger: Ledger) -> int:
     now = datetime.now(timezone.utc)
     requests = ledger.requests(subject=args.about, open_only=args.open)
@@ -222,11 +241,7 @@ def _list(args: argparse.Namespace, ledger: Ledger) -> int:
         if request.reference:
             print(f"        ref {request.reference}")
         if request.due_at and request.is_open:
-            late = (now - request.due_at).days
-            print(
-                f"        due {request.due_at:%Y-%m-%d}"
-                + (f" --- {late}d past" if late > 0 else f" --- {-late}d left")
-            )
+            print(f"        due {request.due_at:%Y-%m-%d} --- {_left(request.due_at, now)}")
         for event in request.events:
             if event.body:
                 print(f"        {event.at:%Y-%m-%d} {event.status.value}: {event.body}")

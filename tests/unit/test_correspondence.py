@@ -266,3 +266,28 @@ class TestConcurrentReplies:
         assert stored is not None
         assert len(stored.events) == 1
         ledger.close()
+
+
+class TestTheClockReadsAccurately:
+    """`timedelta.days` floors, and this is the one command whose job is a clock."""
+
+    def _at(self, hours: float) -> str:
+        from chainscope.cli.commands.request import _left
+
+        due = datetime(2026, 7, 9, 23, 59, tzinfo=timezone.utc)
+        return _left(due, due - timedelta(hours=hours))
+
+    def test_a_deadline_this_afternoon_is_not_a_whole_day_away(self) -> None:
+        # `(now - due).days` gave "1d left" for anything under twenty-four
+        # hours, including a request due in three hours.
+        assert self._at(3) == "3h left"
+
+    def test_under_an_hour_says_so(self) -> None:
+        assert self._at(0.5) == "under an hour"
+
+    def test_days_once_it_is_days(self) -> None:
+        assert self._at(50) == "2d left"
+
+    def test_overdue_reads_the_same_way(self) -> None:
+        assert self._at(-5) == "5h past"
+        assert self._at(-49) == "2d past"
