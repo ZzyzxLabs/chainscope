@@ -41,10 +41,12 @@ evm = ["eth-utils>=5.0", "eth-abi>=5.0", "eth-hash[pycryptodome]>=0.7"]
 bitcoin = ["base58>=2.1", "bech32>=1.2"]
 solana = ["base58>=2.1"]
 tron = ["base58>=2.1"]
+# Sui needs nothing extra: addresses are hex and the RPC is plain JSON.
+sui = []
 report = ["rich>=13.0"]
 analytics = ["duckdb>=1.0"]
 agent = ["mcp>=1.2"]
-all = ["chainscope[evm,bitcoin,solana,tron,report,analytics,agent]"]
+all = ["chainscope[evm,bitcoin,solana,tron,sui,report,analytics,agent]"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",

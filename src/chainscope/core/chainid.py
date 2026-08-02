@@ -42,6 +42,9 @@ class Ecosystem(str, Enum):
     UTXO = "bip122"
     SOLANA = "solana"
     TRON = "tron"
+    # Sui's CAIP-2 reference is a network name ("mainnet"), not a numeric id,
+    # which is why nothing here can assume `reference` parses as an integer.
+    SUI = "sui"
     COSMOS = "cosmos"
 
     @property
