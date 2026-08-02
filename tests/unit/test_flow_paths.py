@@ -17,6 +17,7 @@ import json
 import re
 import shutil
 import subprocess
+from typing import ClassVar
 
 import pytest
 
@@ -119,3 +120,77 @@ class TestAssetsStaySeparate:
         r = run([A], [edge(A, B, "eth"), edge(A, B, "0xusdc")], B)
         assert len(r["edges"]) == 2
         assert any("0xusdc" in k for k in r["edges"])
+
+
+def _reveal_script() -> str:
+    """`isShown` and `hiddenBehind`, lifted out of the page."""
+    page = to_flow_html(Graph(seeds=[]))
+    body = page.split("<script>", 1)[1].split("</script>", 1)[0]
+    m = re.search(r"function isShown.*?\n}\n\nfunction hiddenBehind.*?\n}\n", body, re.DOTALL)
+    assert m, "reveal helpers not found in the generated page"
+    return m.group(0)
+
+
+def reveal(nodes, edges, opened):
+    js = f"""
+const DATA = {{nodes: {json.dumps(nodes)}, edges: {json.dumps(edges)}}};
+const byId = new Map(DATA.nodes.map(n => [n.id, n]));
+const opened = new Set({json.dumps(opened)});
+{_reveal_script()}
+console.log(JSON.stringify({{
+  shown: DATA.nodes.filter(isShown).map(n => n.id).sort(),
+  folded: Object.fromEntries(DATA.nodes.map(n => [n.id, hiddenBehind(n.id)])),
+}}));
+"""
+    out = subprocess.run(
+        ["node", "-e", js], capture_output=True, text=True, timeout=30, check=True
+    )
+    return json.loads(out.stdout)
+
+
+def node(nid, collapsed=False):
+    return {"id": nid, "collapsed": collapsed}
+
+
+class TestClickToExpand:
+    """A file:// page cannot fetch, so the extra hop ships folded. Opening it
+    reveals what was walked and no more --- the outermost ring stays frontier
+    however often it is clicked, because a control that quietly stopped
+    producing nodes would read as 'the money ends here'."""
+
+    NODES: ClassVar = [node(A), node(B), node(C, collapsed=True), node(D, collapsed=True)]
+    EDGES: ClassVar = [edge(A, B), edge(B, C), edge(C, D)]
+
+    def test_collapsed_nodes_start_hidden(self):
+        r = reveal(self.NODES, self.EDGES, [])
+        assert r["shown"] == sorted([A, B])
+
+    def test_the_parent_advertises_how_many_are_folded(self):
+        r = reveal(self.NODES, self.EDGES, [])
+        assert r["folded"][B] == 1
+
+    def test_opening_a_parent_reveals_its_children(self):
+        r = reveal(self.NODES, self.EDGES, [B])
+        assert C in r["shown"]
+
+    def test_but_only_one_ring_at_a_time(self):
+        """Opening B shows C. D stays folded behind C, so the reader always
+        knows there is more rather than being handed a picture that stops."""
+        r = reveal(self.NODES, self.EDGES, [B])
+        assert D not in r["shown"]
+        assert r["folded"][C] == 1
+
+    def test_an_opened_node_no_longer_advertises_a_badge(self):
+        r = reveal(self.NODES, self.EDGES, [B])
+        assert r["folded"][B] == 0
+
+    def test_a_node_with_nothing_folded_has_no_badge(self):
+        r = reveal([node(A), node(B)], [edge(A, B)], [])
+        assert r["folded"][A] == 0
+
+    def test_two_parents_of_one_collapsed_node(self):
+        """Opening either reveals it; the fold is per-edge, not per-node."""
+        nodes = [node(A), node(B), node(C), node(D, collapsed=True)]
+        edges = [edge(A, B), edge(A, C), edge(B, D), edge(C, D)]
+        assert D in reveal(nodes, edges, [B])["shown"]
+        assert D in reveal(nodes, edges, [C])["shown"]

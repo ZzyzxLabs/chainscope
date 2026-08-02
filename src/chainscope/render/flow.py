@@ -101,8 +101,12 @@ def layer_nodes(graph: Graph) -> dict[str, int]:
     return depth
 
 
-def _node_payload(node: Node, depth: int) -> dict[str, Any]:
+def _node_payload(node: Node, depth: int, visible_depth: int) -> dict[str, Any]:
     return {
+        # Shipped but not drawn until its parent is expanded. Distinct from
+        # `frontier`, which means nobody looked: this one was looked at and is
+        # merely folded away.
+        "collapsed": depth > visible_depth,
         "id": node.address.lower(),
         "address": node.address,
         "display": node.display,
@@ -132,10 +136,25 @@ def _edge_payload(edge: Edge) -> dict[str, Any]:
     }
 
 
-def to_flow_html(graph: Graph, *, title: str = "chainscope flow") -> str:
-    """Render ``graph`` as a self-contained layered flow page."""
+def to_flow_html(
+    graph: Graph, *, title: str = "chainscope flow", visible_depth: int | None = None
+) -> str:
+    """Render ``graph`` as a self-contained layered flow page.
+
+    ``visible_depth`` collapses everything past that hop count. The rows still
+    ship inside the page --- a file:// document cannot fetch --- so expanding is
+    instant and works offline, which is where this kind of work often happens.
+
+    What it is not: unlimited. Expanding reveals what was walked and no more,
+    and the outermost ring stays frontier however many times it is clicked. A
+    control that quietly stopped producing new nodes would read as "the money
+    ends here", which is the one thing this view exists to prevent.
+    """
     depth = layer_nodes(graph)
-    nodes = [_node_payload(n, depth.get(n.address.lower(), 0)) for n in graph.nodes.values()]
+    cut = visible_depth if visible_depth is not None else max(depth.values(), default=0)
+    nodes = [
+        _node_payload(n, depth.get(n.address.lower(), 0), cut) for n in graph.nodes.values()
+    ]
     edges = [_edge_payload(e) for e in graph.edges.values()]
 
     assets: dict[str, dict[str, Any]] = {}
@@ -154,6 +173,8 @@ def to_flow_html(graph: Graph, *, title: str = "chainscope flow") -> str:
         "edges": edges,
         "assets": list(assets.values()),
         "seeds": [s.split(":", 2)[-1].lower() if ":" in s else s.lower() for s in graph.seeds],
+        "visible_depth": cut,
+        "collapsed_nodes": sum(1 for n in nodes if n["collapsed"]),
         "truncated": bool(graph.truncated),
         "note": graph.note or "",
         "frontier": len(graph.frontier()),
@@ -240,6 +261,10 @@ if (DATA.truncated) notes.push(
   "The walk stopped at a limit. Addresses beyond it exist and are not drawn.");
 if (DATA.frontier) notes.push(DATA.frontier +
   " dashed node(s) were seen but never expanded \\u2014 nobody looked past them.");
+if (DATA.collapsed_nodes) notes.push(DATA.collapsed_nodes +
+  " node(s) past hop " + DATA.visible_depth +
+  " are folded. A node showing +n has that many counterparties in this file, " +
+  "not drawn until clicked.");
 if (DATA.note) notes.push(DATA.note);
 if (notes.length) { warn.textContent = notes.join(" "); warn.hidden = false; }
 
@@ -265,6 +290,21 @@ function fmt(raw, decimals){
 }
 
 let selected = null;
+// Addresses the reader has opened. A node ships collapsed when it lies past
+// the drawn depth; revealing it costs nothing because the rows are already
+// here, and a file:// page cannot fetch anyway.
+const opened = new Set();
+
+function isShown(n) {
+  if (!n.collapsed) return true;
+  // Visible once something pointing at it has been opened.
+  return DATA.edges.some(e => e.target === n.id && opened.has(e.source));
+}
+
+function hiddenBehind(id) {
+  return DATA.edges.filter(e =>
+    e.source === id && (byId.get(e.target) || {}).collapsed && !opened.has(id)).length;
+}
 let route = {nodes: new Set(), edges: new Set(), hops: []};
 
 // Every path from a seed to the clicked address, not just the shortest.
@@ -314,7 +354,8 @@ function draw(){
   // does not leave a field of disconnected boxes.
   const live = new Set(DATA.seeds);
   edges.forEach(e => { live.add(e.source); live.add(e.target); });
-  const shown = DATA.nodes.filter(n => live.has(n.id));
+  const shown = DATA.nodes.filter(n => live.has(n.id) && isShown(n));
+  const visible = new Set(shown.map(n => n.id));
 
   const cols = new Map();
   shown.forEach(n => {
@@ -334,6 +375,7 @@ function draw(){
 
   const g = document.createElementNS(NS,"g"); svg.appendChild(g);
   edges.forEach(e => {
+    if (!visible.has(e.source) || !visible.has(e.target)) return;
     const a = pos.get(e.source), b = pos.get(e.target);
     if (!a || !b) return;
     const p = document.createElementNS(NS,"path");
@@ -386,6 +428,7 @@ function draw(){
     grp.appendChild(t);
     grp.addEventListener("click",
       () => {
+        if (hiddenBehind(n.id)) { opened.add(n.id); show(n); draw(); return; }
         selected = selected === n.id ? null : n.id;
         route = selected
           ? pathsTo(selected, DATA.edges.filter(
@@ -441,7 +484,8 @@ function show(n){
 
 sel.addEventListener("change", draw);
 document.getElementById("reset").addEventListener("click", () => {
-  selected = null; route = {nodes: new Set(), edges: new Set(), hops: []}; draw();
+  selected = null; opened.clear();
+  route = {nodes: new Set(), edges: new Set(), hops: []}; draw();
   const p = document.getElementById("panel");
   p.className="muted"; p.textContent="Click an address."; });
 draw();

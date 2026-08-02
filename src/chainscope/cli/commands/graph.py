@@ -87,6 +87,12 @@ def add_parser(sub: Any, name: str) -> None:
     p.add_argument("--direction", default="out", choices=["out", "in", "both"])
     p.add_argument("--store", type=Path, default=Path(".chainscope/store.db"))
     p.add_argument("--title", help="heading for the HTML view")
+    p.add_argument(
+        "--visible-depth",
+        type=int,
+        help="flow view only: draw this many hops and fold the rest into the "
+        "page, openable by clicking. Defaults to all of them",
+    )
 
 
 def _chain(raw: str) -> ChainId:
@@ -176,7 +182,11 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
         # Columns by hop distance rather than a spring layout: a laundering
         # chain and a five-way split are the same picture in a force-directed
         # graph, and telling them apart is the point.
-        content = to_flow_html(graph, title=args.title or f"{args.address[:12]}… — flow")
+        content = to_flow_html(
+            graph,
+            title=args.title or f"{args.address[:12]}… — flow",
+            visible_depth=args.visible_depth,
+        )
     elif args.format == "html":
         content = to_html(graph, title=args.title or f"{args.address[:12]}… — chainscope")
     else:
