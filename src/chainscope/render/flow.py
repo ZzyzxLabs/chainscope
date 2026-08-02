@@ -256,6 +256,7 @@ border:1px solid var(--line)}
   <label id="scrubwrap" hidden>up to <input id="scrub" type="range" min="0" max="1000"
     value="1000" style="vertical-align:middle"> <span id="scrublabel"></span></label>
   <div class="legend" id="legend"></div>
+  <span class="muted" style="font-size:11.5px">press ? for keys</span>
   <div class="warn" id="warn" hidden></div>
 </header>
 <main><div id="wrap"><svg id="svg"></svg></div>
@@ -308,6 +309,9 @@ function fmt(raw, decimals){
 }
 
 let selected = null;
+// Vertical offsets from dragging. Kept out of the layout so a redraw --- an
+// asset switch, a scrub --- keeps what the reader arranged.
+const nudge = new Map();
 // Scrub position as a fraction of the case's span. An edge is an aggregate
 // over a window, so "active by T" means it *started* by T -- an edge whose
 // span straddles the cursor is shown, because the money had begun moving.
@@ -415,7 +419,8 @@ function draw(){
     const a = pos.get(e.source), b = pos.get(e.target);
     if (!a || !b) return;
     const p = document.createElementNS(NS,"path");
-    const x1 = a.x + 168, y1 = a.y + 14, x2 = b.x, y2 = b.y + 14, mx = (x1+x2)/2;
+    const x1 = a.x + 168, y1 = a.y + 14 + (nudge.get(e.source) || 0);
+    const x2 = b.x, y2 = b.y + 14 + (nudge.get(e.target) || 0), mx = (x1+x2)/2;
     p.setAttribute("d", `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`);
     // Width within one asset only. Log scale, because one large flow otherwise
     // renders every other edge as a hairline.
@@ -448,7 +453,7 @@ function draw(){
     const p = pos.get(n.id); if (!p) return;
     const grp = document.createElementNS(NS,"g");
     grp.setAttribute("class","node");
-    grp.setAttribute("transform", `translate(${p.x},${p.y})`);
+    grp.setAttribute("transform", `translate(${p.x},${p.y + (nudge.get(n.id) || 0)})`);
     const r = document.createElementNS(NS,"rect");
     r.setAttribute("width",168); r.setAttribute("height",28); r.setAttribute("rx",5);
     r.setAttribute("fill", PALETTE[n.category] || PALETTE[""]);
@@ -473,6 +478,26 @@ function draw(){
     t.textContent = n.address + (n.label ? "  \\u2014 " + n.label : "") +
       (n.frontier ? "  (frontier: not expanded)" : "");
     grp.appendChild(t);
+    // Dragging moves the box, never the column. Position along x encodes hop
+    // distance from the seed, so letting a node slide between columns would
+    // let somebody rearrange the picture into a claim the data does not make.
+    let dragging = false, moved = false, oy = 0, base = 0;
+    grp.addEventListener("mousedown", ev => {
+      dragging = true; moved = false; oy = ev.clientY;
+      base = nudge.get(n.id) || 0;
+      ev.preventDefault();
+    });
+    window.addEventListener("mousemove", ev => {
+      if (!dragging) return;
+      const dy = ev.clientY - oy;
+      if (Math.abs(dy) > 3) moved = true;
+      nudge.set(n.id, base + dy);
+      grp.setAttribute("transform", `translate(${p.x},${p.y + base + dy})`);
+    });
+    window.addEventListener("mouseup", () => {
+      if (dragging && moved) draw();
+      dragging = false;
+    });
     grp.addEventListener("click",
       () => {
         if (hiddenBehind(n.id)) { opened.add(n.id); show(n); draw(); return; }
@@ -578,6 +603,30 @@ if (DATA.undated) notes.push(DATA.undated +
   " flow(s) carry no timestamp and stay visible at every scrub position \u2014 " +
   "a provider omitting one is not evidence the money moved later.");
 sel.addEventListener("change", draw);
+// Keyboard. Every one of these is something the mouse can already do --- the
+// point is not new capability but not having to leave the picture to get it.
+const HELP = [
+  ["Esc", "clear the route and the panel"],
+  ["a", "cycle the asset being sized"],
+  ["e", "expand every folded node"],
+  ["r", "reset dragged positions"],
+  ["?", "this list"],
+];
+window.addEventListener("keydown", ev => {
+  if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
+  if (ev.key === "Escape") { document.getElementById("reset").click(); }
+  else if (ev.key === "a") { sel.selectedIndex = (sel.selectedIndex + 1) % sel.length;
+                             sel.dispatchEvent(new Event("change")); }
+  else if (ev.key === "e") { DATA.nodes.forEach(n => opened.add(n.id)); draw(); }
+  else if (ev.key === "r") { nudge.clear(); draw(); }
+  else if (ev.key === "?") {
+    const panel = document.getElementById("panel");
+    panel.className = "";
+    panel.innerHTML = "<dl>" + HELP.map(([k, what]) =>
+      "<dt>" + esc(k) + "</dt><dd>" + esc(what) + "</dd>").join("") + "</dl>";
+  }
+});
+
 document.getElementById("reset").addEventListener("click", () => {
   selected = null; opened.clear();
   route = {nodes: new Set(), edges: new Set(), hops: []}; draw();

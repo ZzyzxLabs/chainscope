@@ -207,3 +207,33 @@ class TestTheEdgePanel:
         html = to_flow_html(chain_graph())
         assert "asset IS NULL" in html
         assert "asset = '" in html
+
+
+class TestKeyboardAndDrag:
+    """Two of the three remaining MetaSleuth gaps. Neither adds capability ---
+    both remove the need to leave the picture to use one."""
+
+    def test_the_shortcut_list_is_discoverable(self):
+        """A shortcut nobody can find is a shortcut nobody has."""
+        html = to_flow_html(chain_graph())
+        assert "press ? for keys" in html
+
+    def test_every_shortcut_is_documented_in_the_page(self):
+        html = to_flow_html(chain_graph())
+        for key in ("Esc", "cycle the asset", "expand every folded", "reset dragged"):
+            assert key in html
+
+    def test_dragging_moves_only_vertically(self):
+        """x encodes hop distance from the seed. Letting a node slide between
+        columns would let somebody rearrange the picture into a claim the data
+        does not make."""
+        html = to_flow_html(chain_graph())
+        assert "never the column" in html
+        assert "ev.clientY" in html
+        assert "ev.clientX" not in html
+
+    def test_dragged_positions_survive_a_redraw(self):
+        """Switching asset or scrubbing time must not undo what the reader
+        arranged."""
+        html = to_flow_html(chain_graph())
+        assert "keeps what the reader arranged" in html
