@@ -12,3 +12,6 @@ build/
 *.sqlite-wal
 *.sqlite-shm
 .env
+
+# The compose bind-mount target. A case lives here; it is not the project's.
+/case/

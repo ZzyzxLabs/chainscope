@@ -46,6 +46,15 @@ def _hexint(value: Any) -> int:
 class JsonRpcProvider(ReadOnlyProvider):
     """EVM JSON-RPC over HTTP."""
 
+    #: What any JSON-RPC endpoint offers. Declared on the class so that
+    #: discovery --- `chainscope doctor`, the plugin loader, anything reading
+    #: entry points --- can report what this provider does without constructing
+    #: one against a live URL. The instance adds ARCHIVE_STATE and TRACE when
+    #: the endpoint supports them, since those genuinely vary per node.
+    ecosystems = frozenset({"eip155"})
+
+    capabilities = _BASE_CAPS
+
     def __init__(
         self,
         url: str,
@@ -66,6 +75,11 @@ class JsonRpcProvider(ReadOnlyProvider):
         self.cost = cost
         self.native_symbol = native_symbol
         self.headers = headers or {}
+        # The instance narrows or widens the class-level declaration, which
+        # stays as the set every JSON-RPC endpoint offers. A class advertising
+        # NONE is invisible to anything that inspects providers without
+        # constructing them --- `chainscope doctor` listed this provider with no
+        # capabilities at all.
         caps = _BASE_CAPS
         if archive:
             caps |= Capability.ARCHIVE_STATE

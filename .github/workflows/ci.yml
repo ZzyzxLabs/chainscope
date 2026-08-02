@@ -98,6 +98,65 @@ jobs:
       # they cover is the reason the extension is safe to run at all.
       - run: pytest tests/unit/test_local_server.py -q --network
 
+  container:
+    name: docker image builds and runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t chainscope:ci .
+      # Runs as a non-root user; a forensics tool reads untrusted data all day
+      # and mounts a case directory, so uid 0 is a bad trade for nothing.
+      - name: it does not run as root
+        run: |
+          uid=$(docker run --rm --entrypoint id -u chainscope:ci)
+          test "$uid" != "0" || { echo "container runs as root"; exit 1; }
+      # `doctor` exits non-zero when ADDRESS_HISTORY is unreachable, which is
+      # the state of a fresh container with no key -- so the expected outcome
+      # here is a *failure*, and a zero exit would mean the check is inert.
+      - name: doctor reports the missing key rather than passing silently
+        run: |
+          if docker run --rm chainscope:ci doctor; then
+            echo "doctor exited 0 with no ETHERSCAN_API_KEY set"; exit 1
+          fi
+          docker run --rm chainscope:ci doctor 2>&1 | grep -q ADDRESS_HISTORY
+      - name: the end-to-end path works in the container
+        run: |
+          mkdir -p "$RUNNER_TEMP/case"
+          docker run --rm -v "$RUNNER_TEMP/case:/case" chainscope:ci \
+            tag 0x28C6c06298d514Db089934071355E5743bf21d60 \
+            -l "Binance 14" -t cex -C high -s "ci smoke test"
+          test -f "$RUNNER_TEMP/case/.chainscope/store.db"
+      - name: the MCP agent answers a handshake over stdio
+        run: |
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+            | docker run --rm -i --entrypoint chainscope-mcp chainscope:ci \
+            | head -c 400 | grep -q '"protocolVersion"'
+
+  nix:
+    name: nix flake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: "experimental-features = nix-command flakes"
+      # The flake was written on a machine without Nix, so this job is its
+      # only verification. If it breaks, the flake is wrong -- not the job.
+      - run: nix flake check --no-build
+      - run: nix build .#chainscope --print-build-logs
+      - run: ./result/bin/chainscope --help
+
+  uvx:
+    name: uvx runs it with no install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      # The zero-install path. If this breaks, the console scripts or the
+      # extras are wrong, and the first thing a new user tries fails.
+      - run: uvx --from '.[all]' chainscope doctor || true
+      - run: uvx --from '.[all]' chainscope --help
+
   cassettes:
     name: recorded fixtures carry no credentials
     runs-on: ubuntu-latest

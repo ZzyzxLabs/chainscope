@@ -1,0 +1,68 @@
+# Three ways to run this, sharing one case directory.
+#
+#   docker compose run --rm cli doctor
+#   docker compose run --rm cli tag 0xABC… -l "eXch deposit" -t cex -C high -s "analysis"
+#   docker compose up serve          # the browser extension's backend
+#   docker compose run --rm agent    # MCP over stdio, for an agent to attach to
+#
+# The case directory is a bind mount rather than a named volume on purpose. The
+# whole point of a case is that you can open it, read it, commit it, and hand it
+# to somebody --- a volume you have to `docker cp` out of is a case you have
+# stopped treating as evidence.
+
+name: chainscope
+
+x-common: &common
+  build: .
+  image: chainscope:local
+  volumes:
+    - ./case:/case
+  environment:
+    # Read from a .env beside this file if one exists. Absent is fine ---
+    # nothing fails at startup for a missing key, only at the point something
+    # needs it.
+    ETHERSCAN_API_KEY: ${ETHERSCAN_API_KEY:-}
+    ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:-}
+    HELIUS_API_KEY: ${HELIUS_API_KEY:-}
+    TRONGRID_API_KEY: ${TRONGRID_API_KEY:-}
+    CHAINSCOPE_RATE_LIMIT: ${CHAINSCOPE_RATE_LIMIT:-5}
+
+services:
+  # One-shot commands. `run --rm` rather than `up`, since these exit.
+  cli:
+    <<: *common
+    profiles: ["cli"]
+
+  # The loopback API the browser extension talks to.
+  #
+  # Published to 127.0.0.1 explicitly. `- "8787:8787"` would bind 0.0.0.0 and
+  # put a labelled address store on the local network, which is precisely the
+  # thing the token was added to prevent --- and a token is a poor substitute
+  # for not listening in the first place.
+  serve:
+    <<: *common
+    profiles: ["serve"]
+    entrypoint: ["chainscope-serve"]
+    command: ["--store", "/case/.chainscope/store.db", "--writable", "--port", "8787"]
+    ports:
+      - "127.0.0.1:8787:8787"
+    # The token is printed at startup; read it with `docker compose logs serve`.
+    stdin_open: true
+    tty: true
+
+  # MCP over stdio, for an agent to attach to.
+  #
+  # Read-only by default. An agent that can write labels is a useful thing and a
+  # deliberate choice; add `--writable --agent-name <name>` when you want it, and
+  # the claims it writes are sourced `agent:<name>` so a human can tell them
+  # apart later.
+  agent:
+    <<: *common
+    profiles: ["agent"]
+    entrypoint: ["chainscope-mcp"]
+    command: ["--store", "/case/.chainscope/store.db"]
+    stdin_open: true
+    # No tty: stdio here is a protocol, not a terminal, and a pty would corrupt
+    # the framing.
+    tty: false
+    network_mode: "none"

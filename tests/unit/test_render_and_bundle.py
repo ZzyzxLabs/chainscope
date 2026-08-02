@@ -244,11 +244,57 @@ class TestCli:
         assert main(["analyze", "nope"]) == 2
         assert "unknown analyzer" in capsys.readouterr().out
 
-    def test_doctor_reports_missing_capabilities(self, capsys):
-        assert main(["doctor"]) == 0
+    def test_doctor_fails_when_the_central_question_is_unanswerable(
+        self, capsys, monkeypatch, tmp_path
+    ):
+        """Exit code, not just output.
+
+        `doctor` reports on the environment, so a test that does not control
+        the environment passes or fails depending on whose machine it runs on
+        --- and this one did: with a key in .env it exited 0, and on CI with
+        none it would have exited 1. Both are pinned here explicitly.
+        """
+        monkeypatch.delenv("ETHERSCAN_API_KEY", raising=False)
+        # An empty directory, so the walk-up .env search finds nothing.
+        monkeypatch.chdir(tmp_path)
+
+        assert main(["doctor"]) == 1
         out = capsys.readouterr().out
         assert "ADDRESS_HISTORY" in out
-        assert "plain RPC cannot do it" in out
+        assert "unreachable  ADDRESS_HISTORY" in out
+        assert "ETHERSCAN_API_KEY" in out
+
+    def test_doctor_passes_once_the_key_is_present(self, capsys, monkeypatch, tmp_path):
+        monkeypatch.setenv("ETHERSCAN_API_KEY", "a-key-long-enough-to-register")
+        monkeypatch.chdir(tmp_path)
+
+        assert main(["doctor"]) == 0
+        out = capsys.readouterr().out
+        assert "unreachable  ADDRESS_HISTORY" not in out
+
+    def test_doctor_is_chain_aware(self, capsys, monkeypatch, tmp_path):
+        """Sui offers ADDRESS_HISTORY without a key, and that says nothing
+        about whether the question is answerable on Ethereum. Reporting the
+        capability as reachable for every chain was exactly the "wrong but
+        plausible" answer this command exists to prevent."""
+        monkeypatch.delenv("ETHERSCAN_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        assert main(["doctor", "--chain", "eth"]) == 1
+        assert "unreachable  ADDRESS_HISTORY" in capsys.readouterr().out
+
+        assert main(["doctor", "--chain", "sui:mainnet"]) == 0
+        assert "unreachable  ADDRESS_HISTORY" not in capsys.readouterr().out
+
+    def test_doctor_lists_discovered_plugins(self, capsys, monkeypatch, tmp_path):
+        """It used to print "No providers configured in this build" as a
+        hardcoded string, to everybody, regardless of what they had."""
+        monkeypatch.chdir(tmp_path)
+        main(["doctor"])
+        out = capsys.readouterr().out
+        assert "plugins" in out
+        assert "etherscan" in out
+        assert "sui" in out
 
     def test_label_without_sources_is_an_error(self, capsys):
         assert main(["label", ADDR]) == 2

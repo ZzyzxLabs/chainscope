@@ -75,6 +75,7 @@ class SuiProvider(ReadOnlyProvider):
     """Sui fullnode over JSON-RPC."""
 
     name = "sui"
+    ecosystems = frozenset({"sui"})
     capabilities = (
         Capability.ADDRESS_HISTORY
         | Capability.ASSET_TRANSFERS

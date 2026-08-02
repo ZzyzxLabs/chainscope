@@ -114,6 +114,30 @@ class Provider:
 
     # ---------------------------------------------------------------- routing
 
+    #: CAIP-2 namespaces this provider can serve, as a class-level fact.
+    #:
+    #: Declared separately from ``chains`` because that is an instance detail
+    #: --- which networks *this* configured provider was pointed at --- while
+    #: the namespace is a property of the provider itself: an Etherscan client
+    #: cannot serve Bitcoin however it is configured.
+    #:
+    #: Discovery needs the static version. `chainscope doctor` inspects entry
+    #: points without constructing anything, and before this existed it could
+    #: not tell that a Sui provider offering ADDRESS_HISTORY said nothing about
+    #: whether that question was answerable on Ethereum --- so it reported the
+    #: capability as reachable for every chain.
+    ecosystems: frozenset[str] = frozenset()
+
+    @classmethod
+    def serves(cls, chain: ChainId) -> bool:
+        """Whether this provider *could* serve ``chain``, uninstantiated.
+
+        Empty ``ecosystems`` means unstated, which is treated as yes: a
+        third-party provider that has not declared one should not silently
+        vanish from a capability report.
+        """
+        return not cls.ecosystems or chain.namespace in cls.ecosystems
+
     def supports(self, chain: ChainId, capability: Capability) -> bool:
         return chain in self.chains and self.capabilities.covers(capability)
 

@@ -97,6 +97,7 @@ class EtherscanProvider(ReadOnlyProvider):
     """Explorer-backed history for EVM chains."""
 
     name = "etherscan"
+    ecosystems = frozenset({"eip155"})
     capabilities = (
         Capability.ADDRESS_HISTORY
         | Capability.ASSET_TRANSFERS

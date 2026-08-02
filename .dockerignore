@@ -1,0 +1,15 @@
+# Anything that would leak a credential or bloat the layer.
+.env
+.venv/
+.git/
+.githooks/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+**/__pycache__/
+*.pyc
+.chainscope/
+dist/
+build/
+extension/
+docs/
