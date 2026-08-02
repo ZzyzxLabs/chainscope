@@ -30,9 +30,11 @@ Pagination is cursor-based rather than offset-based, and the cursor is opaque.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timezone
 from typing import Any
 
+from ..chains.base import InvalidAddressError
 from ..chains.sui import (
     SUI_DECIMALS,
     SUI_MAINNET,
@@ -262,10 +264,12 @@ class SuiProvider(ReadOnlyProvider):
                     except (TypeError, ValueError):
                         continue
                     coin = str(change.get("coinType") or SUI_TYPE)
-                    try:
+                    # A coin type this parser cannot canonicalise is still an
+                    # identity. Keeping the raw string groups it consistently;
+                    # dropping the change would lose value movement entirely,
+                    # which is the worse of the two failures.
+                    with contextlib.suppress(InvalidAddressError):
                         coin = normalize_coin_type(coin)
-                    except Exception:
-                        pass
                     if who == owner:
                         mine[coin] = mine.get(coin, 0) + amount
                     else:
