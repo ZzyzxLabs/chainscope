@@ -24,6 +24,12 @@ it replaces, so that "that was wrong" points at something.
 **It goes in `case.db`, not the store.** The store is derived and disposable by
 design --- rebuildable from the cache, and `clear()` exists. Nothing a person
 wrote is either of those things.
+
+**Exit codes answer the question that was asked.** `--open` is asking *is
+anything unresolved*, so it exits non-zero when something is --- the same
+convention as `chainscope request list`, where a script must not read a case
+with unanswered questions as a finished one. Listing exits non-zero only when
+there is nothing to list, because there the question is *is there a record*.
 """
 
 from __future__ import annotations
@@ -80,7 +86,15 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
     log = CaseLog(args.case)
     try:
         if args.open:
-            return _show(log.open_questions(), log, empty="no open questions")
+            questions = log.open_questions()
+            if not questions:
+                print("no open questions")
+                return 0
+            _show(questions, log, empty="")
+            # Non-zero *because* there are open questions. `--open` asks
+            # whether anything is unresolved, and a script must not read
+            # silence from it as a finished case.
+            return 1
         if args.list or not args.kind:
             if not args.kind and not args.list:
                 # Nothing to add and nothing asked for: show the log rather than

@@ -492,6 +492,13 @@ function pathsTo(target, edges) {
   DATA.seeds.forEach(s => walk(s, [], new Set([s])));
   return {nodes, edges: used, hops: out, capped};
 }
+// What `draw` last put on the canvas. The roster is headed "on this canvas"
+// and has to mean it: with the time scrub pulled back, most nodes are absent
+// for a reason that is not hiding, and a roster reporting them as present is
+// the same defect as a picture silently omitting them --- a count that does
+// not match what is drawn.
+let drawn = new Set();
+
 const find = document.getElementById("find");
 const rosterList = document.getElementById("rosterlist");
 const rosterCount = document.getElementById("rostercount");
@@ -509,13 +516,15 @@ function roster(){
     box.checked = !hidden.has(n.id);
     box.addEventListener("change", () => {
       if (box.checked) hidden.delete(n.id); else hidden.add(n.id);
-      saveLocal(); roster(); draw();
+      saveLocal(); draw();
     });
     const text = document.createElement("span");
-    text.textContent = displayOf(n) + "  \u00b7 h" + n.depth;
+    const absent = !drawn.has(n.id) && !hidden.has(n.id);
+    text.textContent = displayOf(n) + "  \u00b7 h" + n.depth +
+      (absent ? "  \u00b7 not at this time/asset" : "");
     text.title = n.address;
     if (renamed.has(n.id)) text.className = "mine";
-    if (hidden.has(n.id)) text.classList.add("gone");
+    if (hidden.has(n.id) || absent) text.classList.add("gone");
     label.appendChild(box); label.appendChild(text);
     rosterList.appendChild(label);
   });
@@ -523,8 +532,13 @@ function roster(){
   // Said out loud, always. A picture quietly missing nodes somebody hid is a
   // picture that looks complete and is not --- which is the single failure
   // this whole view is arranged against.
-  const parts = [rows.length + " of " + DATA.nodes.length];
+  const parts = [drawn.size + " drawn of " + DATA.nodes.length];
   if (hidden.size) parts.push(hidden.size + " hidden by you");
+  // Distinct from hiding, and said separately: one is a choice somebody made
+  // and the other is the question they asked. Collapsing them into "not shown"
+  // would leave a reader unable to tell a filtered view from an edited one.
+  const filtered = DATA.nodes.filter(n => !drawn.has(n.id) && !hidden.has(n.id)).length;
+  if (filtered) parts.push(filtered + " outside the current time or asset");
   if (dormant) parts.push(dormant + " saved for addresses not in this view");
   rosterCount.textContent = "\u2014 " + parts.join(", ");
 }
@@ -663,6 +677,9 @@ function draw(){
       });
     g.appendChild(grp);
   });
+
+  drawn = visible;
+  roster();
 }
 
 function showEdge(e) {
@@ -763,14 +780,14 @@ function show(n){
       mine || "");
     if (next === null) return;
     if (next.trim()) renamed.set(n.id, next.trim()); else renamed.delete(n.id);
-    saveLocal(); roster(); draw(); show(n);
+    saveLocal(); draw(); show(n);
   });
   bar.appendChild(rename);
   const hide = document.createElement("button");
   hide.className = "rowbtn";
   hide.textContent = "hide from canvas";
   hide.addEventListener("click", () => {
-    hidden.add(n.id); saveLocal(); roster(); draw();
+    hidden.add(n.id); saveLocal(); draw();
   });
   bar.appendChild(hide);
   panel.appendChild(bar);
@@ -824,7 +841,7 @@ window.addEventListener("keydown", ev => {
 document.getElementById("reset").addEventListener("click", () => {
   selected = null; opened.clear();
   route = {nodes: new Set(), edges: new Set(), hops: []};
-  saveLocal(); roster(); draw();
+  saveLocal(); draw();
   const p = document.getElementById("panel");
   p.className="muted"; p.textContent="Click an address."; });
 
@@ -861,7 +878,7 @@ fileInput.addEventListener("change", () => {
         "graph wider.");
     }
     render();
-    saveLocal(); roster(); draw();
+    saveLocal(); draw();
   };
   reader.readAsText(file);
   fileInput.value = "";
@@ -871,7 +888,6 @@ restoreLocal();
 if (dormant) notes.push(dormant + " item(s) in the restored canvas refer to " +
   "addresses outside this view --- kept, not discarded.");
 render();
-roster();
 draw();
 </script></body></html>
 """

@@ -193,3 +193,76 @@ class TestLedger:
         again = CaseLog(path)
         assert len(again.notes()) == 1
         again.close()
+
+
+class TestDeadlineSemantics:
+    def test_a_due_date_means_the_end_of_that_day(self) -> None:
+        """Parsed at midnight, a request is overdue all through the day it is due.
+
+        `request list` would then put it under the `!` marker twenty-four hours
+        early --- and that number is the one thing this command exists to
+        report accurately.
+        """
+        from chainscope.cli.commands.request import _date
+
+        due = _date("2026-07-09", "due")
+        assert due is not None
+        assert (due.hour, due.minute) == (23, 59)
+
+        req = request(sent_at=SENT, due_at=due)
+        midday = datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc)
+        assert not req.overdue_at(midday)
+        assert req.overdue_at(datetime(2026, 7, 10, 0, 1, tzinfo=timezone.utc))
+
+    def test_a_send_date_stays_at_the_start_of_the_day(self) -> None:
+        # It starts the clock, and a request recorded as sent on the 2nd went
+        # out at some point during the 2nd.
+        from chainscope.cli.commands.request import _date
+
+        sent = _date("2026-07-02", "sent")
+        assert sent is not None
+        assert (sent.hour, sent.minute) == (0, 0)
+
+    def test_same_day_send_and_deadline_is_accepted(self) -> None:
+        # With end-of-day semantics this is a real same-day deadline rather
+        # than a contradiction.
+        from chainscope.cli.commands.request import _date
+
+        sent, due = _date("2026-07-02", "sent"), _date("2026-07-02", "due")
+        assert request(sent_at=sent, due_at=due).is_open
+
+
+class TestConcurrentReplies:
+    def test_two_threads_cannot_both_close_one_request(self, tmp_path: Path) -> None:
+        """Check-then-append under one lock.
+
+        Split, both threads read the request as open and both close it --- and
+        the second close is the one `status` reports, silently.
+        """
+        import threading
+
+        ledger = Ledger(tmp_path / "case.db")
+        rid = ledger.send(request())
+
+        start = threading.Barrier(2)
+        outcomes: list[str] = []
+
+        def close(which: str) -> None:
+            start.wait()
+            try:
+                ledger.record(rid, event(Status.ANSWERED, body=which))
+                outcomes.append("recorded")
+            except ValueError:
+                outcomes.append("refused")
+
+        threads = [threading.Thread(target=close, args=(n,)) for n in ("a", "b")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert sorted(outcomes) == ["recorded", "refused"]
+        stored = ledger.get(rid)
+        assert stored is not None
+        assert len(stored.events) == 1
+        ledger.close()

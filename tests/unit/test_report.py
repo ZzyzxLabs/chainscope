@@ -348,3 +348,52 @@ class TestCorrespondenceInReport:
         text = args.out.read_text()
         assert "Not yet known" not in text
         assert "answered" in text
+
+
+class TestHedgedClaims:
+    def _tagged(self, tmp_path: Path, confidence: Confidence, rationale: str = "") -> None:
+        store = SqliteStore(tmp_path / "store.db")
+        store.put_attributions(
+            [
+                claim(
+                    label="Probably Tornado",
+                    category=Category.MIXER,
+                    confidence=confidence,
+                    rationale=rationale,
+                )
+            ]
+        )
+        store.close()
+
+    def test_a_claim_below_high_carries_its_reasoning(self, tmp_path: Path) -> None:
+        # The flow view hedges these on the face of the node. The report is the
+        # artefact that leaves the building, and a MEDIUM label printed without
+        # its reasoning is how a guess becomes a sentence somebody quotes.
+        self._tagged(tmp_path, Confidence.MEDIUM, "three deposits in one block")
+        args = args_for(tmp_path)
+        report.run(args, TerminalRenderer())
+        text = args.out.read_text()
+        assert "Claims below HIGH" in text
+        assert "three deposits in one block" in text
+
+    def test_a_high_claim_is_not_hedged(self, tmp_path: Path) -> None:
+        self._tagged(tmp_path, Confidence.HIGH)
+        args = args_for(tmp_path)
+        report.run(args, TerminalRenderer())
+        assert "Claims below HIGH" not in args.out.read_text()
+
+    def test_a_missing_rationale_is_named_not_omitted(self, tmp_path: Path) -> None:
+        # MEDIUM does not require one, so this is reachable --- and a hedged
+        # claim with nothing behind it is worth showing as exactly that.
+        self._tagged(tmp_path, Confidence.MEDIUM)
+        args = args_for(tmp_path)
+        report.run(args, TerminalRenderer())
+        assert "no rationale recorded" in args.out.read_text()
+
+    def test_html_carries_it_too(self, tmp_path: Path) -> None:
+        self._tagged(tmp_path, Confidence.LOW, "one shared funder")
+        args = args_for(tmp_path, out=tmp_path / "r.html")
+        report.run(args, TerminalRenderer())
+        text = args.out.read_text()
+        assert "Claims below HIGH" in text
+        assert "one shared funder" in text

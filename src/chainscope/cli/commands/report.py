@@ -340,6 +340,22 @@ def _markdown(case: dict[str, Any]) -> str:
                 f"| {claim.analyst or '—'} |"
             )
         out.append("")
+        hedged = [e for e in case["entities"] if _is_hedged(e.primary)]
+        if hedged:
+            # The flow view says "Below HIGH: this is a claim, not an
+            # identification" on the face of every one of these. The report is
+            # the artefact that leaves the building, and printing the label
+            # without the reasoning behind it is how a MEDIUM guess becomes a
+            # sentence somebody quotes.
+            out += ["**Claims below HIGH, and the reasoning behind them**", ""]
+            for entity in hedged:
+                claim = entity.primary
+                out.append(
+                    f"- `{entity.address}` — {claim.label} "
+                    f"({claim.confidence.name.lower()}): "
+                    + (claim.rationale or "*no rationale recorded*")
+                )
+            out.append("")
         if case["disputed"]:
             out += ["**Where sources disagree**", ""]
             for entity in case["disputed"]:
@@ -398,6 +414,18 @@ def _contribution(person: dict[str, Any]) -> str:
         # in particular on the machine it is read on.
         text += "  **(OS account, unverified)**"
     return text
+
+
+def _is_hedged(claim: Attribution) -> bool:
+    """Whether a claim is below the line where it stops being an identification.
+
+    The same threshold the flow view hedges at. Above it the label stands on
+    its own; at or below it, the label without its reasoning is a guess
+    presented as a fact.
+    """
+    from ...core.attribution import Confidence
+
+    return claim.confidence < Confidence.HIGH
 
 
 def _request_line(request: Request, now: datetime) -> str:
@@ -620,6 +648,21 @@ def _html(case: dict[str, Any]) -> str:
                 "</tr>"
             )
         parts.append("</tbody></table></div>")
+        hedged = [e for e in case["entities"] if _is_hedged(e.primary)]
+        if hedged:
+            parts.append("<h3>Claims below HIGH, and the reasoning behind them</h3><ul>")
+            for entity in hedged:
+                claim = entity.primary
+                why = (
+                    _e(claim.rationale)
+                    if claim.rationale
+                    else "<span class=none>no rationale recorded</span>"
+                )
+                parts.append(
+                    f"<li><code>{_e(entity.address)}</code> — {_e(claim.label)} "
+                    f"({_e(claim.confidence.name.lower())}): {why}</li>"
+                )
+            parts.append("</ul>")
         if case["disputed"]:
             parts.append("<h3>Where sources disagree</h3><ul>")
             for entity in case["disputed"]:

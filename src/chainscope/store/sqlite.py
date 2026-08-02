@@ -253,12 +253,22 @@ class SqliteStore(Store):
         function that runs without being asked; that is what the rebuild
         guarantee in :mod:`chainscope.store.base` is for.
 
-        Each step runs in one transaction. A half-applied store is
-        indistinguishable from a complete one and would be trusted.
+        Each step runs in one **explicit** transaction. `BEGIN` is issued by
+        hand because Python's sqlite3 opens one only for INSERT/UPDATE/DELETE:
+        DDL runs in autocommit, so an `ALTER TABLE ... RENAME` commits the
+        instant it executes and `rollback()` cannot undo it. Measured --- the
+        rename survived a rollback, which would leave a store carrying
+        `attributions_v3`, no `attributions`, and a version still reading 3, so
+        the next open would retry the rename and fail on the name already
+        existing. Unrecoverable without hand-editing the file.
+
+        A half-applied store is indistinguishable from a complete one and would
+        be trusted, so this has to actually hold rather than be asserted here.
         """
         version = from_version
         with self._lock:
             try:
+                self._conn.execute("BEGIN")
                 if version == 3:
                     self._migrate_3_to_4()
                     version = 4

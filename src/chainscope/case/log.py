@@ -195,6 +195,10 @@ class CaseLog:
         )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys=ON")
+        if self.path:
+            # A reader is not blocked by a writer: `report` and `graph` read
+            # this file while somebody may be adding a note to it.
+            self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._conn.execute(
             "INSERT OR IGNORE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),)

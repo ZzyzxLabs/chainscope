@@ -24,11 +24,16 @@ SOURCE = Path(__file__).resolve().parents[2] / "src" / "chainscope" / "agent" / 
 
 
 def registered() -> set[str]:
-    """Names of functions decorated with `@server.tool(...)`."""
+    """Names of functions decorated with `@server.tool(...)`.
+
+    `AsyncFunctionDef` as well as `FunctionDef`: the MCP SDK accepts both, and
+    a check that silently skipped async tools would go stale the first time one
+    is written --- which is this file's own failure mode.
+    """
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     found: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for decorator in node.decorator_list:
             call = decorator.func if isinstance(decorator, ast.Call) else decorator
@@ -41,6 +46,18 @@ def listed() -> set[str]:
     # The list carries "(only with --writable)" for gated tools; that qualifier
     # is for a human reading `doctor` and is not part of the name.
     return {entry.split(" ")[0] for entry in TOOLS}
+
+
+def test_the_check_found_something() -> None:
+    """Both parametrised classes below iterate over discovered names.
+
+    If discovery returns nothing --- a refactor moves the decorator, the AST
+    shape changes --- every one of those cases collects zero tests and the file
+    passes green while checking nothing. That is the exact way a currency check
+    stops being one, and it is what this file was written about.
+    """
+    assert registered(), "no @server.tool functions found; the parser has gone stale"
+    assert listed(), "TOOLS is empty"
 
 
 class TestTheListMatchesTheServer:

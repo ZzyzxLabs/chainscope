@@ -99,12 +99,26 @@ def _who(args: argparse.Namespace) -> tuple[str, str]:
 
 
 def _date(raw: str | None, field: str) -> datetime | None:
+    """A date, resolved to the moment that date means.
+
+    `--due 2026-07-09` is a deadline of *the 9th*, so it falls at the end of
+    that day. Parsed at midnight it would read as overdue for the whole of the
+    day it is actually due --- and `request list` would put it under the `!`
+    marker twenty-four hours early, which is precisely the number this command
+    exists to report accurately.
+
+    `--sent` keeps midnight: it is the start of the clock, and a request
+    recorded as sent on the 2nd was sent at some point during the 2nd.
+    """
     if not raw:
         return None
     try:
-        return datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        at = datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
         raise ValueError(f"--{field} should be YYYY-MM-DD, got {raw!r}") from None
+    if field == "due":
+        return at.replace(hour=23, minute=59, second=59)
+    return at
 
 
 def _send(args: argparse.Namespace, ledger: Ledger) -> int:

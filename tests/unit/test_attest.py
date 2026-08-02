@@ -118,3 +118,61 @@ class TestItRefusesWhereThereIsNothing:
 
         path = case / ".chainscope/cache/abc123.json"
         assert digest_for(path) == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class TestCompare:
+    """The verification decision, asserted directly rather than through stdout.
+
+    Reading it back out of printed text tests the wording, and the wording is
+    the part that is allowed to change.
+    """
+
+    def _sha(self, value: str) -> dict[str, dict[str, object]]:
+        return {k: {"sha256": v} for k, v in (pair.split("=") for pair in value.split())}
+
+    def test_a_moved_response_is_drift(self) -> None:
+        from chainscope.cli.commands.attest import compare
+
+        out = compare(self._sha("a=1 b=2"), self._sha("a=1 b=9"))
+        assert out["changed"] == ["b"]
+        assert out["unchanged"] == ["a"]
+
+    def test_a_deleted_response_is_drift(self) -> None:
+        from chainscope.cli.commands.attest import compare
+
+        assert compare(self._sha("a=1"), self._sha(""))["gone"] == ["a"]
+
+    def test_a_new_response_is_not_drift(self) -> None:
+        # Work continued. Reported so the count reconciles, not as tampering.
+        from chainscope.cli.commands.attest import compare
+
+        out = compare(self._sha("a=1"), self._sha("a=1 b=2"))
+        assert out["new"] == ["b"]
+        assert not out["changed"] and not out["gone"]
+
+    def test_holes_in_the_record_travel_with_the_result(self) -> None:
+        from chainscope.cli.commands.attest import compare
+
+        out = compare(self._sha("a=1"), self._sha("a=1"), uncached=["q1"], unreadable=3)
+        assert out["uncached"] == ["q1"]
+        assert out["unreadable_audit_lines"] == 3
+
+
+class TestVerifyReportsHoles:
+    def test_uncached_and_unreadable_are_printed_on_a_clean_run(self, tmp_path, capsys) -> None:
+        """They were passed to `_verify` and never used.
+
+        A verify that printed "unchanged" while staying silent about holes in
+        the audit log answers a narrower question than the one being asked.
+        """
+        from chainscope.cli.commands.attest import _verify
+
+        out = tmp_path / "attestation.json"
+        out.write_text('{"responses": {}}')
+        code = _verify(out, {}, ["q1", "q2"], 4)
+        text = capsys.readouterr().out
+        assert "2 quer(ies) have no cached response" in text
+        assert "4 unreadable audit line(s)" in text
+        # Still zero: a gap in what was recorded is not evidence that a
+        # recorded response moved, and one exit code cannot answer both.
+        assert code == 0

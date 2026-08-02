@@ -27,13 +27,14 @@ import argparse
 import hashlib
 import json
 import sys
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ...render.base import Renderer
 
-__all__ = ["add_parser", "digest_for", "run"]
+__all__ = ["add_parser", "compare", "digest_for", "run"]
 
 
 def add_parser(sub: Any, name: str) -> None:
@@ -173,6 +174,37 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
     return 0
 
 
+def compare(
+    recorded: dict[str, dict[str, Any]],
+    now: dict[str, dict[str, Any]],
+    *,
+    uncached: Sequence[str] = (),
+    unreadable: int = 0,
+) -> dict[str, Any]:
+    """What moved between an attestation and the cache as it is now.
+
+    A value rather than printed text, so the decision --- what counts as drift
+    --- can be asserted on directly. Reading it back out of stdout tests the
+    wording rather than the judgement, and the wording is the part that is
+    allowed to change.
+    """
+    return {
+        # The serious one: the same query, a different answer, and no record of
+        # anybody deciding that.
+        "changed": sorted(
+            k for k in recorded if k in now and now[k]["sha256"] != recorded[k]["sha256"]
+        ),
+        "gone": sorted(set(recorded) - set(now)),
+        # Not drift. Work continued; reported so the count reconciles.
+        "new": sorted(set(now) - set(recorded)),
+        "unchanged": sorted(
+            k for k in recorded if k in now and now[k]["sha256"] == recorded[k]["sha256"]
+        ),
+        "uncached": list(uncached),
+        "unreadable_audit_lines": unreadable,
+    }
+
+
 def _verify(
     out: Path, now: dict[str, dict[str, Any]], missing: list[str], unreadable: int
 ) -> int:
@@ -185,31 +217,44 @@ def _verify(
         print(f"{out} is not readable JSON", file=sys.stderr)
         return 2
 
-    changed = sorted(
-        k for k in recorded if k in now and now[k]["sha256"] != recorded[k]["sha256"]
-    )
-    gone = sorted(set(recorded) - set(now))
-    fresh = sorted(set(now) - set(recorded))
+    result = compare(recorded, now, uncached=missing, unreadable=unreadable)
 
-    for key in changed:
-        # The serious one. The same query, a different answer, and no record of
-        # anyone deciding that.
+    for key in result["changed"]:
         print(f"CHANGED  {key}")
-    for key in gone:
+    for key in result["gone"]:
         print(f"MISSING  {key}  (was attested, is not in the cache now)")
-    for key in fresh:
-        # Not a problem: work continued. Reported so the count reconciles.
+    for key in result["new"]:
         print(f"new      {key}")
 
-    if not changed and not gone:
+    # Reported on every run, not only a clean one. These are holes in the
+    # record, and a verify that printed "unchanged" while staying quiet about
+    # them would answer a narrower question than the one being asked.
+    if result["uncached"]:
+        print(
+            f"{len(result['uncached'])} quer(ies) have no cached response --- "
+            f"uncacheable, or pruned since"
+        )
+    if result["unreadable_audit_lines"]:
+        print(
+            f"{result['unreadable_audit_lines']} unreadable audit line(s) --- "
+            f"the record has holes"
+        )
+
+    if not result["changed"] and not result["gone"]:
         print(f"{len(recorded)} attested response(s) unchanged.")
-        if fresh:
-            print(f"{len(fresh)} added since --- re-run without --verify to attest them.")
+        if result["new"]:
+            print(
+                f"{len(result['new'])} added since --- re-run without --verify to attest them."
+            )
+        # Zero even with holes above. A missing or unreadable line is a gap in
+        # what was recorded, not evidence that a recorded response moved, and
+        # failing on it would make the exit code answer two questions at once.
         return 0
 
     print(
-        f"\n{len(changed)} changed and {len(gone)} missing. Any figure resting on "
-        f"those\nwas computed from something other than what is here now.",
+        f"\n{len(result['changed'])} changed and {len(result['gone'])} missing. Any "
+        f"figure resting on those\nwas computed from something other than what is "
+        f"here now.",
         file=sys.stderr,
     )
     return 1

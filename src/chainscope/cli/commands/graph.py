@@ -127,8 +127,9 @@ def add_parser(sub: Any, name: str) -> None:
         "--case",
         type=Path,
         default=Path(".chainscope/case.db"),
-        help="case log to attach notes from. Notes appear on the node they are "
-        "about, with their author; absent is fine",
+        help="case log to attach notes from, for `-f flow` only. Notes appear "
+        "on the node they are about, with their author; absent is fine. The "
+        "other formats have nowhere to show them and ignore this",
     )
     p.add_argument(
         "--visible-depth",

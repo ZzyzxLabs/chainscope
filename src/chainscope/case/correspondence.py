@@ -220,7 +220,11 @@ class Ledger:
 
     def __init__(self, path: Path | str = ".chainscope/case.db") -> None:
         self.path = Path(path) if path != ":memory:" else None
-        self._lock = threading.Lock()
+        # Reentrant: `record` holds this across its own `get`, so that checking
+        # "is it still open" and appending the event cannot be interleaved by
+        # another thread. Both would otherwise see an open request and both
+        # would close it.
+        self._lock = threading.RLock()
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(
@@ -228,6 +232,11 @@ class Ledger:
         )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys=ON")
+        if self.path:
+            # Same as the store. A reader is not blocked by a writer, which
+            # matters here because `report` reads this file while somebody may
+            # be recording a reply into it.
+            self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
@@ -254,7 +263,17 @@ class Ledger:
             return int(cursor.lastrowid or 0)
 
     def record(self, request_id: int, event: RequestEvent) -> int:
-        """Append an event. The request must exist and must still be open."""
+        """Append an event. The request must exist and must still be open.
+
+        The check and the append happen under one lock. Split, two threads
+        recording a reply at once would both read the request as open and both
+        would close it --- and the second close would be the one `status`
+        reports, silently.
+        """
+        with self._lock:
+            return self._record(request_id, event)
+
+    def _record(self, request_id: int, event: RequestEvent) -> int:
         existing = self.get(request_id)
         if existing is None:
             raise ValueError(f"no request {request_id} in {self.path}")
@@ -268,21 +287,20 @@ class Ledger:
                 f"{existing.events[-1].at:%Y-%m-%d}. Send a new request rather "
                 f"than reopening this one, so the first exchange stays legible"
             )
-        with self._lock:
-            cursor = self._conn.execute(
-                "INSERT INTO request_events "
-                "(request, at, status, analyst, identified_by, body) VALUES (?,?,?,?,?,?)",
-                (
-                    request_id,
-                    int(event.at.timestamp()),
-                    event.status.value,
-                    event.analyst,
-                    event.identified_by,
-                    event.body,
-                ),
-            )
-            self._conn.commit()
-            return int(cursor.lastrowid or 0)
+        cursor = self._conn.execute(
+            "INSERT INTO request_events "
+            "(request, at, status, analyst, identified_by, body) VALUES (?,?,?,?,?,?)",
+            (
+                request_id,
+                int(event.at.timestamp()),
+                event.status.value,
+                event.analyst,
+                event.identified_by,
+                event.body,
+            ),
+        )
+        self._conn.commit()
+        return int(cursor.lastrowid or 0)
 
     def get(self, request_id: int) -> Request | None:
         with self._lock:

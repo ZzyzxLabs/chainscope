@@ -651,7 +651,7 @@ def build_server(config: ServerConfig) -> MCPServer:
         now = datetime.now(timezone.utc)
         out: dict[str, Any] = {
             "open_questions": [
-                {"id": n.id, "asked": n.body, "by": n.analyst} for n in open_questions
+                {"id": n.id, "asked": n.body, "by": n.analyst} for n in open_questions[:capped]
             ],
             "awaiting_reply": [
                 {
@@ -662,7 +662,7 @@ def build_server(config: ServerConfig) -> MCPServer:
                     "overdue": r.overdue_at(now),
                     "about": r.subject or None,
                 }
-                for r in outstanding
+                for r in outstanding[:capped]
             ],
             "notes": [
                 {
@@ -690,8 +690,20 @@ def build_server(config: ServerConfig) -> MCPServer:
                 "refusal is a decision somebody made, and only a refusal can be "
                 "escalated against --- do not report silence as a denial."
             )
-        if len(notes) > capped:
-            out["truncated"] = f"the most recent {capped} of {len(notes)} notes"
+        # Per field, not one flag. "Something was clipped" leaves an agent
+        # unable to tell a complete list of open questions from a clipped one,
+        # and the open questions are the field this tool exists to return.
+        clipped = {
+            name: f"{capped} of {total} shown"
+            for name, total in (
+                ("open_questions", len(open_questions)),
+                ("awaiting_reply", len(outstanding)),
+                ("notes", len(notes)),
+            )
+            if total > capped
+        }
+        if clipped:
+            out["truncated"] = clipped
         return out
 
     # ------------------------------------------------------------------ writing

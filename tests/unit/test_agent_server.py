@@ -485,12 +485,22 @@ class TestCaseRecord:
 
 class TestRecordNote:
     def test_it_is_off_without_writable(self, store_path, case_path):
+        # The tool is not registered at all without --writable, so the SDK
+        # refuses it as unknown. Asserting *that* rather than "either of two
+        # messages" is the difference between checking the gate and checking
+        # that something, anything, went wrong.
         message = _raises(
             _server(store_path, case_path),
             "record_note",
             {"kind": "observation", "body": "x"},
         )
-        assert "record_note" in message or "Unknown tool" in message
+        assert "Unknown tool" in message and "record_note" in message
+
+    def test_and_the_read_side_still_works_without_writable(self, store_path, case_path):
+        # The gate must not take the whole case surface with it: reading what
+        # is unresolved is not a write and an agent needs it to summarise.
+        out = _call(_server(store_path, case_path), "case_record", {})
+        assert "open_questions" in out
 
     def test_an_agent_note_is_marked_as_one(self, store_path, case_path):
         # Same guarantee as label_address: a human reading the narrative later

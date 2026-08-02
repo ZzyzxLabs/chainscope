@@ -93,3 +93,33 @@ class TestSchema4Migration:
         conn.close()
         with pytest.raises(StoreError, match="newer chainscope"):
             SqliteStore(path)
+
+    def test_a_failed_migration_leaves_the_store_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The claim the docstring makes, checked rather than asserted.
+
+        `ALTER TABLE ... RENAME` runs in autocommit under Python's sqlite3 --- it
+        does not open a transaction --- so without an explicit `BEGIN` the rename
+        committed the moment it ran and `rollback()` could not undo it. That left
+        a store with `attributions_v3`, no `attributions`, and a version still
+        reading 3, so the next open retried the rename and failed on the name
+        already existing. Unrecoverable without hand-editing the file.
+        """
+        import chainscope.store.sqlite as mod
+
+        path = tmp_path / "old.db"
+        self._v3(path)
+
+        broken = (mod._ATTRIBUTIONS[0], "CREATE UNIQUE INDEX x ON attributions(nope)")
+        monkeypatch.setattr(mod, "_ATTRIBUTIONS", broken)
+        with pytest.raises(StoreError, match="rolled back"):
+            SqliteStore(path)
+        monkeypatch.undo()
+
+        # Everything as it was, and the migration can simply be run again.
+        store = SqliteStore(path)
+        try:
+            assert [c.label for c in store.attributions("0xaa")] == ["Binance 14"]
+        finally:
+            store.close()
