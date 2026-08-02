@@ -41,7 +41,7 @@ from ..transport.cache import Volatility
 from ..transport.http import Client, TransportError
 from .base import Capability, CostTier, ProviderError, ReadOnlyProvider
 
-__all__ = ["ETHERSCAN_V2", "EtherscanProvider", "ResultTruncated"]
+__all__ = ["ETHERSCAN_V2", "EtherscanProvider", "ResultTruncated", "is_cacheable"]
 
 ETHERSCAN_V2 = "https://api.etherscan.io/v2/api"
 
@@ -60,6 +60,28 @@ END_OF_CHAIN = 999_999_999
 
 def _end_block(value: int | str) -> int:
     return END_OF_CHAIN if value == "latest" else int(value)
+
+
+def is_cacheable(body: Any) -> bool:
+    """Whether a response is an answer rather than a refusal.
+
+    Etherscan reports a rate limit as ``200 OK`` carrying ``status: "0"``. The
+    transport sees a valid response and stores it, so a momentary rate limit
+    becomes the cached answer for that address --- for an hour under the default
+    ``SLOW`` policy, and permanently in a recorded cassette. Re-running does not
+    help, because re-running does not make a request.
+
+    "No transactions found" shares the same ``status: "0"`` and *is* an answer,
+    so the two must be separated here rather than by status alone.
+    """
+    if not isinstance(body, dict):
+        return False
+    if "status" not in body:
+        # A proxy-module (JSON-RPC) reply. Cache it unless it carries an error.
+        return "error" not in body
+    if body.get("status") == "1":
+        return True
+    return any(n in str(body.get("message", "")).lower() for n in _NO_DATA)
 
 
 class ResultTruncated(ProviderError):
@@ -134,12 +156,32 @@ class EtherscanProvider(ReadOnlyProvider):
                 },
                 volatility=volatility,
                 provider=self.name,
+                cacheable=is_cacheable,
             )
         except TransportError as exc:
             raise ProviderError(str(exc)) from exc
 
         if not isinstance(body, dict):
             raise ProviderError(f"unexpected response shape: {type(body).__name__}")
+
+        message = str(body.get("message", "")).lower()
+        detail = str(body.get("result", ""))
+
+        # The failure envelope is checked before the proxy short-circuit,
+        # because Etherscan wraps *every* module in it -- `proxy` included.
+        # Taking the proxy path first means a rate-limited eth_getCode returns
+        # the error text as its result, and `bool(code)` then reports a
+        # rate-limited EOA as a contract. The ValueError from a caller parsing
+        # it as hex is the lucky outcome; that silent misclassification is not.
+        if body.get("status") == "0" and "message" in body:
+            # An empty result is a fact about the chain, not a failure. Only the
+            # data modules can say it; proxy has no such response.
+            if module != "proxy" and any(n in message for n in _NO_DATA):
+                return []
+            # Everything else is "we do not know". Raising rather than returning
+            # [] is the point: an empty list here makes an address disappear
+            # from the analysis with nothing to indicate it ever existed.
+            raise ProviderError(f"{action}: {body.get('message')} ({detail})".strip())
 
         # The proxy module speaks JSON-RPC and has no `status` field at all.
         # Treating its absence as failure would break every nonce lookup.
@@ -151,16 +193,6 @@ class EtherscanProvider(ReadOnlyProvider):
         if body.get("status") == "1":
             return body.get("result", [])
 
-        message = str(body.get("message", "")).lower()
-        detail = str(body.get("result", ""))
-
-        # An empty result is a fact about the chain, not a failure.
-        if any(n in message for n in _NO_DATA):
-            return []
-
-        # Everything else is "we do not know". Raising rather than returning []
-        # is the point: an empty list here makes an address disappear from the
-        # analysis with nothing to indicate it ever existed.
         raise ProviderError(f"{action}: {body.get('message')} ({detail})".strip())
 
     def _paged(

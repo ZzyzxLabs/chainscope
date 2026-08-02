@@ -82,6 +82,56 @@ jobs:
           name: dist
           path: dist/
 
+  cassettes:
+    name: recorded fixtures carry no credentials
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # A cassette is committed to a public repository, so a key inside one is
+      # a disclosed key. Cassette.save() already refuses to write a leaking
+      # file, but a fixture edited by hand never passed through it -- and by
+      # the time anyone would notice, it is in the history.
+      - name: scan fixtures for credential shapes
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+
+          FIXTURES = sorted(pathlib.Path("tests/cassettes").glob("*.json"))
+          if not FIXTURES:
+              print("no cassettes recorded yet; nothing to check")
+              sys.exit(0)
+
+          # Keys are opaque and long; the point is to catch anything that looks
+          # like one surviving next to a credential-ish name, plus the two
+          # embedded-in-path conventions.
+          SUSPECT = re.compile(
+              r"(?i)(apikey|api_key|token|secret|password|authorization)"
+              r"\"?\s*[:=]\s*\"?([A-Za-z0-9_\-]{16,})"
+          )
+          PATH_KEY = re.compile(r"/(v\d+)/([A-Za-z0-9_-]{20,})")
+
+          bad = []
+          for f in FIXTURES:
+              text = f.read_text()
+              for m in SUSPECT.finditer(text):
+                  if m.group(2) != "redacted":
+                      bad.append(f"{f}: {m.group(1)} looks unredacted")
+              for m in PATH_KEY.finditer(text):
+                  bad.append(f"{f}: key-shaped path segment /{m.group(1)}/...")
+
+          if bad:
+              print("Credential-shaped content in committed fixtures:")
+              for b in bad:
+                  print("  " + b)
+              print("\nRe-record with scripts/record_cassettes.py, and treat any")
+              print("key that reached a pushed fixture as disclosed.")
+              sys.exit(1)
+          print(f"{len(FIXTURES)} cassette(s) clean")
+          PY
+
   data-sources:
     name: attribution sources are documented
     runs-on: ubuntu-latest

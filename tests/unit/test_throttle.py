@@ -38,6 +38,19 @@ class TestTokenBucket:
             TokenBucket(rate=0, capacity=1)
 
 
+def _burst(throttle: Throttle, url: str = "https://a.example/x") -> int:
+    """How many requests leave before the first one has to wait.
+
+    The bucket starts full, so its capacity *is* the burst. Counting zero-waits
+    across a fixed number of calls would overcount: `acquire` sleeps, and the
+    sleep refills the bucket, so the call after every wait is free again.
+    """
+    n = 0
+    while n < 64 and throttle.acquire(url) == 0.0:
+        n += 1
+    return n
+
+
 class TestThrottle:
     def test_hosts_are_limited_independently(self):
         """One slow explorer must not stall an unrelated RPC endpoint."""
@@ -46,15 +59,35 @@ class TestThrottle:
         assert t.acquire("https://b.example/y") == 0.0
 
     def test_same_host_shares_a_bucket(self):
-        # Capacity is max(rate * 2, default_burst) -- always at least two
-        # seconds of headroom, so a low rate is needed to observe queueing.
         t = Throttle(default_rate=1, default_burst=1)
-        for _ in range(2):
-            assert t.acquire("https://a.example/x") == 0.0
+        assert t.acquire("https://a.example/x") == 0.0
         assert t.acquire("https://a.example/y") > 0
 
-    def test_capacity_is_at_least_two_seconds_of_rate(self):
-        """Documents the formula, which is easy to misread as 'burst == capacity'."""
+    def test_burst_never_exceeds_one_second_of_rate(self):
+        """A configured rate has to be a promise, not a suggestion.
+
+        The bucket starts full, so its capacity *is* the number of requests
+        that leave instantly. An earlier formula took ``max(rate * 2,
+        default_burst)``, which made the burst a floor: asking for two requests
+        a second still let ten go out at once. Everything that matters --- the
+        opening of a sweep, a recording run --- happens inside exactly that
+        window, so the limit was absent precisely when it was needed.
+        """
+        assert _burst(Throttle(default_rate=2, default_burst=10)) == 2
+
+    def test_lowering_the_rate_lowers_the_burst(self):
+        """The relative property, which is the one that was broken."""
+        assert _burst(Throttle(default_rate=2, default_burst=10)) < _burst(
+            Throttle(default_rate=8, default_burst=10)
+        )
+
+    def test_burst_is_capped_by_default_burst_for_fast_hosts(self):
+        """The cap still applies in the other direction."""
+        t = Throttle(default_rate=50, default_burst=3)
+        assert _burst(t) == 3
+        assert t.stats()["a.example"]["rate"] == 50
+
+    def test_rate_is_reported(self):
         t = Throttle(default_rate=50, default_burst=1)
         t.acquire("https://a.example/x")
         assert t.stats()["a.example"]["rate"] == 50

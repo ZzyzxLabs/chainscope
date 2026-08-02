@@ -84,7 +84,15 @@ class Throttle:
             bucket = self._buckets.get(host)
             if bucket is None:
                 rate = self.overrides.get(host, self.default_rate)
-                bucket = TokenBucket(rate=rate, capacity=max(rate * 2, self.default_burst))
+                # Burst has to scale *down* with the rate. `max(rate * 2,
+                # default_burst)` made the burst a floor, so lowering the rate
+                # to respect a strict API still produced a ten-request burst --
+                # and a bucket that starts full spends it immediately, which is
+                # exactly when a sweep or a recording run makes its first calls.
+                # Capping at one second's allowance makes a configured rate a
+                # promise the caller can rely on.
+                capacity = min(max(rate, 1.0), self.default_burst)
+                bucket = TokenBucket(rate=rate, capacity=capacity)
                 self._buckets[host] = bucket
             return bucket
 

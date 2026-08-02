@@ -15,16 +15,34 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
-from .audit import AuditLog, redact_headers
-from .cache import Cache, Volatility, cache_key
+from .audit import AuditLog
+from .cache import CacheBackend, Volatility, cache_key
+from .credentials import redact, redact_headers, scrub_params
 from .throttle import Throttle
 
-__all__ = ["CircuitBreaker", "Client", "ReadOnlyViolation", "TransportError"]
+__all__ = ["Cacheable", "CircuitBreaker", "Client", "ReadOnlyViolation", "TransportError"]
+
+#: Predicate deciding whether a decoded response body is worth keeping.
+#:
+#: It exists because HTTP status is not a reliable signal of success. Etherscan
+#: answers a rate limit with ``200 OK`` and ``{"status": "0", "result": "Max
+#: calls per sec rate limit reached"}``; several RPC providers do the same. The
+#: transport sees a perfectly good response and caches it, and from then on the
+#: address returns "rate limited" from cache, with no request made, for as long
+#: as the TTL lasts --- an hour for ``SLOW``, and forever in a cassette.
+#:
+#: That is the project's central failure mode ("we do not know" stored as if it
+#: were data) occurring one layer *below* the provider code that handles it so
+#: carefully. The transport cannot recognise sixty different error shapes, and
+#: the provider cannot reach inside the caching. So the provider supplies the
+#: predicate and the transport applies it.
+Cacheable = Callable[[Any], bool]
 
 
 class TransportError(RuntimeError):
@@ -148,7 +166,7 @@ class Client:
     def __init__(
         self,
         *,
-        cache: Cache | None = None,
+        cache: CacheBackend | None = None,
         throttle: Throttle | None = None,
         audit: AuditLog | None = None,
         breaker: CircuitBreaker | None = None,
@@ -184,11 +202,21 @@ class Client:
         volatility: Volatility = Volatility.SLOW,
         headers: dict[str, str] | None = None,
         provider: str | None = None,
+        cacheable: Cacheable | None = None,
     ) -> Any:
-        key = cache_key("GET", url, params)
+        key = _request_key("GET", url, params)
         if (hit := self._from_cache(key, volatility, url, provider)) is not _MISS:
             return hit
-        return self._send("GET", url, key, volatility, provider, params=params, headers=headers)
+        return self._send(
+            "GET",
+            url,
+            key,
+            volatility,
+            provider,
+            cacheable=cacheable,
+            params=params,
+            headers=headers,
+        )
 
     def post(
         self,
@@ -198,11 +226,21 @@ class Client:
         volatility: Volatility = Volatility.SLOW,
         headers: dict[str, str] | None = None,
         provider: str | None = None,
+        cacheable: Cacheable | None = None,
     ) -> Any:
-        key = cache_key("POST", url, payload)
+        key = _request_key("POST", url, payload)
         if (hit := self._from_cache(key, volatility, url, provider)) is not _MISS:
             return hit
-        return self._send("POST", url, key, volatility, provider, json=payload, headers=headers)
+        return self._send(
+            "POST",
+            url,
+            key,
+            volatility,
+            provider,
+            cacheable=cacheable,
+            json=payload,
+            headers=headers,
+        )
 
     def rpc(
         self,
@@ -239,7 +277,10 @@ class Client:
         """
         assert_read_only(method)
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}
-        key = cache_key("RPC", scope or url, method, params)
+        # `scope` is already credential-free (it names a chain). The URL
+        # fallback is not: Alchemy and Helius put the key in the path, so an
+        # unscrubbed URL would make every cached entry personal to one account.
+        key = cache_key("RPC", scope or redact(url), method, scrub_params(params))
         if (hit := self._from_cache(key, volatility, url, provider)) is not _MISS:
             return hit
 
@@ -280,6 +321,7 @@ class Client:
         key: str,
         volatility: Volatility,
         provider: str | None,
+        cacheable: Cacheable | None = None,
         **kw: Any,
     ) -> Any:
         # The single choke point every outbound request passes through, and
@@ -318,7 +360,14 @@ class Client:
                 resp.raise_for_status()
                 data = _decode(resp)
                 self.breaker.record_success(host)
-                if self.cache is not None and volatility is not Volatility.NEVER:
+                # `cacheable` guards against storing an error that arrived
+                # dressed as a success -- see the Cacheable docstring. A body
+                # the provider rejects is still returned; it is simply not
+                # remembered, so the next attempt is a real one.
+                keep = volatility is not Volatility.NEVER and (
+                    cacheable is None or cacheable(data)
+                )
+                if self.cache is not None and keep:
                     self.cache.put(key, data, volatility, provider=provider)
                 return data
             except httpx.HTTPError as exc:
@@ -356,6 +405,23 @@ _MISS = _Missing()
 
 def url_host(url: str) -> str:
     return Throttle.host_of(url)
+
+
+def _request_key(verb: str, url: str, payload: Any) -> str:
+    """Cache key for a request, with credentials removed before hashing.
+
+    Hashing the credential too would leak nothing --- SHA-256 is not
+    reversible --- but it makes the key personal: the same query under a
+    different API key lands in a different slot. A cache handed to a colleague
+    would then miss on every entry, which quietly falsifies the reproducibility
+    guarantee in :mod:`chainscope.transport.cache` and empties case bundles of
+    their point.
+
+    What remains identifies the *question*, which is the honest key for a cached
+    answer: any valid credential against the same endpoint returns the same
+    chain data.
+    """
+    return cache_key(verb, redact(url), scrub_params(payload))
 
 
 def _clean(kw: dict[str, Any]) -> dict[str, Any]:

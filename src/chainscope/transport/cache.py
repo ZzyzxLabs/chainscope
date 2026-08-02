@@ -24,9 +24,9 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
-__all__ = ["Cache", "CachePolicy", "Volatility", "cache_key"]
+__all__ = ["Cache", "CacheBackend", "CachePolicy", "Volatility", "cache_key"]
 
 
 class Volatility(str, Enum):
@@ -87,6 +87,29 @@ def cache_key(*parts: Any) -> str:
     """
     blob = json.dumps(parts, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(blob.encode()).hexdigest()
+
+
+@runtime_checkable
+class CacheBackend(Protocol):
+    """What :class:`~chainscope.transport.http.Client` needs from a cache.
+
+    Two methods, because that is genuinely all the transport uses, and a
+    narrower surface is what makes the interesting substitutions possible: a
+    :class:`~chainscope.transport.cassette.Cassette` replaying committed
+    fixtures, a shared Redis instance for a team working one case, a read-only
+    view over a bundle someone handed you.
+
+    Expiry is the backend's business, not the caller's. The caller states what
+    *kind* of thing it asked for via :class:`Volatility`; a backend is free to
+    honour that with a TTL, to ignore it because its contents are a fixed
+    recording, or to refuse to serve anything at all.
+    """
+
+    def get(self, key: str, volatility: Volatility) -> Any | None: ...
+
+    def put(
+        self, key: str, value: Any, volatility: Volatility, *, provider: str | None = None
+    ) -> None: ...
 
 
 _SCHEMA = """

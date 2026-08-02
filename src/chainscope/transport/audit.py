@@ -8,14 +8,15 @@ The log is deliberately boring: one JSON object per line, append-only, no
 rotation, no compaction. It is meant to be greppable a year later by someone who
 has never seen this codebase.
 
-Credentials never reach it --- see :func:`redact`. A log that leaks the API key
-it recorded is worse than no log.
+Credentials never reach it --- see :mod:`chainscope.transport.credentials`, which
+owns that definition so the audit log, the cache key, and the cassette recorder
+cannot disagree about what a secret is. A log that leaks the API key it recorded
+is worse than no log.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -23,40 +24,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-__all__ = ["AuditLog", "AuditRecord", "redact"]
+from .credentials import redact, redact_headers, scrub_params
 
-# Query-string keys whose values are credentials. Matched case-insensitively.
-_SECRET_PARAMS = (
-    "apikey",
-    "api_key",
-    "key",
-    "token",
-    "access_token",
-    "auth",
-    "secret",
-    "password",
-    "signature",
-)
-_SECRET_HEADERS = frozenset(
-    {"authorization", "x-api-key", "tron-pro-api-key", "x-auth-token", "cookie"}
-)
-
-_PARAM_RE = re.compile(r"(?i)\b(" + "|".join(_SECRET_PARAMS) + r")=([^&\s]+)")
-# Provider keys embedded in a path segment, e.g. /v2/<key>. Matches long
-# opaque-looking segments only, so ordinary paths survive.
-_PATH_KEY_RE = re.compile(r"/(v\d+)/([A-Za-z0-9_-]{20,})")
-
-
-def redact(text: str) -> str:
-    """Strip credentials from a URL or arbitrary string."""
-    out = _PARAM_RE.sub(r"\1=<redacted>", text)
-    return _PATH_KEY_RE.sub(r"/\1/<redacted>", out)
-
-
-def redact_headers(headers: dict[str, str]) -> dict[str, str]:
-    return {
-        k: ("<redacted>" if k.lower() in _SECRET_HEADERS else v) for k, v in headers.items()
-    }
+__all__ = ["AuditLog", "AuditRecord", "redact", "redact_headers"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +61,8 @@ class AuditRecord:
 
 
 def _redact_params(params: dict[str, Any]) -> dict[str, Any]:
-    return {k: ("<redacted>" if k.lower() in _SECRET_PARAMS else v) for k, v in params.items()}
+    scrubbed = scrub_params(params)
+    return scrubbed if isinstance(scrubbed, dict) else {}
 
 
 class AuditLog:
