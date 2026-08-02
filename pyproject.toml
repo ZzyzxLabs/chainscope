@@ -42,7 +42,8 @@ bitcoin = ["base58>=2.1", "bech32>=1.2"]
 solana = ["base58>=2.1"]
 tron = ["base58>=2.1"]
 report = ["rich>=13.0"]
-all = ["chainscope[evm,bitcoin,solana,tron,report]"]
+analytics = ["duckdb>=1.0"]
+all = ["chainscope[evm,bitcoin,solana,tron,report,analytics]"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
