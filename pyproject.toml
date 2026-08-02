@@ -72,6 +72,10 @@ bitcoin = "chainscope.chains.bitcoin:BitcoinAdapter"
 
 [project.entry-points."chainscope.analyzers"]
 consolidation = "chainscope.analysis.consolidation:ConsolidationAnalyzer"
+cross_chain = "chainscope.analysis.xchain:CrossChainMatcher"
+
+[project.entry-points."chainscope.pricing"]
+binance = "chainscope.pricing.binance:BinanceKlines"
 
 [project.entry-points."chainscope.attribution_sources"]
 ofac = "chainscope.attribution.sources.ofac:OfacSource"
