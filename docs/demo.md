@@ -105,6 +105,54 @@ where did this balance come from. Ten tools, including writes.
 
 ---
 
+## Act 5 — the case survives leaving the room (2 min)
+
+The part a commercial tool gives you as a PDF and nothing underneath it.
+
+```bash
+CHAINSCOPE_ANALYST=alice@lab chainscope note decision \
+    "not tracing past the CEX deposit; terminal"
+CHAINSCOPE_ANALYST=alice@lab chainscope note question \
+    "who funded the gas on the first payout?"
+chainscope request send "Binance" -k freeze --about 0xSEED \
+    --sent 2026-07-02 --due 2026-07-09 --ref TICKET-9912
+chainscope request list
+```
+
+Point at the `!` and the day count. Say: *this is the number a case dies of.*
+
+Then break something on purpose:
+
+```bash
+chainscope note correction "the third hop is a router" --supersedes 1
+chainscope note --list
+```
+
+The wrong note is still there, struck through. Say: *"I thought X, then found
+Y" is the investigation. A log showing only the final position is
+indistinguishable from one that was right the first time.*
+
+Finally:
+
+```bash
+chainscope attest
+chainscope report --title "Case 2026-114" --attach flow.html --out case.html
+```
+
+Open it. Three things, in this order:
+
+**The first heading is "Not yet known"** — the open question and the unanswered
+freeze request, before any finding. Say: *a report ordered the usual way reads
+as finished no matter how much of it is not.*
+
+**Two analysts, one address, two labels.** Both printed, each with a name
+against it, neither picked. Say: *that is a judgement for a person, and it
+belongs in the narrative as a decision, where it carries a name.*
+
+**Print to PDF.** No dependency; the stylesheet does it.
+
+---
+
 ## Closing slide
 
 Open `docs/needs.md` and point at the **Observed / Inferred** line.
