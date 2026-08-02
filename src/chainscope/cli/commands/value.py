@@ -15,11 +15,19 @@ from one valued when the money moved, and the second is the only one a report
 can defend. So every valuation names the rate, the moment it was taken, and
 where it came from.
 
-**It refuses rather than interpolating.** No rate for that minute means no
-figure --- not the nearest one, not yesterday's close. The nearest rate is
-usually fine and occasionally catastrophic, and nothing downstream can tell the
-two apart. An undated transfer cannot be valued at all, and saying so is the
-whole of the correct behaviour there.
+**It never invents a rate, and it says how close the one it used was.** The
+rate source answers from a nearby candle when a minute has no trade --- thin
+books and maintenance windows leave gaps, and for the search-window sizing it
+was built for that is right. For a figure in a report it is only right if the
+distance is *stated*, so every valuation prints the gap when there is one, and
+anything beyond :data:`MAX_GAP_MINUTES` is refused rather than reported.
+
+This began as a docstring claiming the nearest rate was never used. It was, by
+the layer underneath, which stamped it with the minute somebody asked about.
+Writing a property down is not the same as having it.
+
+An undated transfer cannot be valued at all, and saying so is the whole of the
+correct behaviour there.
 
 **A total is a sum of valuations, not a valuation of a sum.** Ten transfers
 across a year, each converted at its own moment, add up to something real; the
@@ -39,7 +47,16 @@ from typing import Any
 from ...pricing.base import PriceSource, Quote, RateError
 from ...render.base import Renderer
 
-__all__ = ["Valuation", "add_parser", "run", "value_transfers"]
+__all__ = ["MAX_GAP_MINUTES", "Valuation", "add_parser", "run", "value_transfers"]
+
+#: How far from the moment asked about a rate may be observed and still used.
+#:
+#: Fifteen minutes, against the rate source's own default of 120. That default
+#: was chosen for cross-chain matching, where a rough rate sizes a search window
+#: and being an hour out costs a wider search. Here the number goes in a report,
+#: and an hour of a volatile asset is a different figure --- so the bound is
+#: tighter, and anything past it is refused with the distance named.
+MAX_GAP_MINUTES = 15
 
 
 class Valuation:
@@ -143,6 +160,14 @@ def _one(args: argparse.Namespace, source: PriceSource) -> int:
     except RateError as exc:
         print(f"no rate: {exc}", file=sys.stderr)
         return 1
+    if quote.gap_minutes > MAX_GAP_MINUTES:
+        print(
+            f"nearest rate is {quote.gap_minutes} minutes from "
+            f"{at:%Y-%m-%d %H:%M}, past the {MAX_GAP_MINUTES}-minute bound.\n"
+            f"Refusing rather than reporting it as the rate at that moment.",
+            file=sys.stderr,
+        )
+        return 1
 
     print(f"{amount} {args.symbol.upper()} = {quote.convert(amount):,.2f} {args.quote.upper()}")
     print(f"  at {at:%Y-%m-%d %H:%M} UTC")
@@ -179,6 +204,14 @@ def value_transfers(
             rate = source.rate(symbol, quote_symbol, when)
         except RateError as exc:
             refusals.append(f"{symbol} at {when:%Y-%m-%d %H:%M}: {exc}")
+            continue
+        if rate.gap_minutes > MAX_GAP_MINUTES:
+            # Named, with the distance. "No rate" and "a rate from an hour
+            # away" are different facts, and only one of them earns silence.
+            refusals.append(
+                f"{symbol} at {when:%Y-%m-%d %H:%M}: nearest rate is "
+                f"{rate.gap_minutes}m away, past the {MAX_GAP_MINUTES}m bound"
+            )
             continue
         valued.append(Valuation(symbol, transfer.amount.decimal, when, rate))
     return valued, refusals
@@ -227,6 +260,14 @@ def _address(args: argparse.Namespace, source: PriceSource) -> int:
             f"  rates from {min(spans):%Y-%m-%d} to {max(spans):%Y-%m-%d}, "
             f"source {valued[0].quote.source}"
         )
+        approximate = [v for v in valued if v.quote.gap_minutes]
+        if approximate:
+            worst = max(v.quote.gap_minutes for v in approximate)
+            print(
+                f"  {len(approximate)} used a rate from a nearby minute "
+                f"(worst {worst}m). Thin books leave gaps; the distance is "
+                f"reported rather than smoothed."
+            )
 
     if refusals:
         # Named, and counted against the total. A figure over the transfers

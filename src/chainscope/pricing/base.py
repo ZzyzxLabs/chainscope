@@ -37,17 +37,42 @@ class Quote:
     quote: str
     rate: Decimal
     at: datetime
+    """The moment that was *asked about*."""
+
     source: str
     derivation: str = "direct"
     """``direct``, ``inverted``, or ``via USDT`` --- a triangulated rate carries
     two spreads instead of one, which matters when you are reasoning about how
     wide a search window needs to be."""
 
+    observed_at: datetime | None = None
+    """The moment the rate was actually *observed*, when that is not
+    :attr:`at`.
+
+    Thin books and maintenance windows leave gaps, so a source may answer from
+    a nearby candle. That is a reasonable thing to do and an unreasonable thing
+    to hide: a rate stamped with the minute somebody asked about, taken from
+    ninety minutes away, is a misstatement of provenance --- which is the one
+    thing this package does not negotiate. ``None`` means the rate is from the
+    minute requested.
+    """
+
+    @property
+    def gap_minutes(self) -> int:
+        """How far the observation is from the moment asked about."""
+        if self.observed_at is None:
+            return 0
+        return abs(int((self.observed_at - self.at).total_seconds())) // 60
+
     def convert(self, amount: Decimal) -> Decimal:
         return amount * self.rate
 
     def __str__(self) -> str:
-        return f"{self.base}/{self.quote} = {self.rate} ({self.derivation}, {self.source})"
+        base = f"{self.base}/{self.quote} = {self.rate} ({self.derivation}, {self.source})"
+        if self.observed_at is not None and self.gap_minutes:
+            # On the face of it, not in a field somebody has to think to check.
+            base += f" --- observed {self.gap_minutes}m away, at {self.observed_at:%H:%M}"
+        return base
 
 
 class PriceSource(ABC):

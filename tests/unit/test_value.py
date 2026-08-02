@@ -10,7 +10,7 @@ importantly, the refusals.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from chainscope.cli.commands.value import value_transfers
@@ -159,3 +159,81 @@ class TestTheCliRefusals:
 
         assert main(["value"]) == 2
         assert "give an address" in capsys.readouterr().err
+
+
+class TestTheRateGapIsNeverHidden:
+    """The layer underneath answers from a nearby candle when a minute is thin.
+
+    That is right for sizing a search window and wrong to hide in a report: a
+    rate stamped with the minute somebody asked about, taken from ninety
+    minutes away, misstates its own provenance. This file's docstring used to
+    claim the nearest rate was never used. It was.
+    """
+
+    def _quote(self, gap: int) -> Quote:
+        return Quote(
+            base="ETH",
+            quote="USDT",
+            rate=Decimal("3000"),
+            at=WHEN,
+            source="test-rates",
+            observed_at=WHEN + timedelta(minutes=gap) if gap else None,
+        )
+
+    def test_a_rate_from_the_exact_minute_reports_no_gap(self) -> None:
+        assert self._quote(0).gap_minutes == 0
+        assert "observed" not in str(self._quote(0))
+
+    def test_a_nearby_rate_says_how_far(self) -> None:
+        quote = self._quote(9)
+        assert quote.gap_minutes == 9
+        assert "9m away" in str(quote)
+
+    def test_the_direction_does_not_matter(self) -> None:
+        assert self._quote(-9).gap_minutes == 9
+
+    def test_a_rate_past_the_bound_is_refused(self) -> None:
+        from chainscope.cli.commands.value import MAX_GAP_MINUTES
+
+        class Far(Rates):
+            def rate(self, base: str, quote: str, at: datetime) -> Quote:
+                return Quote(
+                    base=base,
+                    quote=quote,
+                    rate=Decimal("3000"),
+                    at=at,
+                    source="far",
+                    observed_at=at + timedelta(minutes=MAX_GAP_MINUTES + 1),
+                )
+
+        valued, refusals = value_transfers([transfer()], Far({}), "USDT")
+        assert valued == []
+        assert "past the" in refusals[0] and "bound" in refusals[0]
+
+    def test_a_rate_inside_the_bound_is_used(self) -> None:
+        from chainscope.cli.commands.value import MAX_GAP_MINUTES
+
+        class Near(Rates):
+            def rate(self, base: str, quote: str, at: datetime) -> Quote:
+                return Quote(
+                    base=base,
+                    quote=quote,
+                    rate=Decimal("3000"),
+                    at=at,
+                    source="near",
+                    observed_at=at + timedelta(minutes=MAX_GAP_MINUTES - 1),
+                )
+
+        valued, refusals = value_transfers([transfer()], Near({}), "USDT")
+        assert len(valued) == 1 and refusals == []
+        # And it still carries the distance, rather than being smoothed away.
+        assert valued[0].quote.gap_minutes == MAX_GAP_MINUTES - 1
+
+    def test_the_bound_is_tighter_than_the_sources_own(self) -> None:
+        # The source's 120 minutes was chosen for search-window sizing, where
+        # being an hour out costs a wider search. Here the number goes in a
+        # report.
+        from chainscope.cli.commands.value import MAX_GAP_MINUTES
+        from chainscope.pricing.binance import BinanceKlines
+
+        assert BinanceKlines(":memory:").max_gap_minutes > MAX_GAP_MINUTES

@@ -75,7 +75,15 @@ class BinanceKlines(PriceSource):
 
     # ---------------------------------------------------------------- storage
 
-    def _stored(self, symbol: str, minute: int) -> Decimal | None:
+    def _stored(self, symbol: str, minute: int) -> tuple[Decimal, int] | None:
+        """The close, and **which minute it came from**.
+
+        The second half used to be discarded. A rate answered from a candle up
+        to `max_gap_minutes` away was returned stamped with the minute somebody
+        asked about, which is a misstatement of provenance --- fine for sizing a
+        search window, wrong in a report. The caller now decides what gap it can
+        accept, and can say so.
+        """
         row = (
             self._db()
             .execute(
@@ -85,17 +93,18 @@ class BinanceKlines(PriceSource):
             .fetchone()
         )
         if row:
-            return Decimal(row[0])
+            return Decimal(row[0]), minute
         row = (
             self._db()
             .execute(
-                "SELECT close, ABS(minute - ?) AS d FROM klines "
-                "WHERE symbol = ? AND minute BETWEEN ? AND ? ORDER BY d LIMIT 1",
-                (minute, symbol, minute - self.max_gap_minutes, minute + self.max_gap_minutes),
+                "SELECT close, minute FROM klines "
+                "WHERE symbol = ? AND minute BETWEEN ? AND ? "
+                "ORDER BY ABS(minute - ?) LIMIT 1",
+                (symbol, minute - self.max_gap_minutes, minute + self.max_gap_minutes, minute),
             )
             .fetchone()
         )
-        return Decimal(row[0]) if row else None
+        return (Decimal(row[0]), int(row[1])) if row else None
 
     def _store(self, symbol: str, rows: list[list[Any]]) -> int:
         self._db().executemany(
@@ -143,7 +152,8 @@ class BinanceKlines(PriceSource):
 
     # ---------------------------------------------------------------- queries
 
-    def _pair(self, symbol: str, at: datetime) -> Decimal | None:
+    def _pair(self, symbol: str, at: datetime) -> tuple[Decimal, int] | None:
+        """``(close, minute it came from)``, or ``None``."""
         minute = int(at.timestamp()) // 60
         if (hit := self._stored(symbol, minute)) is not None:
             return hit
@@ -153,7 +163,7 @@ class BinanceKlines(PriceSource):
         if not rows:
             return None
         self._store(symbol, rows)
-        return Decimal(str(rows[0][4]))
+        return Decimal(str(rows[0][4])), int(rows[0][0]) // 60_000
 
     def rate(self, base: str, quote: str, at: datetime) -> Quote:
         base, quote = base.upper(), quote.upper()
@@ -162,18 +172,34 @@ class BinanceKlines(PriceSource):
         if base == quote:
             return Quote(base, quote, Decimal(1), at, self.name, "identity")
 
-        if (direct := self._pair(f"{base}{quote}", at)) is not None:
-            return Quote(base, quote, direct, at, self.name, "direct")
+        asked = int(at.timestamp()) // 60
 
-        if (inverse := self._pair(f"{quote}{base}", at)) and inverse != 0:
-            return Quote(base, quote, Decimal(1) / inverse, at, self.name, "inverted")
+        def seen(minute: int) -> datetime | None:
+            # None when it came from the minute requested, so the common case
+            # carries no noise.
+            if minute == asked:
+                return None
+            return datetime.fromtimestamp(minute * 60, tz=timezone.utc)
+
+        if (direct := self._pair(f"{base}{quote}", at)) is not None:
+            rate, minute = direct
+            return Quote(base, quote, rate, at, self.name, "direct", seen(minute))
+
+        if (inverse := self._pair(f"{quote}{base}", at)) and inverse[0] != 0:
+            rate, minute = inverse
+            return Quote(
+                base, quote, Decimal(1) / rate, at, self.name, "inverted", seen(minute)
+            )
 
         # Triangulate. Carries two spreads instead of one, which the caller
         # needs to know when sizing its tolerance -- hence recording it.
         b = self._pair(f"{base}USDT", at)
         q = self._pair(f"{quote}USDT", at)
-        if b and q and q != 0:
-            return Quote(base, quote, b / q, at, self.name, "via USDT")
+        if b and q and q[0] != 0:
+            # The wider of the two gaps: a triangulated rate is only as close to
+            # the moment as its furthest leg.
+            worst = max((b[1], q[1]), key=lambda m: abs(m - asked))
+            return Quote(base, quote, b[0] / q[0], at, self.name, "via USDT", seen(worst))
 
         raise RateError(
             f"no rate for {base}/{quote} at {at.isoformat()}. Tried {base}{quote}, "

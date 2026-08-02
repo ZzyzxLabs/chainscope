@@ -101,16 +101,38 @@ def assert_payload_read_only(payload: Any) -> None:
     has to be enforced where every request converges rather than at the one
     convenient entry point. "Read-only by construction" is only true if it holds
     for code written by someone who never read this docstring.
+
+    **Anywhere means anywhere**, and it did not. This descended into a top-level
+    list and then checked one level of dict keys, so
+    ``{"requests": [{"method": "eth_sendRawTransaction"}]}`` --- an ordinary
+    shape for a batching gateway --- went straight through. The docstring above
+    has always said *anywhere*; the code checked two shapes. A safety property
+    written down and not enforced is worse than one nobody claimed, because the
+    claim is what people rely on.
+
+    So: **every string, at every depth**, whether it sits in a value, a key, or
+    a bare list element. Not only the fields named `method`.
+
+    That is deliberately blunt. A guard that only understands the shapes it was
+    shown protects the shapes it was shown, and a provider author reaching for
+    a batching gateway or an RPC keyed by method name gets no protection at the
+    moment they most need it. The cost is that a request carrying the literal
+    string ``eth_sendRawTransaction`` as *data* is refused --- and a request with
+    that in it is far more likely to be an attempt than a coincidence. For a
+    safety property, refusing the ambiguous case is the correct direction, and
+    the error names the string so it can be diagnosed in one look.
     """
-    if isinstance(payload, (list, tuple)):
+    if isinstance(payload, str):
+        assert_read_only(payload)
+        return
+    if isinstance(payload, (list, tuple, set, frozenset)):
         for item in payload:
             assert_payload_read_only(item)
         return
     if isinstance(payload, dict):
-        for field_ in _METHOD_FIELDS:
-            value = payload.get(field_)
-            if isinstance(value, str):
-                assert_read_only(value)
+        for key, value in payload.items():
+            assert_payload_read_only(key)
+            assert_payload_read_only(value)
 
 
 @dataclass

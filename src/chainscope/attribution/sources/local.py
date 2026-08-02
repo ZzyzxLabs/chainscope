@@ -12,7 +12,6 @@ basis it should not outrank a published label.
 
 from __future__ import annotations
 
-import contextlib
 import json
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -102,11 +101,13 @@ class LocalSource(Source):
         }
         return self._data
 
-    # ---------------------------------------------------------------- queries
+    # ------------------------------------------------------------- queries
 
     def lookup(self, address: str, chain: ChainId | None = None) -> list[Attribution]:
         rec = self._load().get(address.lower())
-        return [self._build(address, rec, chain)] if rec else []
+        if not rec or not _applies(rec, chain):
+            return []
+        return [self._build(address, rec, chain)]
 
     def lookup_many(
         self, addresses: Iterable[str], chain: ChainId | None = None
@@ -115,7 +116,7 @@ class LocalSource(Source):
         out: dict[str, list[Attribution]] = {}
         for a in addresses:
             rec = data.get(a.lower())
-            out[a] = [self._build(a, rec, chain)] if rec else []
+            out[a] = [self._build(a, rec, chain)] if rec and _applies(rec, chain) else []
         return out
 
     def _build(self, address: str, rec: dict[str, Any], chain: ChainId | None) -> Attribution:
@@ -131,12 +132,14 @@ class LocalSource(Source):
                 "no rationale recorded in the local label file; "
                 "add a 'rationale' field explaining the basis for this claim"
             )
-        chain_id = chain
-        if rec.get("chain"):
-            # A malformed chain field in someone's label file should not abort
-            # the lookup; fall back to the caller's chain.
-            with contextlib.suppress(ValueError):
-                chain_id = ChainId.parse(str(rec["chain"]))
+        # `_applies` has already established that the record's chain, if it has
+        # a readable one, is the chain being asked about --- so this only ever
+        # narrows an unscoped query to the record's own chain, never contradicts
+        # it. It used to fall back to the *caller's* chain when the field would
+        # not parse, which emitted a claim scoped to a chain the file never
+        # said: a BSC label arriving as an Ethereum one, with the file's own
+        # words replaced.
+        chain_id = _record_chain(rec) or chain
         return self.emit(
             address=address,
             chain=chain_id,
@@ -185,3 +188,44 @@ class LocalSource(Source):
             encoding="utf-8",
         )
         self._data = data
+
+
+def _record_chain(rec: dict[str, Any]) -> ChainId | None:
+    """The chain a record scopes itself to, or ``None`` for chain-agnostic.
+
+    An unreadable chain field also yields ``None``, and :func:`_applies` treats
+    that as **not matching anything** rather than as agnostic --- a record whose
+    scope cannot be read is not a record that applies everywhere.
+    """
+    raw = rec.get("chain")
+    if not raw:
+        return None
+    try:
+        return ChainId.parse(str(raw))
+    except ValueError:
+        return None
+
+
+def _applies(rec: dict[str, Any], chain: ChainId | None) -> bool:
+    """Whether a record answers a question about ``chain``.
+
+    Addresses collide across EVM chains --- the same twenty bytes exist on every
+    one of them --- so a label somebody scoped to BSC is not evidence about the
+    Ethereum address sharing its hex. Returning it anyway contaminates the
+    attribution of an unrelated address with a claim its owner never made.
+
+    A record with **no** chain applies everywhere, deliberately: that is how
+    sanctions lists are published, and narrowing them to one chain would be the
+    opposite error.
+
+    A record with an **unreadable** chain applies nowhere. It says it is scoped
+    and nobody can tell to what, and guessing in either direction invents a
+    claim --- either about a chain the file never named, or about all of them.
+    """
+    raw = rec.get("chain")
+    if not raw:
+        return True
+    scoped = _record_chain(rec)
+    if scoped is None:
+        return False
+    return chain is None or scoped == chain
