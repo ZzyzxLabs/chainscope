@@ -48,6 +48,7 @@ from ..core.chainid import ChainId
 __all__ = [
     "Deployment",
     "MultiChainPresence",
+    "confirm_deployments",
     "create2_address",
     "create_address",
     "deployments_for",
@@ -189,6 +190,53 @@ def deployments_for(
         )
         for nonce in range(max(0, count))
     ]
+
+
+def confirm_deployments(
+    deployer: str,
+    code_at: Any,
+    *,
+    count: int = 20,
+    known: set[str] | None = None,
+) -> tuple[list[Deployment], list[str]]:
+    """Derive a deployer's CREATE addresses and ask the chain which exist.
+
+    Derivation alone says what an address *would* be; it cannot say whether
+    anything is there. This is the second half, and field notes call it the
+    universal fallback for a chain with no explorer API --- BSC has no
+    Blockscout instance, BscScan wants a key, and this needs neither.
+
+    ``code_at`` is called with an address and returns its code, empty for an
+    account that is not a contract. Injected rather than taken from a router so
+    the same function works against a live node, a cassette, or a batch of
+    ``eth_getCode`` results somebody already collected.
+
+    Returns the confirmed deployments and, separately, the nonces that could
+    not be checked. A provider failing on nonce 7 is not evidence that nothing
+    was deployed at nonce 7, and folding the two together would report a hole
+    in the data as an absence of infrastructure.
+
+    **Ask at a block, not at the tip.** A contract that self-destructed has no
+    code now and existed then, so a query against ``latest`` reports an actor's
+    infrastructure as never having been there. That is the caller's choice to
+    make, which is why ``code_at`` takes the block rather than this function
+    fixing one.
+    """
+    confirmed: list[Deployment] = []
+    unchecked: list[str] = []
+    for candidate in deployments_for(deployer, count=count, known=known):
+        try:
+            code = code_at(candidate.address)
+        except Exception as exc:
+            unchecked.append(f"nonce {candidate.nonce}: {exc}")
+            continue
+        # Empty, "0x", and "0x0" all mean no contract. A provider returning an
+        # error string here would be truthy, which is why the check is for
+        # meaningful hex rather than for truthiness.
+        body = (code or "").removeprefix("0x").removeprefix("0X")
+        if body and body.strip("0"):
+            confirmed.append(candidate)
+    return confirmed, unchecked
 
 
 @dataclass
