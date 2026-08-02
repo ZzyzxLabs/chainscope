@@ -17,7 +17,11 @@ from __future__ import annotations
 
 import pytest
 
-from chainscope.transport.http import ReadOnlyViolation, assert_payload_read_only
+from chainscope.transport.http import (
+    ReadOnlyViolation,
+    assert_payload_read_only,
+    assert_read_only,
+)
 
 MUTATING = "eth_sendRawTransaction"
 
@@ -66,3 +70,59 @@ class TestOrdinaryReadsAreUntouched:
     )
     def test_it_passes(self, payload: object) -> None:
         assert_payload_read_only(payload)
+
+
+class TestTheGuardCoversEveryChainThisSupports:
+    """It was EVM-shaped, and only partly that.
+
+    Measured before the fix: of ten mutating methods across the five supported
+    ecosystems, exactly **one** was blocked. `parity_setr` was a typo for
+    `parity_set` and matched no method that exists; Solana, Sui and Tron were
+    absent entirely.
+    """
+
+    @pytest.mark.parametrize(
+        "method",
+        [
+            pytest.param("eth_sendRawTransaction", id="evm broadcast"),
+            pytest.param("parity_setMinGasPrice", id="evm parity setter"),
+            pytest.param("debug_setHead", id="evm rewind"),
+            pytest.param("engine_forkchoiceUpdatedV3", id="consensus api"),
+            pytest.param("eth_submitWork", id="evm submit"),
+            pytest.param("sendTransaction", id="solana broadcast"),
+            pytest.param("requestAirdrop", id="solana airdrop"),
+            pytest.param("sui_executeTransactionBlock", id="sui execute"),
+            pytest.param("unsafe_moveCall", id="sui tx builder"),
+            pytest.param("wallet/broadcasttransaction", id="tron broadcast"),
+        ],
+    )
+    def test_mutating_methods_are_blocked(self, method: str) -> None:
+        with pytest.raises(ReadOnlyViolation):
+            assert_read_only(method)
+
+    @pytest.mark.parametrize(
+        "method",
+        [
+            pytest.param("eth_getLogs", id="evm logs"),
+            pytest.param("getBalance", id="solana balance"),
+            pytest.param("getSignaturesForAddress", id="solana history"),
+            pytest.param("sui_dryRunTransactionBlock", id="sui dry run"),
+            pytest.param("sui_devInspectTransactionBlock", id="sui inspect"),
+            pytest.param("wallet/getaccount", id="tron account"),
+        ],
+    )
+    def test_reads_are_untouched(self, method: str) -> None:
+        # The near-misses matter most: `sui_dryRun…` and `sui_devInspect…` sit
+        # next to `sui_execute…` and are reads.
+        assert_read_only(method)
+
+    def test_it_is_a_deny_list_on_purpose(self) -> None:
+        """An allow-list would refuse every read nobody enumerated.
+
+        Solana, Sui and Tron read methods are bare names, and a plugin provider
+        serving an unknown chain would be blocked at every call. A deny-list
+        fails open on an unknown *read*, which is recoverable; an allow-list
+        fails closed on all of them, which makes the library unusable by the
+        people it exists to be extended by.
+        """
+        assert_read_only("somechain_getSomethingNobodyHasHeardOf")

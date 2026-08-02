@@ -235,3 +235,47 @@ class TestContract:
         res = PeelChainAnalyzer(FakeWalker({})).run(ctx(), start="a", max_depth=4)
         assert res.params["start"] == "a"
         assert res.params["max_depth"] == 4
+
+
+class TestTheChangeOutputIsMatchedNotIndexed:
+    """`detect_change` returns an output's vout number, not its list position.
+
+    The two coincide only when the list is complete and ordered from zero. A
+    provider that filtered or reordered outputs breaks that, and
+    `tx.outputs[decision.index]` then names a different output as the change.
+
+    Measured on a two-output list with vouts 1 and 3: it returned the *exact
+    opposite* output, so the peel chain would have followed the wrong branch
+    from there down. The `peeled` comprehension two lines away already compared
+    the attribute, so the same block disagreed with itself about what `index`
+    meant.
+    """
+
+    def _outputs(self):
+        from chainscope.analysis.peel import Output
+        from chainscope.core.units import Amount
+
+        # vouts 1 and 3: an unspendable output 0 and 2 were filtered out.
+        return [
+            Output(index=1, address="bc1qsmall", amount=Amount(10_000, 8, "BTC")),
+            Output(index=3, address="bc1qchange", amount=Amount(900_000, 8, "BTC")),
+        ]
+
+    def test_the_decision_names_a_vout_not_a_position(self):
+        from chainscope.analysis.peel import detect_change
+
+        outputs = self._outputs()
+        decision = detect_change(outputs, {"bc1qsender"}, {"p2wpkh"})
+        assert decision.index in {o.index for o in outputs}
+
+    def test_matching_and_excluding_agree_on_the_same_output(self):
+        """The property that was broken: change and peeled must be complements."""
+        from chainscope.analysis.peel import detect_change
+
+        outputs = self._outputs()
+        decision = detect_change(outputs, {"bc1qsender"}, {"p2wpkh"})
+        change = next((o for o in outputs if o.index == decision.index), None)
+        peeled = [o for o in outputs if o.index != decision.index]
+        assert change is not None
+        assert change not in peeled
+        assert len(peeled) == len(outputs) - 1

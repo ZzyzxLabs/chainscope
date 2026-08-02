@@ -286,3 +286,53 @@ class TestEndpointIdentity:
             assert secret not in endpoint_identity(secret)
         finally:
             forget_secret(secret)
+
+
+class TestUserinfoNeverReachesACacheKey:
+    """`endpoint_identity` is documented as "no credential, but still an endpoint".
+
+    It stripped opaque path segments and the query and kept `netloc` --- which
+    carries `user:password@`. So `https://user:s3cr3t@rpc.example.com/eth`
+    produced an identity containing `s3cr3t`, and cache keys are written into
+    the cache database, which is what a `Bundle` ships to a third party.
+    """
+
+    def test_a_password_is_removed(self):
+        assert "s3cr3t" not in endpoint_identity("https://user:s3cr3t@rpc.example.com/eth")
+
+    def test_a_bare_token_is_removed(self):
+        identity = endpoint_identity("https://apikey123456789abcdef@mainnet.infura.io/v3")
+        assert "apikey123456789abcdef" not in identity
+
+    def test_the_endpoint_still_identifies_itself(self):
+        # Stripping must not turn two endpoints into one.
+        assert endpoint_identity("https://user:a@rpc.example.com/eth") == endpoint_identity(
+            "https://rpc.example.com/eth"
+        )
+        assert endpoint_identity("https://user:a@rpc.example.com/eth") != endpoint_identity(
+            "https://rpc.example.com/bsc"
+        )
+
+    def test_a_port_survives(self):
+        # A local node on a non-default port is a different endpoint.
+        assert endpoint_identity("http://localhost:8545") != endpoint_identity(
+            "http://localhost:8546"
+        )
+
+    def test_scrubbing_is_per_segment_not_whole_string(self):
+        """Over the whole identity it collapses endpoints.
+
+        An endpoint registered whole as a credential reduces to `<redacted>`,
+        and every chain configured that way shares one cache entry --- the exact
+        failure `endpoint_identity` was written to prevent. Tried, and caught by
+        `test_two_chains_never_share_a_cache_entry`.
+        """
+        eth = "https://ethereum-rpc.publicnode.com"
+        bsc = "https://bsc-rpc.publicnode.com"
+        register_secret(eth)
+        register_secret(bsc)
+        try:
+            assert endpoint_identity(eth) != endpoint_identity(bsc)
+        finally:
+            forget_secret(eth)
+            forget_secret(bsc)

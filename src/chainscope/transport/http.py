@@ -58,17 +58,55 @@ class ReadOnlyViolation(PermissionError):
 
 
 #: Method prefixes that can move funds, sign, or reconfigure a node.
+#:
+#: A **deny-list**, deliberately, and the alternative is worth naming: an
+#: allow-list of known-safe methods would block every read this project has not
+#: enumerated. Solana, Sui and Tron read methods are bare names --- `getBalance`,
+#: `sui_getObject`, `wallet/getaccount` --- and a plugin provider serving a chain
+#: nobody here has heard of would be refused at every call. A deny-list fails
+#: open on an unknown *read*, which is recoverable; an allow-list fails closed on
+#: every unknown read, which makes the library unusable by the people it is meant
+#: to be extended by.
+#:
+#: That trade only holds if the list actually covers what mutates. It did not.
+#: Measured across the five supported ecosystems, it blocked **one** of ten
+#: mutating methods: Solana's `sendTransaction`, Sui's
+#: `sui_executeTransactionBlock`, Tron's broadcast endpoint, the whole engine
+#: API, `debug_setHead` and every `parity_set*` all passed. The list was
+#: EVM-shaped, and only partly that --- `parity_setr` is a typo for `parity_set`
+#: and matched no method that exists.
 BLOCKED_PREFIXES: tuple[str, ...] = (
+    # --- EVM ---------------------------------------------------------------
     "eth_send",
     "eth_sign",
     "eth_account",
+    "eth_submit",  # submitWork, submitHashrate
     "personal_",
     "miner_",
     "admin_",
     "clique_",
     "les_",
-    "parity_setr",
+    "parity_set",  # was `parity_setr`, which matched nothing
+    "debug_set",  # setHead rewinds the node
+    "engine_",  # consensus API: forkchoiceUpdated, newPayload
+    "db_put",
+    "shh_post",
     "txpool_content",  # cheap to call, enormous to receive; not forensics
+    # --- Solana ------------------------------------------------------------
+    # Bare names, so these are the whole method rather than a family.
+    "sendtransaction",
+    "requestairdrop",
+    "simulatetransaction",  # harmless on-node, but only ever precedes a send
+    # --- Sui ---------------------------------------------------------------
+    # `sui_dryRun…` and `sui_devInspect…` are reads and stay allowed.
+    "sui_execute",
+    "sui_signandexecute",
+    "unsafe_",  # unsafe_transferObject, unsafe_moveCall, … all build txs
+    # --- Tron --------------------------------------------------------------
+    "wallet/broadcast",
+    "wallet/createtransaction",
+    "wallet/easytransfer",
+    "wallet/sign",
 )
 
 

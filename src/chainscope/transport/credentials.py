@@ -170,9 +170,27 @@ def endpoint_identity(url: str) -> str:
     nodes carrying no credential at all, because the whole URL had been
     registered regardless.
 
-    So this strips only the parts that can *be* a credential --- long opaque path
-    segments and the query string --- and keeps scheme, host, and the path
-    structure that says which chain this is.
+    So this strips only the parts that can *be* a credential --- **userinfo**,
+    long opaque path segments, and the query string --- and keeps scheme, host,
+    port, and the path structure that says which chain this is.
+
+    Userinfo was not stripped, and it is the most direct credential a URL can
+    carry: `https://user:s3cr3t@rpc.example.com/eth` produced an identity
+    containing `s3cr3t`. Cache keys are written into the cache database, and a
+    cache database is what a `Bundle` ships to a third party --- so the leak had
+    a distribution path built for it.
+
+    `scrub_value` runs over each path **segment**, not over the finished
+    string. Over the whole identity it reintroduces the failure this function
+    exists to prevent: an endpoint registered whole as a credential --- which is
+    what the very next paragraph of this docstring describes --- reduces to
+    `<redacted>` and every chain configured that way collapses onto one cache
+    entry again. `test_two_chains_never_share_a_cache_entry` catches it, and
+    caught it when this was tried.
+
+    Per segment is the useful half: a registered key sitting in a path is
+    removed, and the host and path structure that distinguish two endpoints
+    survive.
     """
     from urllib.parse import urlsplit
 
@@ -183,11 +201,17 @@ def endpoint_identity(url: str) -> str:
         return redact(url)
 
     segments = [
-        PLACEHOLDER if _looks_opaque(segment) else segment for segment in parts.path.split("/")
+        PLACEHOLDER if _looks_opaque(segment) else scrub_value(segment)
+        for segment in parts.path.split("/")
     ]
+    # hostname/port rather than netloc: netloc carries `user:password@`, and
+    # keeping it made a "cache-safe identity" the least safe string in the file.
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
     # The query is dropped rather than scrubbed: for the callers that build one,
     # the parameters travel separately and are hashed there.
-    return f"{parts.scheme}://{parts.netloc}{'/'.join(segments)}"
+    return f"{parts.scheme}://{host}{'/'.join(segments)}"
 
 
 #: Path segments this long and this uniform are keys, not routes. Chain names

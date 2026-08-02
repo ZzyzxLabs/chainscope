@@ -253,10 +253,20 @@ class PeelChainAnalyzer(Analyzer):
             )
             hypotheses.append(decision.hypothesis)
 
-            change = (
-                tx.outputs[decision.index]
-                if decision.index is not None and decision.index < len(tx.outputs)
-                else None
+            # Matched on the attribute, not used as a list position.
+            # `detect_change` returns an output's `index` --- its vout number on
+            # the chain --- and the two coincide only when the list is complete
+            # and ordered from zero. A provider that filtered or reordered
+            # outputs breaks that, and `tx.outputs[decision.index]` then names a
+            # different output as the change: measured on a two-output list with
+            # vouts 1 and 3, it returned the exact opposite one. The peel chain
+            # would follow the wrong branch from there down.
+            #
+            # The `peeled` comprehension below already compared the attribute,
+            # so the two lines disagreed with each other about what `index` was.
+            change = next(
+                (o for o in tx.outputs if o.index == decision.index),
+                None,
             )
             peeled = [
                 o
