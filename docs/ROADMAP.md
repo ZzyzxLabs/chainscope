@@ -301,7 +301,37 @@ characters that standard exists to handle are the whole mechanism behind ENS
 impersonation, so nothing here compares names for equality — only addresses,
 which have no such ambiguity.
 
-All five techniques now have measured ground truth.
+### Common-funder clustering
+
+Ethereum has no multi-input heuristic — a transaction has one sender, so no
+transaction ever demonstrates that two addresses share an owner. Until now the
+project had clustering for UTXO chains and **none for account-model chains**,
+which is where most of the work is.
+
+The substitute asks who paid for an address to exist. It has exactly one
+structural failure, and it is severe:
+
+| | precision | worst merge |
+|---|---:|---:|
+| Service guard on | **100%** | 1 |
+| Service guard off | **0.7%** | **400 unrelated people as one entity** |
+
+An exchange withdrawal funds its customers. Without a degree guard those 400
+withdrawals become a single cluster — confidently wrong, and transitive, so it
+poisons everything it touches. Same shape as the CoinJoin defence, and on by
+default for the same reason: the failure it prevents is unbounded and the
+coverage it costs is not.
+
+Service clusters are kept and marked rather than dropped, because "why is this
+address in no cluster" is a question somebody asks, and the answer should be
+recorded rather than inferred.
+
+**What the claim says** is shared *origin*, not shared control. Two addresses
+funded by one key were set up by whoever held it; they may since have been
+handed to different people. Capped at MEDIUM, with the distinction in the
+rationale.
+
+All six techniques now have measured ground truth.
 
 ## Open questions
 

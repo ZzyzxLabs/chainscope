@@ -90,6 +90,7 @@ consolidation = "chainscope.analysis.consolidation:ConsolidationAnalyzer"
 cross_chain = "chainscope.analysis.xchain:CrossChainMatcher"
 peel_chain = "chainscope.analysis.peel:PeelChainAnalyzer"
 co_spend_cluster = "chainscope.analysis.cluster:CoSpendClusterAnalyzer"
+common_funder = "chainscope.analysis.funding:cluster_by_funder"
 temporal = "chainscope.analysis.temporal:profile_activity"
 
 [project.entry-points."chainscope.stores"]
