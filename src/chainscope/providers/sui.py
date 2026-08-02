@@ -206,6 +206,16 @@ class SuiProvider(ReadOnlyProvider):
         except (TypeError, ValueError):
             return 0
 
+    def _asset(self, coin_type: str) -> Address:
+        """Asset identity for a coin type.
+
+        The full ``package::module::name``, because a package can define more
+        than one coin and the package alone is not an identity. Stored in
+        ``raw`` with the package as the comparison key's prefix so it still
+        sorts and groups sensibly.
+        """
+        return Address(self.chain, coin_type, coin_type.lower())
+
     def _address(self, raw: str | None) -> Address | None:
         if not raw:
             return None
@@ -277,7 +287,8 @@ class SuiProvider(ReadOnlyProvider):
 
                 for coin, delta in mine.items():
                     # Gas came out of the same balance and is not a transfer.
-                    if coin == normalize_coin_type(SUI_TYPE) and delta < 0:
+                    native = coin == normalize_coin_type(SUI_TYPE)
+                    if native and delta < 0:
                         delta += gas
                     if delta == 0:
                         continue
@@ -296,17 +307,26 @@ class SuiProvider(ReadOnlyProvider):
                                 tx=TxRef(self.chain, digest),
                                 sender=self._address(owner if outgoing else who),
                                 recipient=self._address(who if outgoing else owner),
+                                # Decimals are known only for SUI. Giving a
+                                # token the native nine renders a six-decimal
+                                # balance a thousand times too small --- the
+                                # exact silent error this module's docstring
+                                # warns about, committed by this module. An
+                                # unknown coin is reported in base units, which
+                                # is awkward and correct.
                                 amount=Amount(
-                                    abs(other_delta), SUI_DECIMALS, coin_symbol(coin)
+                                    abs(other_delta),
+                                    SUI_DECIMALS if native else 0,
+                                    coin_symbol(coin),
                                 ),
-                                kind=TransferKind.NATIVE
-                                if coin == normalize_coin_type(SUI_TYPE)
-                                else TransferKind.TOKEN,
+                                kind=TransferKind.NATIVE if native else TransferKind.TOKEN,
                                 timestamp=self._when(tx),
                                 block=int(tx["checkpoint"]) if tx.get("checkpoint") else None,
-                                asset=None
-                                if coin == normalize_coin_type(SUI_TYPE)
-                                else self._address(coin.split("::")[0]),
+                                # The whole coin type, not just its package. One
+                                # package can define several coins, and keying
+                                # on the package alone collapses them into a
+                                # single asset in the store and the graph.
+                                asset=None if native else self._asset(coin),
                             )
                         )
 

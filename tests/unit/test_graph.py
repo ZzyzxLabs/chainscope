@@ -254,3 +254,34 @@ class TestExports:
         g = Graph()
         g.add_node(Node(A, CHAIN, label="Binance", category="cex", confidence=3))
         assert "\\n[cex]" in to_dot(g)
+
+    def test_attribution_fields_move_together(self):
+        """Merging them independently produced a composite nobody asserted.
+
+        A HIGH "Binance / cex" arriving over a LOW "unlabelled / mixer" gave
+        label=Binance, category=mixer, confidence=HIGH: an exchange confidently
+        called a mixer, from two claims that each said something else.
+        """
+        g = Graph()
+        g.add_node(Node(A, CHAIN, label="", category="mixer", confidence=1, source="heuristic"))
+        g.add_node(
+            Node(A, CHAIN, label="Binance 14", category="cex", confidence=3, source="etherscan")
+        )
+        node = g.nodes[f"{CHAIN}:{A}"]
+        assert (node.label, node.category, node.source) == ("Binance 14", "cex", "etherscan")
+
+    def test_a_tie_keeps_the_existing_claim(self):
+        """So replaying the same data twice does not shuffle the answer."""
+        g = Graph()
+        g.add_node(Node(A, CHAIN, label="first", category="cex", confidence=3, source="a"))
+        g.add_node(Node(A, CHAIN, label="second", category="dex", confidence=3, source="b"))
+        assert g.nodes[f"{CHAIN}:{A}"].label == "first"
+
+    def test_a_silent_stronger_sighting_does_not_erase_a_label(self):
+        """An unlabelled HIGH-confidence node should not blank a real label."""
+        g = Graph()
+        g.add_node(Node(A, CHAIN, label="Binance 14", category="cex", confidence=2, source="x"))
+        g.add_node(Node(A, CHAIN, confidence=3, expanded=True))
+        node = g.nodes[f"{CHAIN}:{A}"]
+        assert node.label == "Binance 14"
+        assert node.expanded

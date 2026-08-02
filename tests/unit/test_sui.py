@@ -457,3 +457,88 @@ class TestHistory:
         }
         got = provider(results).address_history(SUI_MAINNET, ALICE, start_block=100)
         assert [t.block for t in got] == [500]
+
+
+class TestCoinTypeAnchoring:
+    @pytest.mark.parametrize(
+        "generic",
+        ["0x2::sui::SUI<0xdead::coin::X>", "0x2::coin::Coin<0x2::sui::SUI>"],
+    )
+    def test_a_generic_coin_type_is_not_mistaken_for_its_base(self, generic):
+        """Unanchored, "0x2::sui::SUI<T>" matched as plain SUI and
+        coin_decimals returned nine for a wrapped type that is not SUI --- a
+        silent order-of-magnitude error on exactly the exotic assets worth
+        looking at."""
+        assert coin_decimals(generic) is None
+        with pytest.raises(InvalidAddressError):
+            normalize_coin_type(generic)
+
+    def test_the_plain_type_still_resolves(self):
+        assert coin_decimals(SUI_TYPE) == SUI_DECIMALS
+
+
+class TestTokenDecimalsAreNotGuessed:
+    def _usdc_tx(self):
+        return {
+            "suix_queryTransactionBlocks": lambda params: (
+                page(
+                    [
+                        tx(
+                            changes=[
+                                change(ALICE, -5_000_000, coin="0xdead::coin::USDC"),
+                                change(BOB, 5_000_000, coin="0xdead::coin::USDC"),
+                            ]
+                        )
+                    ]
+                )
+                if params[0]["filter"].get("FromAddress")
+                else page([])
+            )
+        }
+
+    def test_a_token_does_not_inherit_the_native_decimals(self):
+        """Nine on a six-decimal token renders it a thousand times too small ---
+        the silent error the module docstring warns about."""
+        (transfer,) = provider(self._usdc_tx()).asset_transfers(
+            SUI_MAINNET, ALICE, direction="out"
+        )
+        assert transfer.amount.decimals == 0
+        assert transfer.amount.raw == 5_000_000
+
+    def test_the_native_asset_still_gets_nine(self):
+        results = {
+            "suix_queryTransactionBlocks": lambda params: (
+                page(
+                    [tx(changes=[change(ALICE, -(ONE_SUI + 1_000_000)), change(BOB, ONE_SUI)])]
+                )
+                if params[0]["filter"].get("FromAddress")
+                else page([])
+            )
+        }
+        (transfer,) = provider(results).asset_transfers(SUI_MAINNET, ALICE, direction="out")
+        assert transfer.amount.decimals == SUI_DECIMALS
+
+    def test_two_coins_from_one_package_are_distinct_assets(self):
+        """Keying on the package alone collapses them into one asset."""
+        results = {
+            "suix_queryTransactionBlocks": lambda params: (
+                page(
+                    [
+                        tx(
+                            digest="0x" + "1" * 64,
+                            changes=[
+                                change(ALICE, -100, coin="0xdead::a::AAA"),
+                                change(BOB, 100, coin="0xdead::a::AAA"),
+                                change(ALICE, -200, coin="0xdead::b::BBB"),
+                                change(BOB, 200, coin="0xdead::b::BBB"),
+                            ],
+                        )
+                    ]
+                )
+                if params[0]["filter"].get("FromAddress")
+                else page([])
+            )
+        }
+        got = provider(results).asset_transfers(SUI_MAINNET, ALICE, direction="out")
+        assets = {t.asset.key for t in got if t.asset}
+        assert len(assets) == 2

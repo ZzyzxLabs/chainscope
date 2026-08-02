@@ -52,7 +52,12 @@ SUI_TYPE = "0x2::sui::SUI"
 _ADDRESS = re.compile(r"^0[xX][0-9a-fA-F]{1,64}$")
 
 #: ``package::module::name``. The package is an address and may be short.
-_COIN_TYPE = re.compile(r"^(0[xX][0-9a-fA-F]{1,64})::([a-zA-Z_][\w]*)::([a-zA-Z_][\w]*)")
+# Anchored. Unanchored, "0x2::sui::SUI<T>" matched as plain SUI and
+# coin_decimals then handed back nine for a wrapped type that is not SUI at
+# all --- a silent order-of-magnitude error on exactly the exotic assets worth
+# looking at. Generics are not supported, so they are refused rather than
+# quietly discarded.
+_COIN_TYPE = re.compile(r"^(0[xX][0-9a-fA-F]{1,64})::([a-zA-Z_]\w*)::([a-zA-Z_]\w*)$")
 
 
 def normalize_address(raw: str) -> str:

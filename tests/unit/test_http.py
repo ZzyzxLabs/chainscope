@@ -183,3 +183,61 @@ class TestPayloadInspection:
     def test_each_blocked_family(self, blocked):
         with pytest.raises(ReadOnlyViolation):
             assert_payload_read_only({"method": blocked})
+
+
+class TestCacheablePredicateCannotLoseAResponse:
+    """A provider supplies `cacheable` to keep errors out of the cache. A bug in
+    one must cost at most a cache entry --- turning a good 200 into an exception
+    would cost the answer itself."""
+
+    def _client(self, predicate, monkeypatch):
+        from chainscope.transport.cache import Volatility
+        from chainscope.transport.http import Client
+
+        cache = Cache(":memory:")
+        client = Client(cache=cache)
+
+        class _Response:
+            status_code = 200
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, str]:
+                return {"status": "1", "result": "ok"}
+
+        class _Http:
+            def request(self, *a: Any, **kw: Any) -> _Response:
+                return _Response()
+
+        monkeypatch.setattr(client, "_http", lambda: _Http())
+        return client, cache, Volatility
+
+    def test_a_raising_predicate_still_returns_the_response(self, monkeypatch):
+        def explodes(_body: Any) -> bool:
+            raise RuntimeError("predicate bug")
+
+        client, _, _ = self._client(explodes, monkeypatch)
+        got = client.get("https://example.test/x", {"a": 1}, cacheable=explodes)
+        assert got == {"status": "1", "result": "ok"}
+
+    def test_a_raising_predicate_declines_the_cache_entry(self, monkeypatch):
+        from chainscope.transport.cache import Volatility
+        from chainscope.transport.http import _request_key
+
+        def explodes(_body: Any) -> bool:
+            raise RuntimeError("predicate bug")
+
+        client, cache, _ = self._client(explodes, monkeypatch)
+        client.get("https://example.test/y", {"a": 1}, cacheable=explodes)
+        key = _request_key("GET", "https://example.test/y", {"a": 1})
+        assert cache.get(key, Volatility.SLOW) is None
+
+    def test_a_well_behaved_predicate_still_caches(self, monkeypatch):
+        from chainscope.transport.cache import Volatility
+        from chainscope.transport.http import _request_key
+
+        client, cache, _ = self._client(lambda _b: True, monkeypatch)
+        client.get("https://example.test/z", {"a": 1}, cacheable=lambda _b: True)
+        key = _request_key("GET", "https://example.test/z", {"a": 1})
+        assert cache.get(key, Volatility.SLOW) == {"status": "1", "result": "ok"}

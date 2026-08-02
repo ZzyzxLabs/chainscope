@@ -8,11 +8,14 @@ credentials. A bug that only shows up as "the fixtures you shipped miss on my
 laptop" is one nobody diagnoses.
 """
 
+from typing import ClassVar
+
 import pytest
 
 from chainscope.transport.credentials import (
     PLACEHOLDER,
     Secret,
+    endpoint_identity,
     forget_secret,
     redact,
     redact_headers,
@@ -162,3 +165,124 @@ class TestSecret:
             assert s.reveal() not in scrub_value(f"leaked {s.reveal()}")
         finally:
             forget_secret(s.reveal())
+
+
+class TestConcurrency:
+    def test_registering_while_scrubbing_does_not_explode(self):
+        """Providers register from whichever thread built them, while a sweep
+        is already scrubbing responses on others. Iterating a set during a
+        write raises --- inside the code whose job is to stop a key reaching a
+        log."""
+        import threading
+
+        stop = threading.Event()
+        errors: list[BaseException] = []
+
+        def churn() -> None:
+            try:
+                for i in range(400):
+                    register_secret(f"rotating-credential-{i:06d}")
+                    forget_secret(f"rotating-credential-{i:06d}")
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                stop.set()
+
+        def scrub() -> None:
+            try:
+                while not stop.is_set():
+                    scrub_value("a response body mentioning nothing in particular")
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=churn), threading.Thread(target=scrub)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        assert not errors
+
+
+class TestEndpointIdentity:
+    """Cache keys must lose the credential and keep the endpoint.
+
+    Full redaction did the first and not the second: an RPC URL registered
+    whole as a credential reduced to "<redacted>", so every chain served by one
+    provider collapsed onto a single cache entry and an Ethereum query could
+    return BSC's answer. Public nodes carrying no credential at all collided
+    too, because the URL had been registered regardless.
+    """
+
+    PAYLOAD: ClassVar[dict[str, object]] = {
+        "jsonrpc": "2.0",
+        "method": "eth_getBalance",
+        "params": ["0xabc", "latest"],
+    }
+
+    def _key(self, url):
+        return _request_key("POST", url, self.PAYLOAD)
+
+    @pytest.mark.parametrize(
+        ("eth", "bsc"),
+        [
+            (
+                "https://eth.g.alchemy.com/v2/" + "a" * 28,
+                "https://bnb.g.alchemy.com/v2/" + "a" * 28,
+            ),
+            ("https://rpc.ankr.com/eth/" + "a" * 28, "https://rpc.ankr.com/bsc/" + "a" * 28),
+            ("https://ethereum-rpc.publicnode.com", "https://bsc-rpc.publicnode.com"),
+        ],
+    )
+    def test_two_chains_never_share_a_cache_entry(self, eth, bsc):
+        register_secret(eth)
+        register_secret(bsc)
+        try:
+            assert self._key(eth) != self._key(bsc)
+        finally:
+            forget_secret(eth)
+            forget_secret(bsc)
+
+    @pytest.mark.parametrize(
+        "template",
+        ["https://rpc.ankr.com/eth/{}", "https://eth.g.alchemy.com/v2/{}"],
+    )
+    def test_the_same_chain_under_two_credentials_is_one_entry(self, template):
+        """The portability guarantee, which the fix must not cost."""
+        a, b = template.format("a" * 28), template.format("z" * 28)
+        register_secret(a)
+        register_secret(b)
+        try:
+            assert self._key(a) == self._key(b)
+        finally:
+            forget_secret(a)
+            forget_secret(b)
+
+    def test_the_key_carries_no_credential(self):
+        secret = "q" * 32
+        url = f"https://rpc.example.com/eth/{secret}"
+        register_secret(url)
+        try:
+            assert secret not in endpoint_identity(url)
+            assert "rpc.example.com" in endpoint_identity(url)
+        finally:
+            forget_secret(url)
+
+    def test_short_path_segments_are_not_mistaken_for_keys(self):
+        """Chain names and API versions are routes, not credentials."""
+        identity = endpoint_identity("https://rpc.example.com/v1/eth/mainnet")
+        assert identity.endswith("/v1/eth/mainnet")
+
+    def test_a_query_string_is_dropped_rather_than_scrubbed(self):
+        """Callers that build one pass the parameters separately, and those are
+        hashed there."""
+        assert "apikey" not in endpoint_identity("https://x.example/rpc?apikey=" + "k" * 30)
+
+    def test_something_that_is_not_a_url_is_fully_redacted(self):
+        """An unrecognised string is likelier to be a bare credential than an
+        endpoint."""
+        secret = "n" * 40
+        register_secret(secret)
+        try:
+            assert secret not in endpoint_identity(secret)
+        finally:
+            forget_secret(secret)

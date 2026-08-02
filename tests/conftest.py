@@ -43,24 +43,58 @@ def _blocked(*args: Any, **kwargs: Any) -> Any:
     raise _refuse()
 
 
-#: Address families that reach another machine. Everything else --- Unix
-#: sockets, and the socketpair asyncio builds for its own self-pipe --- is
-#: local IPC that happens to use the socket API.
-_NETWORK_FAMILIES = {socket.AF_INET, socket.AF_INET6}
+#: Hosts that are this machine. A connection to one of these depends on nothing
+#: outside the test run, which is the only property this guard cares about.
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0", "", "::"})
 
 
-def _guarded_socket(family: int = socket.AF_INET, *args: Any, **kwargs: Any) -> Any:
-    """Allow local sockets, refuse networked ones.
+def _is_local(address: Any) -> bool:
+    """Whether an address refers to this machine.
 
-    Blocking ``socket.socket`` outright was the first attempt and it is too
-    broad: ``asyncio.run`` creates a socketpair for its own wake-up pipe, so
-    every async test failed claiming it had tried to reach the network. The
-    guard exists to stop a test depending on a remote host, and a self-pipe
-    depends on nothing.
+    Anything that is not a host/port tuple --- a Unix socket path, an
+    ``AF_NETLINK`` address --- is local by construction.
     """
-    if family in _NETWORK_FAMILIES:
+    if not isinstance(address, tuple) or not address:
+        return True
+    host = address[0]
+    if not isinstance(host, str):
+        return False
+    return host.strip("[]") in _LOOPBACK
+
+
+class _GuardedSocket(_real_socket):  # type: ignore[misc,valid-type]
+    """A socket that can be created freely but only connected locally.
+
+    Two earlier attempts were both wrong, and the way they were wrong is worth
+    keeping written down.
+
+    Blocking ``socket.socket`` outright broke every async test: ``asyncio.run``
+    builds a self-pipe, and a self-pipe reaches nobody.
+
+    Allowing everything except ``AF_INET``/``AF_INET6`` fixed that on Unix and
+    broke Windows, where the proactor event loop's self-pipe *is* an AF_INET
+    socket over loopback. The family says nothing about whether a connection
+    leaves the machine.
+
+    The destination does, and it is only known at ``connect`` time --- so that
+    is where the check belongs.
+    """
+
+    def connect(self, address: Any) -> None:
+        if not _is_local(address):
+            raise _refuse()
+        super().connect(address)
+
+    def connect_ex(self, address: Any) -> int:
+        if not _is_local(address):
+            raise _refuse()
+        return int(super().connect_ex(address))
+
+
+def _guarded_create_connection(address: Any, *args: Any, **kwargs: Any) -> Any:
+    if not _is_local(address):
         raise _refuse()
-    return _real_socket(family, *args, **kwargs)
+    return _real_create_connection(address, *args, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -69,8 +103,8 @@ def _no_network(request: pytest.FixtureRequest) -> Iterator[None]:
     if request.node.get_closest_marker("network"):
         yield
         return
-    socket.socket = _guarded_socket  # type: ignore[assignment,misc]
-    socket.create_connection = _blocked  # type: ignore[assignment]
+    socket.socket = _GuardedSocket  # type: ignore[assignment,misc]
+    socket.create_connection = _guarded_create_connection  # type: ignore[assignment]
     try:
         yield
     finally:

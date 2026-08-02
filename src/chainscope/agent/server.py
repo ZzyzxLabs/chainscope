@@ -94,6 +94,16 @@ def _chain(raw: str | None) -> ChainId | None:
     return ChainId(namespace, reference) if reference else None
 
 
+def _cap(limit: int, ceiling: int) -> int:
+    """Clamp a requested limit into something a slice can mean.
+
+    An agent passing -1 would otherwise reach ``rows[:-1]``, silently dropping
+    the last result and reporting the rest as complete. Zero would return
+    nothing and look like an empty answer.
+    """
+    return max(1, min(limit, ceiling))
+
+
 def _amount(raw: int, decimals: int, symbol: str) -> dict[str, Any]:
     """Amounts leave as strings. See the module docstring."""
     return {"raw": str(raw), "decimals": decimals, "symbol": symbol}
@@ -182,7 +192,7 @@ def build_server(config: ServerConfig) -> MCPServer:
     ) -> dict[str, Any]:
         if direction not in ("out", "in"):
             raise AgentError("direction must be 'out' or 'in'")
-        capped = min(limit, config.max_rows)
+        capped = _cap(limit, config.max_rows)
         store = _store()
         try:
             edges = store.edges(address, _chain(chain) or ChainId.evm(1), direction=direction)
@@ -227,15 +237,23 @@ def build_server(config: ServerConfig) -> MCPServer:
         chain: str | None = None,
         limit: int = 100,
     ) -> dict[str, Any]:
-        capped = min(limit, config.max_rows)
+        capped = _cap(limit, config.max_rows)
+        try:
+            floor = int(min_amount) if min_amount else None
+            ceiling = int(max_amount) if max_amount else None
+        except ValueError as exc:
+            raise AgentError(
+                f"min_amount and max_amount are raw integer strings in the "
+                f"asset's smallest unit, not decimals: {exc}"
+            ) from exc
         query = Query(
             chain=_chain(chain),
             address=address,
             sender=sender,
             recipient=recipient,
             asset=asset,
-            min_amount=int(min_amount) if min_amount else None,
-            max_amount=int(max_amount) if max_amount else None,
+            min_amount=floor,
+            max_amount=ceiling,
             # One more than asked for, so "there is more" is a fact rather than
             # an inference from a full page.
             limit=capped + 1,
@@ -285,10 +303,20 @@ def build_server(config: ServerConfig) -> MCPServer:
     def sql(query: str, limit: int = 100) -> dict[str, Any]:
         from ..store.analytics import AnalyticsView
 
-        capped = min(limit, config.max_rows)
+        capped = _cap(limit, config.max_rows)
+        # Decided before the view is opened: opening a DuckDB path creates the
+        # file, after which "does it exist" answers yes and the build is
+        # skipped forever. A view built once and never refreshed serves last
+        # week's answer as though it were current, which is the same failure
+        # as a cached error -- stale data that looks like data.
+        needs_build = config.view is None or not Path(config.view).exists()
+        if not needs_build and config.view is not None:
+            store_mtime = config.store.stat().st_mtime if config.store.exists() else 0
+            needs_build = Path(config.view).stat().st_mtime < store_mtime
+
         view = AnalyticsView(config.view or ":memory:")
         try:
-            if config.view is None or not Path(config.view).exists():
+            if needs_build:
                 view.build_from_sqlite(config.store)
             columns = view.columns(query)
             rows = view.sql(query)
@@ -322,8 +350,16 @@ def build_server(config: ServerConfig) -> MCPServer:
     ) -> dict[str, Any]:
         from ..render.graph import Edge, Graph, Node, to_cytoscape, to_d3, to_dot, to_gexf
 
+        # Validated before touching the store: doing the work and then
+        # refusing wastes it, and the error is clearer next to the input.
+        writer = {"d3": to_d3, "cytoscape": to_cytoscape, "dot": to_dot, "gexf": to_gexf}
+        if fmt not in writer:
+            raise AgentError(f"format must be one of {', '.join(sorted(writer))}")
+        if direction not in ("out", "in"):
+            raise AgentError("direction must be 'out' or 'in'")
+
         chain_id = _chain(chain) or ChainId.evm(1)
-        capped = min(limit, config.max_rows)
+        capped = _cap(limit, config.max_rows)
         store = _store()
         try:
             edges = store.edges(address, chain_id, direction=direction)
@@ -355,10 +391,12 @@ def build_server(config: ServerConfig) -> MCPServer:
             for a in found:
                 graph.attribute(addr, str(chain_id), a)
 
-        writer = {"d3": to_d3, "cytoscape": to_cytoscape, "dot": to_dot, "gexf": to_gexf}
-        if fmt not in writer:
-            raise AgentError(f"format must be one of {', '.join(sorted(writer))}")
-        return {"format": fmt, "content": writer[fmt](graph), "summary": graph.summary()}
+        return {
+            "format": fmt,
+            "chain": str(chain_id),
+            "content": writer[fmt](graph),
+            "summary": graph.summary(),
+        }
 
     @server.tool(description="What this store contains: counts, chains, and coverage.")
     def store_stats() -> dict[str, Any]:
@@ -457,6 +495,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent-name", default="unknown-agent")
     parser.add_argument("--max-rows", type=int, default=500)
     args = parser.parse_args(argv)
+    if args.max_rows < 1:
+        parser.error("--max-rows must be at least 1")
 
     server = build_server(
         ServerConfig(

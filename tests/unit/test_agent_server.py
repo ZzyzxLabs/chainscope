@@ -282,3 +282,77 @@ class TestGraphExport:
 
     def test_an_unknown_format_is_rejected(self, server):
         assert "format must be" in _raises(server, "export_graph", {"address": A, "fmt": "svg"})
+
+
+class TestLimitsCannotBeAbused:
+    @pytest.mark.parametrize("limit", [-1, 0])
+    def test_a_nonsense_limit_does_not_silently_drop_rows(self, server, limit):
+        """limit=-1 reaches rows[:-1], dropping the last result and reporting
+        the rest as complete. Zero returns nothing and reads as an empty
+        answer."""
+        got = _call(server, "search_transfers", {"address": A, "limit": limit})
+        assert got["shown"] >= 1
+
+    def test_a_non_numeric_amount_gets_an_actionable_error(self, server):
+        """These are raw integer strings; "1.5" is a decimal somebody meant in
+        ETH, and letting ValueError escape says nothing about that."""
+        message = _raises(server, "search_transfers", {"address": A, "min_amount": "1.5"})
+        assert "smallest unit" in message
+
+    def test_export_graph_refuses_a_bad_format_before_doing_the_work(self, server):
+        assert "format must be" in _raises(server, "export_graph", {"address": A, "fmt": "svg"})
+
+    def test_export_graph_refuses_a_bad_direction(self, server):
+        assert "direction" in _raises(
+            server, "export_graph", {"address": A, "direction": "sideways"}
+        )
+
+    def test_the_resolved_chain_is_reported(self, server):
+        """So an agent cannot silently attribute Ethereum edges to a chain it
+        asked about and did not get."""
+        got = _call(server, "export_graph", {"address": A})
+        assert got["chain"] == str(ETHEREUM)
+
+
+class TestViewFreshness:
+    def test_a_file_backed_view_is_rebuilt_when_the_store_moves_on(self, store_path, tmp_path):
+        """Opening a DuckDB path creates the file, after which "does it exist"
+        answers yes and the build is skipped forever --- serving last week's
+        answer as though it were current."""
+        import os
+        import time
+
+        from chainscope.agent.server import ServerConfig, build_server
+
+        view = tmp_path / "view.duckdb"
+        srv = build_server(ServerConfig(store=store_path, view=view))
+        assert _call(srv, "sql", {"query": "SELECT COUNT(*) FROM transfers"})["rows"][0][0] == 5
+
+        store = SqliteStore(store_path)
+        try:
+            store.put_transfers(
+                [
+                    Transfer(
+                        chain=ETHEREUM,
+                        tx=TxRef(ETHEREUM, "0x" + "e" * 64),
+                        sender=Address(ETHEREUM, A, A),
+                        recipient=Address(ETHEREUM, B, B),
+                        amount=Amount(TEN_ETH, 18, "ETH"),
+                        kind=TransferKind.NATIVE,
+                        block=99,
+                        index=99,
+                    )
+                ],
+                source="later",
+            )
+        finally:
+            store.close()
+        # Make the store unambiguously newer than the view on filesystems whose
+        # mtime granularity is coarse.
+        later = time.time() + 5
+        os.utime(store_path, (later, later))
+
+        srv2 = build_server(ServerConfig(store=store_path, view=view))
+        assert (
+            _call(srv2, "sql", {"query": "SELECT COUNT(*) FROM transfers"})["rows"][0][0] == 6
+        )

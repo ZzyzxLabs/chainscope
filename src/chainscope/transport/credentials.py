@@ -29,6 +29,7 @@ adds one must not route it through this scrubber.
 from __future__ import annotations
 
 import re
+import threading
 from typing import Any
 
 __all__ = [
@@ -105,6 +106,12 @@ def is_secret_param(name: str) -> bool:
 # Values only, never names, and never persisted.
 _KNOWN: set[str] = set()
 
+# Providers register credentials from whichever thread constructs them, while a
+# sweep is already scrubbing responses on others. Iterating a set during a write
+# raises, and it would raise inside the code path whose job is to stop a key
+# reaching a log.
+_KNOWN_LOCK = threading.Lock()
+
 #: Below this length, a "credential" is more likely to be a common substring
 #: whose blind replacement would corrupt unrelated data.
 _MIN_REGISTERED_LENGTH = 12
@@ -113,11 +120,13 @@ _MIN_REGISTERED_LENGTH = 12
 def register_secret(value: str | None) -> None:
     """Remember a literal credential so it can be scrubbed wherever it appears."""
     if value and len(value) >= _MIN_REGISTERED_LENGTH:
-        _KNOWN.add(value)
+        with _KNOWN_LOCK:
+            _KNOWN.add(value)
 
 
 def forget_secret(value: str | None) -> None:
-    _KNOWN.discard(value or "")
+    with _KNOWN_LOCK:
+        _KNOWN.discard(value or "")
 
 
 def scrub_value(text: str) -> str:
@@ -127,7 +136,11 @@ def scrub_value(text: str) -> str:
     replacing the shorter key inside it first would leave a mangled remainder
     that no longer matches the longer entry.
     """
-    for secret in sorted(_KNOWN, key=len, reverse=True):
+    # Snapshot under the lock, then replace outside it: the replacements are
+    # the expensive part and nothing about them needs the set held.
+    with _KNOWN_LOCK:
+        known = sorted(_KNOWN, key=len, reverse=True)
+    for secret in known:
         if secret in text:
             text = text.replace(secret, PLACEHOLDER)
     return text
@@ -141,6 +154,51 @@ def redact(text: str) -> str:
     out = _PARAM_RE.sub(r"\1=" + PLACEHOLDER, text)
     out = _PATH_KEY_RE.sub(r"/\1/" + PLACEHOLDER, out)
     return scrub_value(out)
+
+
+def endpoint_identity(url: str) -> str:
+    """A cache-safe identity for an endpoint: no credential, but still an endpoint.
+
+    :func:`redact` is for logs, where erasing too much is free. Using it to build
+    a cache key is not: an endpoint registered whole as a credential --- which is
+    what happens when an RPC URL embeds its key --- reduces to ``<redacted>``,
+    and every chain configured that way collapses onto one cache entry. A query
+    for Ethereum then returns whatever BSC answered.
+
+    That was not hypothetical. ``rpc.ankr.com/eth/<key>`` and
+    ``rpc.ankr.com/bsc/<key>`` both became ``<redacted>``; so did two public
+    nodes carrying no credential at all, because the whole URL had been
+    registered regardless.
+
+    So this strips only the parts that can *be* a credential --- long opaque path
+    segments and the query string --- and keeps scheme, host, and the path
+    structure that says which chain this is.
+    """
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if not parts.netloc:
+        # Not a URL. Fall back to full redaction; an unrecognised string is
+        # more likely to be a bare credential than an endpoint.
+        return redact(url)
+
+    segments = [
+        PLACEHOLDER if _looks_opaque(segment) else segment for segment in parts.path.split("/")
+    ]
+    # The query is dropped rather than scrubbed: for the callers that build one,
+    # the parameters travel separately and are hashed there.
+    return f"{parts.scheme}://{parts.netloc}{'/'.join(segments)}"
+
+
+#: Path segments this long and this uniform are keys, not routes. Chain names
+#: ("eth", "bsc", "mainnet") and API versions are far shorter.
+_OPAQUE_SEGMENT_LENGTH = 20
+
+
+def _looks_opaque(segment: str) -> bool:
+    if len(segment) < _OPAQUE_SEGMENT_LENGTH:
+        return False
+    return all(c.isalnum() or c in "-_" for c in segment)
 
 
 def redact_headers(headers: dict[str, str]) -> dict[str, str]:

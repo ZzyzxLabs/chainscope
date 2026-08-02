@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..core.attribution import Attribution, Category, Confidence
@@ -173,15 +173,30 @@ class Graph:
             self.nodes[key] = node
             return node
 
+        # The attribution fields move together, from whichever claim is
+        # stronger. Merging them independently produces a composite that nobody
+        # asserted: a HIGH "Binance / cex" arriving over a LOW "" / mixer" gave
+        # label=Binance, category=mixer, confidence=HIGH --- an exchange
+        # confidently labelled a mixer, on the strength of two claims that each
+        # said something else. Ties keep the existing claim, so replaying the
+        # same data twice does not shuffle the answer.
+        winner = node if node.confidence > existing.confidence else existing
+        loser = existing if winner is node else node
+
         merged = Node(
             address=existing.address,
             chain=existing.chain,
-            label=existing.label or node.label,
-            category=existing.category or node.category,
-            confidence=max(existing.confidence, node.confidence),
-            source=existing.source or node.source,
-            # Expansion is a fact about what was fetched: if either sighting
-            # expanded it, it is expanded.
+            # Fall back to the weaker claim only where the stronger one is
+            # silent --- an unlabelled HIGH-confidence sighting should not
+            # erase a label somebody actually recorded.
+            label=winner.label or loser.label,
+            category=winner.category or loser.category,
+            confidence=winner.confidence
+            if winner.label or winner.category
+            else loser.confidence,
+            source=winner.source or loser.source,
+            # These are facts about what was fetched rather than claims about
+            # what something is, so they merge independently and always widen.
             expanded=existing.expanded or node.expanded,
             is_seed=existing.is_seed or node.is_seed,
             balance_raw=existing.balance_raw
@@ -189,11 +204,6 @@ class Graph:
             else node.balance_raw,
             tags=tuple(sorted(set(existing.tags) | set(node.tags))),
         )
-        # Keep the label that came with the stronger claim. `replace` rather
-        # than reconstructing from __dict__: these are slotted dataclasses and
-        # have no __dict__ at all.
-        if node.confidence > existing.confidence and node.label:
-            merged = replace(merged, label=node.label, source=node.source)
         self.nodes[key] = merged
         return merged
 

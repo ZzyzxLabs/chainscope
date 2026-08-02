@@ -23,7 +23,7 @@ import httpx
 
 from .audit import AuditLog
 from .cache import CacheBackend, Volatility, cache_key
-from .credentials import redact, redact_headers, scrub_params
+from .credentials import endpoint_identity, redact_headers, scrub_params
 from .throttle import Throttle
 
 __all__ = ["Cacheable", "CircuitBreaker", "Client", "ReadOnlyViolation", "TransportError"]
@@ -280,7 +280,7 @@ class Client:
         # `scope` is already credential-free (it names a chain). The URL
         # fallback is not: Alchemy and Helius put the key in the path, so an
         # unscrubbed URL would make every cached entry personal to one account.
-        key = cache_key("RPC", scope or redact(url), method, scrub_params(params))
+        key = cache_key("RPC", scope or endpoint_identity(url), method, scrub_params(params))
         if (hit := self._from_cache(key, volatility, url, provider)) is not _MISS:
             return hit
 
@@ -364,9 +364,15 @@ class Client:
                 # dressed as a success -- see the Cacheable docstring. A body
                 # the provider rejects is still returned; it is simply not
                 # remembered, so the next attempt is a real one.
-                keep = volatility is not Volatility.NEVER and (
-                    cacheable is None or cacheable(data)
-                )
+                # A predicate that raises must not lose a response that
+                # arrived fine. The worst a broken one can do is cost a cache
+                # entry; turning a 200 into an exception would cost the answer.
+                keep = volatility is not Volatility.NEVER
+                if keep and cacheable is not None:
+                    try:
+                        keep = bool(cacheable(data))
+                    except Exception:
+                        keep = False
                 if self.cache is not None and keep:
                     self.cache.put(key, data, volatility, provider=provider)
                 return data
@@ -420,8 +426,13 @@ def _request_key(verb: str, url: str, payload: Any) -> str:
     What remains identifies the *question*, which is the honest key for a cached
     answer: any valid credential against the same endpoint returns the same
     chain data.
+
+    The endpoint goes through :func:`endpoint_identity` rather than
+    :func:`redact`, and the difference is not cosmetic. Full redaction erased
+    the host along with the key, so two chains served from one provider shared
+    a cache entry and an Ethereum query could return BSC's answer.
     """
-    return cache_key(verb, redact(url), scrub_params(payload))
+    return cache_key(verb, endpoint_identity(url), scrub_params(payload))
 
 
 def _clean(kw: dict[str, Any]) -> dict[str, Any]:

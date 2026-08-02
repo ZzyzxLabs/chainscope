@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# The full local gate. The last point before anyone else sees this.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)"
+exec scripts/ci-local.sh
