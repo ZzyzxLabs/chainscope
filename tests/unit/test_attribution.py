@@ -10,7 +10,7 @@ Binance hot wallet with a published block-explorer nametag. Nothing here is
 novel intelligence; it is all a matter of public record.
 """
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -196,8 +196,8 @@ class TestMerge:
         assert merge([weak, labelled()]).label == "Binance 14"
 
     def test_recency_breaks_remaining_ties(self):
-        old = labelled(label="Old Name", observed_at=datetime(2024, 1, 1, tzinfo=UTC))
-        new = labelled(label="New Name", observed_at=datetime(2026, 1, 1, tzinfo=UTC))
+        old = labelled(label="Old Name", observed_at=datetime(2024, 1, 1, tzinfo=timezone.utc))
+        new = labelled(label="New Name", observed_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
         assert merge([old, new]).label == "New Name"
 
     def test_disagreement_is_surfaced_not_hidden(self):

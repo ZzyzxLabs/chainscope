@@ -1,0 +1,241 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit configuration for chainscope.
+#
+# CI already runs ruff, ruff format, and mypy --strict, so there is no value in
+# an AI reviewer repeating them. What CI *cannot* check is whether a change
+# respects the invariants this project exists around: that attribution carries
+# its provenance, that heuristics report uncertainty, and that tests stay
+# offline. Those are judgement calls, and that is what the path_instructions
+# below are for.
+#
+# Rule of thumb when editing this file: if a linter can catch it, delete the
+# instruction. Every instruction that duplicates a linter dilutes the ones that
+# matter.
+
+language: en-US
+
+tone_instructions: >
+  Be direct and specific. Point at the line and say what is wrong and why it
+  matters. Skip praise, skip preamble, skip restating the diff.
+
+  This project produces output that reaches journalism and litigation. When a
+  change affects how confidently a conclusion is presented, say so plainly --
+  that is more important than style.
+
+  If a change looks fine, say nothing about it.
+
+early_access: false
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_in_walkthrough: false
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  changed_files_summary: true
+  sequence_diagrams: false
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: true
+  suggested_reviewers: false
+  abort_on_close: true
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+  # Generated artifacts and recorded fixtures. Cassettes are reviewed by a human
+  # for leaked credentials -- see the instruction block below -- but there is no
+  # point having an AI read thousands of lines of recorded JSON.
+  path_filters:
+    - "!**/*.lock"
+    - "!dist/**"
+    - "!**/*.egg-info/**"
+    - "!tests/cassettes/**/*.json"
+
+  path_instructions:
+    # ---------------------------------------------------------------- core
+    - path: "src/chainscope/core/attribution.py"
+      instructions: >
+        This module is the reason the project exists. Scrutinise any change to
+        it.
+
+        Flag as a blocking concern if a change would:
+        - allow an Attribution to be constructed without a `source`
+        - allow a claim at LOW confidence or below without a `rationale`
+        - make `merge` destructive, or let a non-sanctions claim displace a
+          sanctions claim from the primary slot
+        - hide disagreement between comparably strong sources instead of
+          surfacing it via `disputed`
+
+        These are not stylistic preferences. A heuristic guess that loses its
+        provenance becomes, three tools later, a fact nobody can trace back --
+        and people get accused on that basis.
+
+    - path: "src/chainscope/core/units.py"
+      instructions: >
+        Amount must stay exact. Flag any introduction of `float`, and flag
+        arithmetic that could combine amounts with differing (decimals, symbol)
+        without raising -- the same token carries different decimals on
+        different chains, and silently summing them produces a wrong number
+        that looks right.
+
+        Decimal operations here need an explicit precision context. The default
+        28 significant digits silently truncates wei-denominated balances above
+        ~1e28; that defect already occurred once and was caught by a property
+        test.
+
+    - path: "src/chainscope/transport/**"
+      instructions: >
+        The transport layer must have no write path. Flag anything that could
+        sign, broadcast, or otherwise mutate chain state, and anything that
+        weakens the method allowlist (eth_send*, eth_sign*, personal_*,
+        miner_*, admin_*). Treat this as blocking regardless of how contrived
+        the path looks.
+
+        For cache changes: check that the chosen Volatility reflects what the
+        data *is*, not how fresh the author wants it. A confirmed transaction
+        is IMMUTABLE whenever it was fetched. Getting this wrong makes a stale
+        chain head answer "what is the latest block" with yesterday's number,
+        and nothing downstream can detect it.
+
+    # ---------------------------------------------------------------- analysis
+    - path: "src/chainscope/analysis/**"
+      instructions: >
+        Anything probabilistic -- clustering, cross-chain matching, change-output
+        detection -- must return `Hypothesis` objects with the score factors
+        exposed and `alternatives` populated. Flag an analyzer that returns a
+        bare answer from a heuristic: a caller who can see why something ranked
+        first can catch the mistake, one who gets an answer cannot.
+
+        Analyzers return `Result` and must not print. Check that `params`
+        contains everything needed to reproduce the run; a Result that cannot be
+        reproduced from its own params is an anecdote, not evidence.
+
+        If the change adds or modifies a technique, check there is a
+        corresponding docs/methods/ page with a "when this fails" section.
+        Every method in this field has conditions under which it silently
+        produces garbage -- CoinJoin defeats co-spend clustering, exchange
+        batching defeats consolidation analysis.
+
+    - path: "src/chainscope/attribution/sources/**"
+      instructions: >
+        A new or modified source must map to an honest confidence level:
+        CERTAIN only for authoritative lists or on-chain self-description, HIGH
+        for published third-party labels, MEDIUM for documented structural
+        heuristics, LOW for behavioural inference.
+
+        Flag confidence inflation specifically -- it is the most damaging change
+        that can pass a linter.
+
+        The `source` string must be versioned (e.g. "ofac-sdn@2026-08-01") so an
+        analyst can tell which snapshot produced a claim.
+
+        `lookup` returns a list. Flag any implementation that picks one claim
+        for the caller; the resolver merges them, and disagreement between
+        sources is itself a finding.
+
+        Check that this PR also adds a row to docs/data-sources.md. CI enforces
+        it, but flag it early so the author is not surprised at the end.
+
+    - path: "src/chainscope/providers/**"
+      instructions: >
+        Capabilities must be declared honestly. Overstating them is worse than
+        omitting them: the router will select the provider, the call returns
+        partial data, and an analyzer draws a conclusion from an incomplete
+        picture. A missing capability degrades gracefully; a lying one produces
+        wrong answers.
+
+    - path: "src/chainscope/chains/**"
+      instructions: >
+        Watch address normalisation. Lowercasing an EVM address is correct;
+        lowercasing a Solana, Tron, or Bitcoin address destroys it, because
+        base58 and bech32 are case-sensitive. Whatever `normalize_address`
+        returns is what equality checks use, so an error here silently breaks
+        every comparison downstream.
+
+    - path: "src/chainscope/render/**"
+      instructions: >
+        Renderers must preserve the confidence distinction. Anything below
+        Confidence.HIGH renders as a claim with its rationale visible, never as
+        a plain label. Flag any change that drops this to make output tidier --
+        that distinction is the product.
+
+    # ---------------------------------------------------------------- tests
+    - path: "tests/**"
+      instructions: >
+        Tests must not touch the network. conftest.py blocks sockets, so flag
+        any new use of @pytest.mark.network that could instead replay a
+        cassette, and any attempt to unblock sockets directly.
+
+        Prefer assertions on `Result` objects over parsing stdout.
+
+        For new cassettes: confirm API keys, tokens, and authorisation headers
+        have been stripped from the recorded requests. A key committed to a
+        public repository is a real incident, and cassettes are the likeliest
+        route.
+
+    # ---------------------------------------------------------------- docs
+    - path: "docs/data-sources.md"
+      instructions: >
+        Every row needs publisher, license, whether redistribution is
+        permitted, and the confidence level it maps to. Flag an entry that
+        claims redistribution rights without naming the license that grants
+        them.
+
+    - path: "**/*.md"
+      instructions: >
+        Check that heuristic output is never described as confirmed
+        attribution. Clustering, cross-chain matching, and behavioural
+        inference produce leads.
+
+        Documentation is English. Translated READMEs (README.*.md) are welcome
+        and exempt.
+
+    - path: ".github/workflows/**"
+      instructions: >
+        Flag anything that could let CI reach the network, and any use of a
+        third-party action pinned only to a mutable tag rather than a version
+        or SHA.
+
+  tools:
+    # Ruff also runs in CI. Kept on so findings appear inline on the PR, which
+    # is a better experience than reading a log.
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    actionlint:
+      enabled: true
+    # Credential scanning matters more here than in most projects: recorded
+    # cassettes capture real requests, and a leaked key lands in a public repo.
+    gitleaks:
+      enabled: true
+    semgrep:
+      enabled: true
+    github-checks:
+      enabled: true
+      timeout_ms: 180000
+    languagetool:
+      enabled: true
+      level: default
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local

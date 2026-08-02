@@ -34,7 +34,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-evm = ["eth-utils>=5.0", "eth-abi>=5.0"]
+# eth-utils delegates keccak to eth-hash, which ships no backend of its own.
+# Declaring eth-utils alone installs cleanly and then fails at first hash --
+# so the backend is pinned here explicitly.
+evm = ["eth-utils>=5.0", "eth-abi>=5.0", "eth-hash[pycryptodome]>=0.7"]
 bitcoin = ["base58>=2.1", "bech32>=1.2"]
 solana = ["base58>=2.1"]
 report = ["rich>=13.0"]

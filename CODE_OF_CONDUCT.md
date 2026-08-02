@@ -74,10 +74,13 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement at
-**conduct@chainscope.dev**.
+reported by opening an [issue](../../issues) with the `conduct` label.
 
 All complaints will be reviewed and investigated promptly and fairly.
+
+If a public report is not appropriate for your situation --- which is often the
+case for harassment --- say so in a minimal issue and a maintainer will arrange
+a private channel with you before you share any detail.
 
 All community leaders are obligated to respect the privacy and security of the
 reporter of any incident.

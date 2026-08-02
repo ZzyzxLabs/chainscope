@@ -2,14 +2,18 @@
 
 ## Reporting a vulnerability
 
-**Do not open a public issue.**
+**Do not open a public issue for a vulnerability.** A public report describes a
+working attack to everyone using this tool before a fix exists.
 
-Report privately via GitHub's [private vulnerability
-reporting](https://github.com/chainscope/chainscope/security/advisories/new),
-or email **security@chainscope.dev**.
+Use GitHub's [private vulnerability
+reporting](../../security/advisories/new) instead --- it is a private form on
+this repository, visible only to maintainers.
 
 Please include: what you found, how to reproduce it, and what an attacker gains.
 A proof of concept helps but is not required to file.
+
+For anything that is *not* a vulnerability --- a bug, a wrong result, a question
+about a heuristic --- a normal [issue](../../issues) is the right place.
 
 **What to expect:** acknowledgement within 3 working days, an assessment within
 10, and credit in the advisory unless you prefer otherwise. If we disagree that
