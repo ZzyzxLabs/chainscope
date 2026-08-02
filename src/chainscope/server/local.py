@@ -246,7 +246,22 @@ class _Handlers:
         if not address or not label:
             raise ValueError("address and label are required")
 
-        source = str(body.get("source", "")).strip() or (f"browser:{self.options.agent_name}")
+        # The origin marker is not optional and cannot be replaced.
+        #
+        # Caller-supplied text used to *become* the source when present, so a
+        # claim written through this endpoint could be labelled "OFAC SDN list"
+        # and would sit in the store indistinguishable from a real import of
+        # one. This endpoint is reachable by any page in the user's browser;
+        # letting a request choose its own provenance defeats the property the
+        # whole attribution type exists to guarantee.
+        #
+        # Caller text is kept --- it is usually the useful part, "etherscan
+        # public tag" or a case reference --- but only ever appended, so the
+        # record always says a browser wrote it and what it claimed to be
+        # reading.
+        origin = f"browser:{self.options.agent_name}"
+        supplied = str(body.get("source", "")).strip()
+        source = f"{origin} (reported: {supplied})" if supplied else origin
         try:
             attribution = Attribution(
                 label=label,
