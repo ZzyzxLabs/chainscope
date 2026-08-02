@@ -109,6 +109,31 @@ LITECOIN = ChainId("bip122", "12a765e31ffd4059bada1e25190f6e98")
 SOLANA = ChainId("solana", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")
 TRON = ChainId("tron", "0x2b6653dc")
 
+#: What a chain's gas token is called, where it differs from the ecosystem
+#: default. EVM chains all share one adapter and it declares ``ETH``, which is
+#: correct for exactly one of them --- so a BSC native transfer came back
+#: denominated in ETH, and a Polygon one too. The amount was right and the unit
+#: was wrong, which is worse than an obvious failure: the number reads fine.
+#:
+#: Keyed by chain rather than by adapter because that is where the fact lives.
+#: Anything absent falls back to its adapter's declaration.
+NATIVE_SYMBOLS: dict[ChainId, str] = {
+    BSC: "BNB",
+    POLYGON: "POL",
+    AVALANCHE: "AVAX",
+    GNOSIS: "XDAI",
+}
+
+
+def native_symbol(chain: ChainId, default: str = "") -> str:
+    """The gas token's ticker for ``chain``.
+
+    ``default`` is returned for anything not listed, which for EVM means ETH ---
+    correct for mainnet and every rollup that settles in ether.
+    """
+    return NATIVE_SYMBOLS.get(chain, default)
+
+
 #: Human-friendly aliases accepted at the CLI boundary only.
 ALIASES: dict[str, ChainId] = {
     "eth": ETHEREUM,

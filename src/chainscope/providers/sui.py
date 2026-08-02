@@ -54,6 +54,14 @@ __all__ = ["SUI_MAINNET_RPC", "SuiProvider"]
 
 SUI_MAINNET_RPC = "https://fullnode.mainnet.sui.io:443"
 
+#: Public fullnode per network. Keyed by the CAIP-2 reference, which for Sui is
+#: the network name rather than a chain number.
+NETWORK_RPC = {
+    "mainnet": SUI_MAINNET_RPC,
+    "testnet": "https://fullnode.testnet.sui.io:443",
+    "devnet": "https://fullnode.devnet.sui.io:443",
+}
+
 #: Page size the public fullnodes accept. Asking for more is refused rather
 #: than silently reduced.
 MAX_PAGE = 50
@@ -101,17 +109,27 @@ class SuiProvider(ReadOnlyProvider):
         return self.url
 
     @classmethod
-    def from_settings(cls, settings: Any, chain: ChainId) -> list[Provider]:
+    def from_settings(cls, settings: Any, chain: ChainId, client: Any = None) -> list[Provider]:
         """Always available: Sui's public fullnode needs no key.
 
         The configured endpoint wins if there is one, but the absence of a
         credential is not a reason to return nothing here --- unlike the keyed
         providers, this one works out of the box, and returning ``[]`` would
         leave Sui with no provider at all on a fresh install.
+
+        The endpoint is chosen from the *requested network*. Defaulting to
+        mainnet meant a ``sui:testnet`` query silently read mainnet and then
+        tagged and cached the answers as testnet --- data from the wrong network
+        under the right label, which survives in the store long after the
+        session that produced it. An unrecognised network gets no default at
+        all, because guessing one is how that happens again.
         """
         if not cls.serves(chain):
             return []
-        return [cls(settings.rpc.get("sui") or SUI_MAINNET_RPC, chain=chain)]
+        url = settings.rpc.get("sui") or NETWORK_RPC.get(chain.reference)
+        if not url:
+            return []
+        return [cls(url, client=client, chain=chain)]
 
     # ---------------------------------------------------------------- request
 
@@ -269,6 +287,7 @@ class SuiProvider(ReadOnlyProvider):
         owner = normalize_address(address)
         wanted = ("out", "in") if direction == "all" else (direction,)
         seen: set[tuple[str, str, str]] = set()
+        per_tx: dict[str, int] = {}
         transfers: list[Transfer] = []
 
         for way in wanted:
@@ -315,6 +334,13 @@ class SuiProvider(ReadOnlyProvider):
                         if key in seen:
                             continue
                         seen.add(key)
+                        # A stable position within the transaction. Sui has no
+                        # log index, so leaving this at zero made every transfer
+                        # in a block share one -- and the store's identity key
+                        # then could not tell two of them apart on amount alone.
+                        # Counted per digest so the value does not shift when a
+                        # different page of history is fetched.
+                        per_tx[digest] = per_tx.get(digest, -1) + 1
                         transfers.append(
                             Transfer(
                                 chain=self.chain,
@@ -334,6 +360,7 @@ class SuiProvider(ReadOnlyProvider):
                                     coin_symbol(coin),
                                 ),
                                 kind=TransferKind.NATIVE if native else TransferKind.TOKEN,
+                                index=per_tx[digest],
                                 timestamp=self._when(tx),
                                 block=int(tx["checkpoint"]) if tx.get("checkpoint") else None,
                                 # The whole coin type, not just its package. One

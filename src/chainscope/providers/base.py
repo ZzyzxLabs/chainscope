@@ -139,8 +139,14 @@ class Provider:
         return not cls.ecosystems or chain.namespace in cls.ecosystems
 
     @classmethod
-    def from_settings(cls, settings: Any, chain: ChainId) -> list[Provider]:
+    def from_settings(cls, settings: Any, chain: ChainId, client: Any = None) -> list[Provider]:
         """Build whatever instances of this provider ``settings`` supports.
+
+        ``client`` is the run's shared :class:`~chainscope.transport.http.Client`
+        and should be passed straight through. Letting each provider make its
+        own meant two rate limiters against one upstream quota and an audit log
+        holding half the queries --- and that log is what
+        ``Context.evidence()`` reads to say what a conclusion was built from.
 
         Returns a list because one provider class can yield several configured
         instances --- an RPC provider produces one per endpoint --- and an empty

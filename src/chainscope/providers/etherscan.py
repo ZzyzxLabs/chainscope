@@ -27,7 +27,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from ..core.chainid import ChainId
+from ..core.chainid import ChainId, native_symbol
 from ..core.models import (
     Account,
     Address,
@@ -132,7 +132,7 @@ class EtherscanProvider(ReadOnlyProvider):
         return self.base_url
 
     @classmethod
-    def from_settings(cls, settings: Any, chain: ChainId) -> list[Provider]:
+    def from_settings(cls, settings: Any, chain: ChainId, client: Any = None) -> list[Provider]:
         """One instance, scoped to the chain asked for.
 
         Etherscan V2 serves every supported EVM chain from one key, so the
@@ -148,7 +148,18 @@ class EtherscanProvider(ReadOnlyProvider):
         # the only way out, so the call site is visible in a grep for it.
         if not secret:
             return []
-        return [cls(secret.reveal(), frozenset({chain}))]
+        return [
+            cls(
+                secret.reveal(),
+                frozenset({chain}),
+                client=client,
+                # EVM chains share one adapter and it declares ETH, which is
+                # right for exactly one of them. A BSC native transfer came back
+                # denominated in ETH: correct number, wrong unit, and the number
+                # reads fine.
+                native_symbol=native_symbol(chain, "ETH"),
+            )
+        ]
 
     # ---------------------------------------------------------------- request
 

@@ -19,10 +19,36 @@ from importlib.metadata import entry_points
 
 from ..config import Settings
 from ..core.chainid import ChainId
+from ..transport.audit import AuditLog
+from ..transport.cache import Cache
+from ..transport.http import Client
+from ..transport.throttle import Throttle
 from .base import Provider
 from .router import Router
 
-__all__ = ["build_providers", "provider_classes", "router_for"]
+__all__ = ["build_providers", "client_from", "provider_classes", "router_for"]
+
+
+def client_from(settings: Settings) -> Client:
+    """One HTTP client for a whole run, configured from ``settings``.
+
+    Every provider sharing one client is the point, not an optimisation. The
+    rate limiter is per-client, so two clients means two budgets against the
+    same upstream quota. The audit log is per-client, so two means an evidence
+    record with half the queries in it --- and ``Context.evidence()`` reads that
+    log to answer "what was this conclusion built from".
+
+    Before this, ``from_settings`` let each provider construct its own default
+    ``Client()``, which silently discarded ``CHAINSCOPE_CACHE_DIR``,
+    ``CHAINSCOPE_AUDIT_LOG``, ``CHAINSCOPE_RATE_LIMIT`` and
+    ``CHAINSCOPE_TIMEOUT``. All four are documented; none of them did anything.
+    """
+    return Client(
+        cache=Cache(settings.cache_dir) if settings.cache_dir else None,
+        throttle=Throttle(settings.rate_limit) if settings.rate_limit else None,
+        audit=AuditLog(settings.audit_log) if settings.audit_log else None,
+        timeout=settings.timeout,
+    )
 
 
 def provider_classes() -> tuple[dict[str, type[Provider]], dict[str, str]]:
@@ -60,6 +86,9 @@ def build_providers(
     """
     resolved = settings if settings is not None else Settings.load()
     classes, skipped = provider_classes()
+    # One client for the whole set: one rate-limit budget, one cache, one audit
+    # log. See client_from.
+    client = client_from(resolved)
 
     built: list[Provider] = []
     for name, cls in sorted(classes.items()):
@@ -69,7 +98,7 @@ def build_providers(
             # the one line that matters.
             continue
         try:
-            instances = cls.from_settings(resolved, chain)
+            instances = cls.from_settings(resolved, chain, client)
         except Exception as exc:
             skipped[name] = f"could not be configured ({type(exc).__name__}: {exc})"
             continue

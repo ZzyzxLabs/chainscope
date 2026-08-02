@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from ..core.chainid import ChainId
+from ..core.chainid import ChainId, native_symbol
 from ..core.models import Account, Address, Block, Transaction, TxRef
 from ..core.units import Amount
 from ..transport.cache import Volatility
@@ -88,7 +88,7 @@ class JsonRpcProvider(ReadOnlyProvider):
         self.capabilities = caps
 
     @classmethod
-    def from_settings(cls, settings: Any, chain: ChainId) -> list[Provider]:
+    def from_settings(cls, settings: Any, chain: ChainId, client: Any = None) -> list[Provider]:
         """The configured endpoint for this chain, if there is one.
 
         Endpoints are keyed by short name (``CHAINSCOPE_RPC_ETHEREUM``), so the
@@ -108,7 +108,9 @@ class JsonRpcProvider(ReadOnlyProvider):
         for name in sorted(names, key=len, reverse=True):
             url = settings.rpc.get(name)
             if url:
-                return [cls(url, chain)]
+                return [
+                    cls(url, chain, client=client, native_symbol=native_symbol(chain, "ETH"))
+                ]
         return []
 
     @property

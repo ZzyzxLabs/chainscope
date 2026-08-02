@@ -58,8 +58,31 @@ CREATE TABLE IF NOT EXISTS transfers (
     kind          TEXT NOT NULL,
     block         INTEGER,
     timestamp     INTEGER,
-    source        TEXT,
-    UNIQUE (chain, tx_hash, log_index, sender, recipient, amount_raw)
+    -- Identity is asserted by ux_tr_identity below rather than by an inline
+    -- UNIQUE, because it needs an expression and SQLite allows those only in
+    -- an index.
+    source        TEXT
+);
+
+-- What makes two rows the same transfer.
+--
+-- `asset` was missing from this key, so two transfers of equal raw amounts of
+-- *different* tokens, in one transaction between one pair of addresses,
+-- collided -- and INSERT OR IGNORE dropped the second with no error. A DEX
+-- routing through two pools, or an airdrop sending equal units of two tokens,
+-- produces exactly that shape, and the loss was invisible: the store simply
+-- held fewer rows than it was handed.
+--
+-- COALESCE because SQLite treats NULLs as distinct in a unique index, and a
+-- native transfer has no asset -- without it, native transfers would stop
+-- deduplicating entirely, which trades a silent loss for a silent duplicate.
+--
+-- sender and recipient stay bare. They are NULL for mints and burns, where
+-- NULL-is-distinct is the behaviour that was already in place; changing it
+-- here would quietly start merging rows this store has always kept apart, and
+-- that is a separate decision from the one being fixed.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tr_identity ON transfers(
+    chain, tx_hash, log_index, sender, recipient, amount_raw, COALESCE(asset, '')
 );
 
 CREATE INDEX IF NOT EXISTS ix_tr_sender    ON transfers(chain, sender, timestamp);
