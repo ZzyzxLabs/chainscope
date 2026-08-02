@@ -484,5 +484,13 @@ the output to remember it.
 | v0.2 | attribution sources and conflict resolution |
 | v0.3 | analyzers: consolidation, cross-chain, peel chains, clustering |
 | v0.4 | CLI split, renderers, case bundles |
-| v0.5 | plugin authoring docs, Solana/Tron adapters, PyPI release |
-| later | HTTP API, MCP server, graph-database backend for large cases |
+| v0.5 | `Store` protocol + SQLite backend, `rebuild` from cache (§4.8); explorer-class provider |
+| v0.6 | `Watch` + `evaluate()` (§4.10), notification plugins outside core |
+| v0.7 | plugin protocol versioning and stability tiers, store migrations (§4.11) |
+| v0.8 | plugin authoring docs, Solana/Tron adapters, PyPI release |
+| later | local read API, MCP server, graph-database store backend, community label set |
+
+The ordering is deliberate. `Store` precedes `Watch` because an alert that
+cannot say what changed since last time is a diff against nothing, and it
+precedes plugin versioning because there is no point freezing an interface that
+has never had a second implementation.

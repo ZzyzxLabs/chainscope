@@ -4,7 +4,8 @@
 
 [繁體中文](README.zh-TW.md)
 
-> ⚠️ **Alpha.** APIs will change. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design.
+> ⚠️ **Alpha.** APIs will change during `0.x`. See [ARCHITECTURE.md](ARCHITECTURE.md)
+> for the design and [CHANGELOG.md](CHANGELOG.md) for what has landed.
 
 ---
 
@@ -26,6 +27,61 @@ But three of their four core capabilities need no proprietary data at all:
 chainscope implements the reproducible parts, honestly, for the people who do
 not have a six-figure license: journalists, researchers, small enforcement
 teams, hacked protocols, and CTF players.
+
+## What this actually improves
+
+The honest competition is not Chainalysis. It is the two things people do today.
+
+**Versus the script you would otherwise write.** Most on-chain tracing is a few
+hundred lines of `requests` and `json`. That works, and it fails in a small set
+of ways that repeat in every investigation:
+
+| Failure | What it looks like | What chainscope does |
+|---|---|---|
+| Float arithmetic | totals subtly wrong, and they look fine | `Amount` is exact integers; mixing symbols or decimals raises |
+| Silent truncation | a provider drops rows, returns `200`, your set is one address short | traversal limits surface in `Result.warnings`; nonce checks prove a history is complete |
+| Failed API → empty list | an address quietly vanishes from the analysis | providers refuse rather than return empty — "unsupported" and "no data" are different types |
+| Hand-built block numbers | one wrong hex digit, four wrong timestamps, one confident wrong answer | typed queries; block numbers are integers |
+| Provenance lost | six months on, nobody can say where a number came from | every response recorded, content-addressed, replayable |
+| A guess becomes a fact | "probably the same entity" gets repeated until it is cited | `Confidence` and `rationale` are required, not optional |
+
+None of these are hard problems. They are problems you have to have already had,
+which is why the same script keeps getting rewritten badly.
+
+**Versus a hosted platform.** You run this. The data is on your disk, the
+provider keys are yours, there is no account, no quota, and nothing anyone can
+revoke. And because a hosted platform cannot hand you the data underneath its
+answers, its output is ultimately *trust us*. Yours can be checked.
+
+**The part that is genuinely new: a case is a file you can send someone.**
+
+```bash
+chainscope case open theft.chainscope --replay    # no API keys, no network
+```
+
+A bundle carries the results *and every raw provider response that produced
+them*. A reviewer reruns the analysis offline and gets byte-identical output, so
+a disagreement becomes "your log query missed block 20011451" rather than "I do
+not believe you". The same mechanism keeps the test suite offline, and keeps an
+investigation intact after the provider that answered it shuts down. Commercial
+platforms structurally cannot offer this: their data is not permitted to leave.
+
+## Run your own
+
+chainscope is a toolkit, not a service. The intended end state is that you build
+your own system on top of it and keep running it without us.
+
+| You want | What you get |
+|---|---|
+| Your own database | `Store` protocol — SQLite by default, Postgres/DuckDB/graph as plugins. Rebuildable from the cache, so a schema change is a rebuild, not a re-crawl |
+| Your own frontend | Stable JSON for every `Result`, graph export to Neo4j/Gephi/Cytoscape, a read-only local API. No bundled UI you have to live with |
+| Your own alerts | `Watch` + `evaluate(watch, since, until)`, a pure function over a block range. Drive it from cron, CI, or your own daemon. No scheduler, no broker — and because it is pure, *"why did this fire?"* is answered by replaying it |
+| Your own analysis | Analyzers, providers, chains, stores and attribution sources are entry points. Your extension lives in your repository |
+| Your own labels | `Attribution` carries source, method, confidence and rationale, and merges without destroying conflicts — a shared label set you can argue with instead of merely trust |
+
+Ingestion follows the investigation instead of indexing whole chains, which is
+what keeps this a laptop tool rather than a cluster.
+[ARCHITECTURE.md](ARCHITECTURE.md) §4.8–4.11 gives the reasoning for each.
 
 ## The design commitment that matters
 
@@ -73,11 +129,21 @@ v0.1 is being built. Implemented so far:
 - [x] `core.attribution` — provenance, confidence, non-destructive merge
 - [x] `transport` — content-addressed cache, finality-derived TTL, throttling, audit log
 - [x] `providers` — capability-routed data sources with fallback
-- [x] `chains` — EVM and Bitcoin adapters
+- [x] `chains` — EVM, Bitcoin, Solana, Tron adapters
 - [x] `attribution` — OFAC, explorer nametags, local labels, conflict resolution
 - [x] `analysis` — consolidation, cross-chain matching, peel chains, clustering
 - [x] `cli` and renderers — terminal, Markdown, JSON
 - [x] `case` — replayable bundles
+
+Designed, not yet built. The reasoning is written down first on purpose: these
+are the decisions that are expensive to reverse once anyone depends on them.
+
+- [ ] `store` — entity store, rebuildable from the cache ([§4.8](ARCHITECTURE.md))
+- [ ] explorer-class provider — `ADDRESS_HISTORY` has no implementation yet, so
+      anything that lists an address's transactions is currently unreachable
+- [ ] `watch` — `evaluate()` over a block range ([§4.10](ARCHITECTURE.md))
+- [ ] plugin protocol versioning and stability tiers ([§4.11](ARCHITECTURE.md))
+- [ ] graph export, local read API
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and roadmap.
 

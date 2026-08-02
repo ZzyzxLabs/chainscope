@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "chainscope"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Open-source blockchain forensics toolkit — everything you can do with public data"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,8 +40,9 @@ dependencies = [
 evm = ["eth-utils>=5.0", "eth-abi>=5.0", "eth-hash[pycryptodome]>=0.7"]
 bitcoin = ["base58>=2.1", "bech32>=1.2"]
 solana = ["base58>=2.1"]
+tron = ["base58>=2.1"]
 report = ["rich>=13.0"]
-all = ["chainscope[evm,bitcoin,solana,report]"]
+all = ["chainscope[evm,bitcoin,solana,tron,report]"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
@@ -69,6 +70,8 @@ jsonrpc = "chainscope.providers.jsonrpc:JsonRpcProvider"
 [project.entry-points."chainscope.chains"]
 evm = "chainscope.chains.evm:EvmAdapter"
 bitcoin = "chainscope.chains.bitcoin:BitcoinAdapter"
+solana = "chainscope.chains.solana:SolanaAdapter"
+tron = "chainscope.chains.tron:TronAdapter"
 
 [project.entry-points."chainscope.analyzers"]
 consolidation = "chainscope.analysis.consolidation:ConsolidationAnalyzer"
