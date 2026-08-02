@@ -216,7 +216,7 @@ border:1px solid var(--line)}
 <header>
   <h1>__TITLE__</h1>
   <label>size by <select id="asset"></select></label>
-  <button id="reset">clear selection</button>
+  <button id="reset">clear route</button>
   <div class="legend" id="legend"></div>
   <div class="warn" id="warn" hidden></div>
 </header>
@@ -249,6 +249,7 @@ document.getElementById("legend").innerHTML = cats.map(c =>
 ).join("")
   + '<span><i style="border:1px dashed var(--edge);background:none"></i>frontier</span>';
 
+function shortId(a){ return a.length > 14 ? a.slice(0,8) + "\u2026" + a.slice(-4) : a; }
 function esc(s){ const d = document.createElement("div");
   d.textContent = s == null ? "" : s; return d.innerHTML; }
 
@@ -264,6 +265,45 @@ function fmt(raw, decimals){
 }
 
 let selected = null;
+let route = {nodes: new Set(), edges: new Set(), hops: []};
+
+// Every path from a seed to the clicked address, not just the shortest.
+//
+// A laundering case is a tree of routes and reading one route at a time is the
+// task. The shortest path alone would hide a split that rejoins -- which is the
+// structure worth seeing, since somebody split the funds for a reason.
+//
+// Bounded: cycles are refused by the visited set, and the search stops at
+// MAX_PATHS so a dense graph cannot hang the page. Hitting the cap is reported
+// rather than silently truncating the answer.
+const MAX_PATHS = 40;
+function pathsTo(target, edges) {
+  const out = [], nodes = new Set(), used = new Set();
+  const next = new Map();
+  edges.forEach(e => {
+    if (!next.has(e.source)) next.set(e.source, []);
+    next.get(e.source).push(e);
+  });
+  let capped = false;
+  const walk = (at, trail, seen) => {
+    if (out.length >= MAX_PATHS) { capped = true; return; }
+    if (at === target) {
+      out.push([...trail]);
+      trail.forEach(e => { used.add(e.source + ">" + e.target + ">" + e.asset);
+                           nodes.add(e.source); nodes.add(e.target); });
+      nodes.add(target);
+      return;
+    }
+    for (const e of next.get(at) || []) {
+      if (seen.has(e.target)) continue;   // a cycle is not a route
+      seen.add(e.target); trail.push(e);
+      walk(e.target, trail, seen);
+      trail.pop(); seen.delete(e.target);
+    }
+  };
+  DATA.seeds.forEach(s => walk(s, [], new Set([s])));
+  return {nodes, edges: used, hops: out, capped};
+}
 function draw(){
   const asset = sel.value;
   const edges = DATA.edges.filter(e => (e.asset || e.symbol || "native") === asset);
@@ -303,9 +343,11 @@ function draw(){
     // renders every other edge as a hairline.
     const ratio = Number(BigInt(e.raw) * 1000n / maxRaw) / 1000;
     p.setAttribute("stroke-width", (1 + Math.log10(1 + ratio*9) * 5).toFixed(2));
-    const dim = selected && e.source !== selected && e.target !== selected;
-    p.setAttribute("stroke", "var(--edge)");
-    p.setAttribute("stroke-opacity", dim ? 0.12 : 0.55);
+    const key = e.source + ">" + e.target + ">" + e.asset;
+    const onRoute = route.edges.has(key);
+    const dim = selected && !onRoute;
+    p.setAttribute("stroke", onRoute ? "#f59e0b" : "var(--edge)");
+    p.setAttribute("stroke-opacity", dim ? 0.08 : (onRoute ? 0.95 : 0.55));
     p.setAttribute("fill","none");
     const t = document.createElementNS(NS,"title");
     t.textContent = e.symbol + " " + fmt(e.raw, e.decimals) +
@@ -321,7 +363,8 @@ function draw(){
     const r = document.createElementNS(NS,"rect");
     r.setAttribute("width",168); r.setAttribute("height",28); r.setAttribute("rx",5);
     r.setAttribute("fill", PALETTE[n.category] || PALETTE[""]);
-    r.setAttribute("fill-opacity", selected && selected !== n.id ? 0.25 : 0.85);
+    const lit = !selected || route.nodes.has(n.id);
+    r.setAttribute("fill-opacity", lit ? 0.85 : 0.15);
     if (n.frontier){
       r.setAttribute("stroke-dasharray","4 3");
       r.setAttribute("fill-opacity",0.18); }
@@ -342,7 +385,14 @@ function draw(){
       (n.frontier ? "  (frontier: not expanded)" : "");
     grp.appendChild(t);
     grp.addEventListener("click",
-      () => { selected = selected === n.id ? null : n.id; show(n); draw(); });
+      () => {
+        selected = selected === n.id ? null : n.id;
+        route = selected
+          ? pathsTo(selected, DATA.edges.filter(
+              x => (x.asset || x.symbol || "native") === sel.value))
+          : {nodes: new Set(), edges: new Set(), hops: []};
+        show(n); draw();
+      });
     g.appendChild(grp);
   });
 }
@@ -366,6 +416,19 @@ function show(n){
   if (n.source) out.push("<dt>source</dt><dd>" + esc(n.source) + "</dd>");
   if (n.category) out.push("<dt>category</dt><dd>" + esc(n.category) + "</dd>");
   out.push("<dt>hop</dt><dd>" + n.depth + " from seed</dd>");
+  if (route.hops.length) {
+    out.push("<dt>routes from seed</dt><dd>" + route.hops.length +
+      (route.capped ? " (capped; there are more)" : "") + "</dd>");
+    // Every route, not the shortest one. A split that rejoins is the structure
+    // worth seeing and a single path would hide it.
+    route.hops.slice(0, 6).forEach(h => {
+      const step = h.map(e => shortId(e.target)).join(" \u2192 ");
+      out.push('<dd class="muted">' + esc(shortId(h[0].source) + " \u2192 " + step) + "</dd>");
+    });
+  } else if (selected === n.id && !n.seed) {
+    out.push('<dt>routes from seed</dt><dd class="muted">none in this asset \u2014 ' +
+      'reached by a different asset, or only inbound</dd>');
+  }
   if (n.frontier)
     out.push('<dt>coverage</dt><dd class="muted">Frontier. Its counterparties '
       + 'were never fetched \\u2014 the picture stops here because nobody looked, '
@@ -377,7 +440,8 @@ function show(n){
 }
 
 sel.addEventListener("change", draw);
-document.getElementById("reset").addEventListener("click", () => { selected = null; draw();
+document.getElementById("reset").addEventListener("click", () => {
+  selected = null; route = {nodes: new Set(), edges: new Set(), hops: []}; draw();
   const p = document.getElementById("panel");
   p.className="muted"; p.textContent="Click an address."; });
 draw();
