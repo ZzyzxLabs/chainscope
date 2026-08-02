@@ -33,6 +33,26 @@ from ..base import Source, SourceError, SourceMeta
 __all__ = ["OfacSource"]
 
 
+def _key(address: str) -> str:
+    """A comparable key for an address, without flattening case that carries value.
+
+    The SDN list mixes chains. An EVM address is hex, where case is a checksum
+    and two spellings are one address --- so those fold. Bitcoin, Litecoin and
+    Monero addresses are base58 or bech32-with-meaning, where **case is part of
+    the value**: `1BvBMSEY` and `1bvbmsey` are different addresses, and
+    lowercasing them both invents a match against an address nobody listed and
+    loses the one that was.
+
+    A sanctions list is the worst possible place for either error --- one is a
+    false positive against an innocent address, the other is a listed address
+    that screens clean.
+    """
+    text = address.strip()
+    if text.startswith(("0x", "0X")) and len(text) == 42:
+        return text.lower()
+    return text
+
+
 class OfacSource(Source):
     """Sanctioned digital-currency addresses from a local SDN extract.
 
@@ -104,7 +124,7 @@ class OfacSource(Source):
         if not isinstance(entries, dict):
             raise SourceError(f"{self.path}: expected an 'addresses' object")
         self._data = {
-            k.lower(): (v if isinstance(v, dict) else {"label": str(v)})
+            _key(k): (v if isinstance(v, dict) else {"label": str(v)})
             for k, v in entries.items()
         }
         return self._data
@@ -119,7 +139,7 @@ class OfacSource(Source):
     # ---------------------------------------------------------------- queries
 
     def lookup(self, address: str, chain: ChainId | None = None) -> list[Attribution]:
-        rec = self._load().get(address.lower())
+        rec = self._load().get(_key(address))
         return [self._build(address, rec, chain)] if rec else []
 
     def lookup_many(
@@ -128,7 +148,7 @@ class OfacSource(Source):
         data = self._load()
         out: dict[str, list[Attribution]] = {}
         for a in addresses:
-            rec = data.get(a.lower())
+            rec = data.get(_key(a))
             out[a] = [self._build(a, rec, chain)] if rec else []
         return out
 

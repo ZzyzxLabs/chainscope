@@ -195,11 +195,19 @@ class MemoFeed:
 
 
 def authored_by(memos: list[Memo], address: str) -> MemoFeed:
-    """Split a feed into what this address wrote and what was written at it."""
-    key = address.lower()
-    feed = MemoFeed(address=key)
+    """Split a feed into what this address wrote and what was written at it.
+
+    Compared **exactly**, and the address is kept as given. This module is
+    about SPL memos, and a Solana address is base58 --- where case is part of
+    the value, not presentation. `7xKX` and `7xkx` are different accounts, so
+    lowercasing before comparing both invents matches between unrelated
+    accounts and, because base58 excludes some characters, can fold two real
+    addresses onto one key. The EVM habit of case-insensitive comparison is
+    correct for hex and wrong everywhere else.
+    """
+    feed = MemoFeed(address=address)
     for memo in memos:
-        if memo.signer.lower() == key:
+        if memo.signer == address:
             feed.own.append(memo)
         else:
             feed.injected.append(memo)

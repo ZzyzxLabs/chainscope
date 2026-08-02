@@ -92,11 +92,29 @@ class Distribution:
         return sum(self.payouts.values())
 
     def share_bps(self, address: str) -> int:
-        """This recipient's cut, in basis points of the whole distribution."""
+        """This recipient's cut, in basis points of the whole distribution.
+
+        The lookup lowercases *both* sides. It used to lowercase only the
+        query, so a distribution built from checksummed addresses --- which is
+        what every EVM provider returns --- matched nothing and reported every
+        recipient as 0 bps. A revenue split that finds no splits looks exactly
+        like an address that does not take a cut.
+        """
         total = self.total
         if total <= 0:
             return 0
-        return (self.payouts.get(address.lower(), 0) * 10_000) // total
+        return (self._by_key().get(address.lower(), 0) * 10_000) // total
+
+    def _by_key(self) -> dict[str, int]:
+        """Payouts keyed comparably, summing any addresses that collapse.
+
+        Two spellings of one address are one recipient, and adding them is the
+        only answer that keeps `total` and the shares consistent.
+        """
+        folded: dict[str, int] = {}
+        for address, amount in self.payouts.items():
+            folded[address.lower()] = folded.get(address.lower(), 0) + amount
+        return folded
 
 
 @dataclass

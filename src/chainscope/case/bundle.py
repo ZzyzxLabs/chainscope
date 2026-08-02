@@ -167,9 +167,25 @@ class Bundle:
         )
 
     def read_result(self, index: int) -> dict[str, Any]:
+        """One recorded result, read from inside this bundle and nowhere else.
+
+        The manifest is somebody else's file --- this module's own docstring says
+        so --- and the filename in it was joined straight onto the bundle path.
+        `pathlib` discards the left side of a join with an absolute path, so an
+        entry reading `/etc/passwd` read `/etc/passwd`, and `../../..` walked
+        wherever it liked. A stated threat model that nothing enforces is the
+        pattern this review keeps finding.
+        """
         entry = self.results[index]
-        raw = (self.path / "results" / str(entry["file"])).read_text(encoding="utf-8")
-        data: dict[str, Any] = json.loads(raw)
+        root = (self.path / "results").resolve()
+        target = (root / str(entry["file"])).resolve()
+        if target != root and root not in target.parents:
+            raise BundleError(
+                f"manifest entry {entry['file']!r} resolves outside the bundle. "
+                f"A bundle is untrusted input; it may only name files inside "
+                f"itself."
+            )
+        data: dict[str, Any] = json.loads(target.read_text(encoding="utf-8"))
         return data
 
     def replay_cache(self) -> Cache | None:

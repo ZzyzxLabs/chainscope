@@ -55,9 +55,23 @@ class TestAuthorship:
         assert memo("x", lamports=0).is_injection
         assert not memo("x", lamports=5000).is_injection
 
-    def test_case_does_not_split_an_author_from_itself(self):
+    def test_a_differently_cased_signer_is_a_different_account(self):
+        """Reversed, because the premise was wrong.
+
+        This used to assert that case "does not split an author from itself".
+        That is the EVM rule: hex is a checksum, so two spellings are one
+        address. Solana addresses are base58, where case is part of the value
+        --- and `SEEDWALLET111…` and `seedwallet111…` are *both* valid base58
+        and are different accounts.
+
+        Folding them is the confusion this module exists to prevent. Its own
+        docstring: "the cost of confusing them is naming the wrong operator."
+        A memo signed by one account, attributed to another because the letters
+        matched with the case removed, is that cost exactly.
+        """
         feed = authored_by([memo("x", signer=SEED.upper())], SEED)
-        assert len(feed.own) == 1
+        assert feed.own == []
+        assert len(feed.injected) == 1
 
 
 class TestDecoding:

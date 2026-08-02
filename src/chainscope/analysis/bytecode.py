@@ -151,6 +151,17 @@ def compare(left: str, right: str) -> BytecodeMatch:
     throws that away.
     """
     raw_left, raw_right = _hexbytes(left), _hexbytes(right)
+    # The empty case first. The rule below --- "empty code is not a match with
+    # empty code" --- was written and then jumped over by this early return, so
+    # `compare("0x", "0x")` came back identical: two addresses that are not
+    # contracts reported as running the same thing, which is precisely the
+    # false positive the rule exists to prevent.
+    if not raw_left or not raw_right:
+        return BytecodeMatch(
+            identical=False,
+            same_code=False,
+            stripped_bytes=(0, 0),
+        )
     if raw_left == raw_right:
         return BytecodeMatch(identical=True, same_code=True, stripped_bytes=(0, 0))
 
