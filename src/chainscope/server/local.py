@@ -466,6 +466,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--store", type=Path, default=Path(".chainscope/store.db"))
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="interface to bind. The default keeps other machines out. Inside a "
+        "container use 0.0.0.0 --- that binds the *container's* interfaces, and "
+        "the boundary then lives in the published port (127.0.0.1:8787:8787)",
+    )
+    parser.add_argument(
         "--writable",
         action="store_true",
         help="allow the extension to record labels. Off by default.",
@@ -480,7 +487,11 @@ def main(argv: list[str] | None = None) -> int:
 
     server = LocalServer(
         ServerOptions(
-            store=args.store, port=args.port, writable=args.writable, token=args.token
+            store=args.store,
+            host=args.host,
+            port=args.port,
+            writable=args.writable,
+            token=args.token,
         )
     ).start()
 
@@ -488,11 +499,23 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  writable : {'yes' if args.writable else 'no (read-only)'}")
     print("\n  token, paste this into the extension's options page:\n")
     print(f"    {server.options.token}\n")
-    print(
-        "  Loopback only. The token is what stops any open tab from reading "
-        "your labels --\n  binding to 127.0.0.1 keeps other machines out and "
-        "does nothing about this one."
-    )
+    if args.host in ("127.0.0.1", "localhost", "::1"):
+        print(
+            "  Loopback only. The token is what stops any open tab from reading "
+            "your labels --\n  binding to 127.0.0.1 keeps other machines out and "
+            "does nothing about this one."
+        )
+    else:
+        # Said loudly because the usual reason to pass this is a container, and
+        # the usual mistake is passing it on a laptop. The token is the only
+        # control left once the interface is open.
+        print(
+            f"  ** Bound to {args.host}, not loopback. **\n"
+            f"  Every machine that can route here can reach your label store, "
+            f"and the token\n  is the only thing stopping them. This is correct "
+            f"inside a container, where the\n  published port is the real "
+            f"boundary. On a laptop it is almost certainly wrong."
+        )
     try:
         threading.Event().wait()
     except KeyboardInterrupt:

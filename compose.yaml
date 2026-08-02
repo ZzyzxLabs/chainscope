@@ -49,8 +49,25 @@ services:
     <<: *common
     profiles: ["serve"]
     entrypoint: ["chainscope-serve"]
-    command: ["--store", "/case/.chainscope/store.db", "--writable", "--port", "8787"]
+    # --host 0.0.0.0 binds the *container's* interfaces, not the machine's.
+    #
+    # The default 127.0.0.1 is loopback inside the container, which nothing
+    # outside it can reach --- Docker forwards a published port to the
+    # container's external interface. So the service came up, the port looked
+    # published, and the extension could not connect to it.
+    #
+    # The host side stays clamped to 127.0.0.1 below, which is where the
+    # security property actually lives: the container is a private network
+    # segment, and the machine's loopback is the boundary that matters.
+    command:
+      [
+        "--store", "/case/.chainscope/store.db",
+        "--writable",
+        "--host", "0.0.0.0",
+        "--port", "8787",
+      ]
     ports:
+      # 127.0.0.1 on the left: reachable from this machine, from nowhere else.
       - "127.0.0.1:8787:8787"
     # The token is printed at startup; read it with `docker compose logs serve`.
     stdin_open: true
