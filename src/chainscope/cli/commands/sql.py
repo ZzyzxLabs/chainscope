@@ -26,6 +26,7 @@ whether fifty was the answer or the cap.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -180,9 +181,14 @@ def _emit(columns: list[str], rows: list[tuple[Any, ...]], output: str) -> None:
         )
         return
     if output == "csv":
-        print(",".join(columns))
-        for row in rows:
-            print(",".join("" if v is None else str(v) for v in row))
+        # csv.writer, not join(","). A label containing a comma, a quote, or a
+        # newline is ordinary --- "Binance 14, hot" is a plausible nametag ---
+        # and joining produces a file whose columns silently shift from that
+        # row onward. The command advertises pipeable output; malformed CSV
+        # that parses into the wrong columns is worse than none.
+        writer = csv.writer(sys.stdout, lineterminator="\n")
+        writer.writerow(columns)
+        writer.writerows([["" if v is None else str(v) for v in row] for row in rows])
         return
 
     if not rows:

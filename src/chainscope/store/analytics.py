@@ -435,9 +435,16 @@ class AnalyticsView:
             src.close()
             if target == ":memory:":
                 # An in-memory view lives *in* its connection, so closing it
-                # would discard everything just loaded. This is the one case
-                # where the permissive handle is kept --- and it never touches
-                # a file, which is what the permission was for.
+                # would discard everything just loaded. The handle is kept ---
+                # and locked down before it is, because otherwise the default
+                # agent path (`config.view is None`) hands arbitrary SQL a
+                # connection that can read local files through DuckDB's table
+                # functions. The guard in front of it is a rail, not a
+                # boundary; this is the boundary.
+                #
+                # DuckDB accepts the setting after data is loaded but not
+                # before, which is why it happens here rather than at connect.
+                conn.execute("SET enable_external_access=false")
                 self._conn = conn
             else:
                 conn.close()

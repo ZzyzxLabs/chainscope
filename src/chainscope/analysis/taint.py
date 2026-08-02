@@ -65,16 +65,44 @@ FIFO reference implementation: ``TaintChain/RustyTaintChain``.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from functools import partial
+from typing import Any, Union
 
+from ..core.chainid import ChainId
 from ..core.result import Finding, Result, Severity
 from ..providers.base import Capability
 from .base import Analyzer, Context
 
-__all__ = ["Lot", "TaintAnalyzer", "TaintPolicy", "TaintResult", "trace_taint"]
+
+def _history(
+    provider: Any,
+    *,
+    chain: ChainId,
+    address: str,
+    lo: int,
+    hi: int | str,
+    cap: int,
+) -> list[Any]:
+    """A named function rather than a lambda closing over the loop variable,
+    which is the classic way to fetch the same address n times."""
+    rows: list[Any] = provider.address_history(
+        chain, address, start_block=lo, end_block=hi, limit=cap
+    )
+    return rows
+
+
+__all__ = ["Key", "Lot", "TaintAnalyzer", "TaintPolicy", "TaintResult", "trace_taint"]
+
+#: How holdings are identified. A bare address means the chain's native asset;
+#: ``(address, asset)`` names a token. Both accepted because most callers have
+#: one asset and should not have to say so, and the ones that do must be able
+#: to --- an ETH lot funding a USDC payment reported 1,000 clean USDC as
+#: stolen before this distinction existed.
+Key = Union[str, "tuple[str, str]"]
 
 
 class TaintPolicy(str, Enum):
@@ -122,6 +150,12 @@ class TaintResult:
     launderer.
     """
 
+    by_asset: dict[tuple[str, str], int] = field(default_factory=dict)
+    """Tainted value per (address, asset). ``tainted`` sums these for a headline
+    count, and that sum mixes units --- an address holding tainted ETH and
+    tainted USDC has a total that is a number of base units, not a value. Use
+    this when the split matters, which is whenever a figure is quoted."""
+
     unresolved: list[str] = field(default_factory=list)
     """Transfers that could not be applied because the sender's holdings were
     unknown --- history that starts mid-stream. Reported rather than treated as
@@ -160,10 +194,10 @@ class TaintResult:
 
 def trace_taint(
     transfers: list[Any],
-    sources: dict[str, int] | set[str],
+    sources: Mapping[Key, int] | set[Key],
     *,
     policy: TaintPolicy = TaintPolicy.FIFO,
-    opening_balances: dict[str, int] | None = None,
+    opening_balances: Mapping[Key, int] | None = None,
 ) -> TaintResult:
     """Propagate taint from ``sources`` through ``transfers`` in order.
 
@@ -181,21 +215,35 @@ def trace_taint(
     applying the same set in a different sequence gives a different answer, and
     that is a property of the rule rather than a bug in it.
     """
-    holdings: dict[str, deque[Lot]] = {}
+    # Keyed by (address, asset), not by address. An address holding ETH and
+    # USDC has two independent queues, and mixing them lets a clean USDC
+    # payment draw taint from a dirty ETH lot --- measured: 1,000 USDC of clean
+    # money reported as stolen. Raw amounts are not comparable across assets,
+    # so a single queue is arithmetic on mismatched units.
+    holdings: dict[tuple[str, str], deque[Lot]] = {}
 
-    for address, opening in (opening_balances or {}).items():
+    def bucket(address: str, asset: str) -> deque[Lot]:
+        return holdings.setdefault((address.lower(), asset), deque())
+
+    # Opening balances are the native asset unless said otherwise; a caller
+    # with token balances passes a (address, asset) mapping.
+    for key, opening in (opening_balances or {}).items():
+        address, asset = key if isinstance(key, tuple) else (key, "")
         if opening > 0:
-            holdings.setdefault(address.lower(), deque()).append(Lot(opening, 0))
+            bucket(address, asset).append(Lot(opening, 0))
 
     seeded = sources if isinstance(sources, dict) else dict.fromkeys(sources, 0)
     result = TaintResult(policy=policy)
-    for address, seed_amount in seeded.items():
-        key = address.lower()
-        result.touched.add(key)
+    for seed_key, seed_amount in seeded.items():
+        address, asset = seed_key if isinstance(seed_key, tuple) else (seed_key, "")
+        result.touched.add(address.lower())
         if seed_amount > 0:
-            holdings.setdefault(key, deque()).append(Lot(seed_amount, seed_amount))
+            bucket(address, asset).append(Lot(seed_amount, seed_amount))
 
-    whole_balance = {a.lower() for a in (sources if isinstance(sources, set) else ())}
+    whole_balance = {
+        (a[0].lower() if isinstance(a, tuple) else a.lower())
+        for a in (sources if isinstance(sources, set) else ())
+    }
 
     ordered = sorted(
         transfers,
@@ -209,12 +257,14 @@ def trace_taint(
             continue
 
         src, dst = sender.key.lower(), recipient.key.lower()
-        queue = holdings.setdefault(src, deque())
+        asset_obj = getattr(transfer, "asset", None)
+        asset = asset_obj.key if asset_obj else ""
+        queue = bucket(src, asset)
 
         # An address named as a source with no explicit amount taints whatever
         # it sends, however it was funded.
         if src in whole_balance:
-            _receive(holdings, dst, amount.raw, amount.raw, policy)
+            _receive(bucket(dst, asset), amount.raw, amount.raw, policy)
             result.touched.add(dst)
             continue
 
@@ -224,19 +274,26 @@ def trace_taint(
             # origin is outside the window, and calling it clean would be a
             # claim about it.
             result.unresolved.append(getattr(getattr(transfer, "tx", None), "hash", "") or dst)
-            _receive(holdings, dst, amount.raw, 0, policy)
+            _receive(bucket(dst, asset), amount.raw, 0, policy)
             continue
 
         moved_taint = _spend(queue, amount.raw, policy)
-        _receive(holdings, dst, amount.raw, moved_taint, policy)
+        _receive(bucket(dst, asset), amount.raw, moved_taint, policy)
         if moved_taint > 0:
             result.touched.add(src)
             result.touched.add(dst)
 
-    for address, queue in holdings.items():
+    for (address, _asset), queue in holdings.items():
         held = sum(lot.tainted for lot in queue)
         if held > 0:
-            result.tainted[address] = held
+            # Summed across assets for the headline figure. Raw units differ,
+            # so this is a count of tainted base units and not a value ---
+            # `by_asset` keeps them apart for anything that needs the split.
+            result.tainted[address] = result.tainted.get(address, 0) + held
+    for (address, asset), queue in holdings.items():
+        held = sum(lot.tainted for lot in queue)
+        if held > 0:
+            result.by_asset[(address, asset)] = held
     return result
 
 
@@ -294,14 +351,7 @@ def _spend(queue: deque[Lot], amount: int, policy: TaintPolicy) -> int:
     return moved
 
 
-def _receive(
-    holdings: dict[str, deque[Lot]],
-    address: str,
-    amount: int,
-    tainted: int,
-    policy: TaintPolicy,
-) -> None:
-    queue = holdings.setdefault(address, deque())
+def _receive(queue: deque[Lot], amount: int, tainted: int, policy: TaintPolicy) -> None:
     if policy is TaintPolicy.POISON:
         already = any(lot.tainted > 0 for lot in queue)
         if tainted > 0:
@@ -350,24 +400,71 @@ class TaintAnalyzer(Analyzer):
 
         seed = source.lower()
         per_node = ctx.limit("per_node", 1000)
-        history = ctx.router.dispatch(
-            ctx.chain,
-            Capability.ADDRESS_HISTORY,
-            lambda p: p.address_history(
-                ctx.chain, seed, start_block=start_block, end_block=end_block, limit=per_node
-            ),
-        )
-        transfers = [t for tx in history for t in tx.value_transfers()]
+        max_nodes = ctx.limit("max_nodes", 60)
 
+        # Follow the money, not just the first hop.
+        #
+        # Fetching only the source's history makes multi-hop tracing
+        # impossible: `source -> A -> B` contains the first transfer and
+        # nothing else, so B can never be reported as holding anything. The
+        # answer would be a confident subset --- the shape this package exists
+        # to refuse --- and it would look identical to a genuinely short chain.
+        #
+        # Breadth-first over addresses that received tainted value, capped, and
+        # the cap is reported rather than absorbed.
         warnings: list[str] = []
-        if len(history) >= per_node:
-            # Taint is order-dependent, so a window that clips the start does
-            # not merely lose hops --- it changes which value funded which
-            # payment, and every downstream figure with it.
+        seen: set[str] = set()
+        frontier = [seed]
+        transfers: list[Any] = []
+        capped = False
+
+        while frontier and len(seen) < max_nodes:
+            address = frontier.pop(0)
+            if address in seen:
+                continue
+            seen.add(address)
+            try:
+                history = ctx.router.dispatch(
+                    ctx.chain,
+                    Capability.ADDRESS_HISTORY,
+                    partial(
+                        _history,
+                        chain=ctx.chain,
+                        address=address,
+                        lo=start_block,
+                        hi=end_block,
+                        cap=per_node,
+                    ),
+                )
+            except Exception as exc:
+                # Named, not swallowed. An address whose history could not be
+                # fetched is a hole in the trace, and treating it as a dead end
+                # would report the money as stopping there.
+                warnings.append(f"could not fetch history for {address}: {exc}")
+                continue
+
+            if len(history) >= per_node:
+                warnings.append(
+                    f"{address} filled the {per_node}-row limit. FIFO depends on "
+                    f"the order value arrived in, so a clipped window does not "
+                    f"just lose hops: it changes which funds paid for what."
+                )
+            moved = [t for tx in history for t in tx.value_transfers()]
+            transfers.extend(moved)
+            for t in moved:
+                if t.sender and t.sender.key.lower() == address and t.recipient:
+                    nxt = t.recipient.key.lower()
+                    if nxt not in seen:
+                        if len(seen) + len(frontier) >= max_nodes:
+                            capped = True
+                        else:
+                            frontier.append(nxt)
+
+        if capped or frontier:
             warnings.append(
-                f"history filled the {per_node}-row limit. FIFO depends on the "
-                f"order value arrived in, so a clipped window does not just "
-                f"lose hops: it changes which funds paid for what."
+                f"the walk stopped at {max_nodes} addresses. Value beyond them is "
+                f"not traced and is not reported as settled --- raise max_nodes to "
+                f"follow further."
             )
         if rule is not TaintPolicy.FIFO:
             warnings.append(
@@ -377,7 +474,7 @@ class TaintAnalyzer(Analyzer):
                 f"value never stolen). Only FIFO conserves the amount."
             )
 
-        sources: dict[str, int] | set[str] = {seed: int(amount)} if amount else {seed}
+        sources: Mapping[Key, int] | set[Key] = {seed: int(amount)} if amount else {seed}
         result = trace_taint(transfers, sources, policy=rule)
 
         findings = [
