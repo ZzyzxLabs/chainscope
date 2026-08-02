@@ -42,9 +42,35 @@ competitors is already noise, not a weak signal.
 That is why :data:`MAX_ANONYMITY_SET` is five rather than the twenty a first
 guess suggested. See ``tests/validation/test_mixer_correlation_accuracy.py``.
 
-**Never HIGH.** A timing coincidence is circumstantial by nature. It narrows a
-hypothesis and cannot confirm one, and the ceiling is what stops it being
-quoted as though it had.
+**Timing never exceeds MEDIUM.** A coincidence is circumstantial by nature. It
+narrows a hypothesis and cannot confirm one, and the ceiling is what stops it
+being quoted as though it had.
+
+**And timing is the weakest of the three published heuristics**, which is worth
+saying because this module started with it and led with it. Checking the
+literature is what corrected that. Wicht, Wang, Le & Cachin, *A Transaction-Level
+Model for Blockchain Privacy* (IACR ePrint 2023/1902; FC'24) formalise the other
+two, and both are stronger, cheaper, and independent of the anonymity set:
+
+:func:`address_reuse`
+    The same address deposited and withdrew. Formalised as an unlinkability
+    score of **zero** --- an identification, not a probable pairing, recorded at
+    HIGH with method ONCHAIN because nothing is being guessed. No window, no
+    parameter, and it does not decay as the pool gets busier.
+
+:func:`transactional_linkage`
+    A depositor and a withdrawal recipient transact directly with each other.
+    Rests on an observed transfer rather than on coincidence, and returns the
+    linking transaction so the claim can be checked rather than taken.
+
+Run those first. Timing is what remains for the operators careful enough to
+withdraw to a fresh address they never touch again --- which is the behaviour
+the mixer is actually for, and the reason the weakest heuristic still earns its
+place.
+
+(A 2025 arXiv preprint reports linkage rates for all three plus a FIFO variant.
+It was withdrawn by its author for reference errors, so its numbers are not
+quoted here; the heuristics themselves predate it.)
 """
 
 from __future__ import annotations
@@ -487,3 +513,128 @@ class MixerAnalyzer(Analyzer):
             params={"pool": address, "window_blocks": window_blocks},
             started=started,
         )
+
+
+# ------------------------------------------------------- stronger heuristics
+#
+# Timing is the weakest of the three published Tornado Cash heuristics and it
+# is the one this module started with. The other two are stronger, cheaper, and
+# do not depend on the anonymity set at all --- checking the literature is what
+# surfaced them, and it changed what this module leads with.
+#
+# Wicht, Wang, Le & Cachin, "A Transaction-Level Model for Blockchain Privacy"
+# (IACR ePrint 2023/1902; FC'24) formalises address reuse as reducing the
+# unlinkability score to **zero**: it is not an inference, it is an
+# identification.
+
+
+def address_reuse(
+    deposits: list[MixerEvent], withdrawals: list[MixerEvent]
+) -> list[tuple[MixerEvent, MixerEvent]]:
+    """Deposits whose depositor later appears as a withdrawal recipient.
+
+    The strongest signal available against a mixer, and the cheapest: no window,
+    no anonymity set, no parameter to tune. If ``0xabc`` deposited and ``0xabc``
+    withdrew, the pool moved value from an address back to itself and the
+    cryptography is simply not being used.
+
+    Formalised in Wicht et al. as an unlinkability score of zero. That framing
+    matters for how the result is recorded: this is not a probable pairing that
+    happens to be very likely, it is an observation. Every other function in
+    this module produces a hypothesis; this one produces a fact about what the
+    chain says.
+
+    A depositor who withdraws to a *fresh* address --- the entire point of using
+    a mixer --- is invisible here, which is why the timing heuristic still
+    exists alongside it.
+    """
+    seen: dict[str, list[MixerEvent]] = {}
+    for w in withdrawals:
+        seen.setdefault(w.address.lower(), []).append(w)
+
+    out: list[tuple[MixerEvent, MixerEvent]] = []
+    for d in sorted(deposits, key=lambda e: e.order):
+        for w in sorted(seen.get(d.address.lower(), ()), key=lambda e: e.order):
+            # Only withdrawals *after* the deposit. An earlier one is a
+            # different round trip, and pairing it would invert the direction
+            # of the claim.
+            if w.order > d.order:
+                out.append((d, w))
+                break
+    return out
+
+
+def transactional_linkage(
+    deposits: list[MixerEvent],
+    withdrawals: list[MixerEvent],
+    transfers: list[Any],
+) -> list[tuple[MixerEvent, MixerEvent, str]]:
+    """Deposit/withdrawal pairs joined by a direct transfer between the two.
+
+    The second published heuristic. If a depositor address ever sends value
+    straight to a withdrawal recipient, the mixer sits between two addresses
+    that transact with each other in the open --- which is a poor way to remain
+    unlinked, and common enough to be worth checking.
+
+    Weaker than address reuse and much stronger than timing: it rests on an
+    observed transaction rather than on coincidence, so no anonymity set enters
+    the calculation. Returns the linking transaction hash so the claim can be
+    checked rather than taken.
+
+    Direction is not constrained. Funding a withdrawal address before using it
+    and sweeping into it afterwards are both ordinary operator behaviour, and
+    either one links the pair.
+    """
+    depositors = {d.address.lower(): d for d in deposits}
+    recipients = {w.address.lower(): w for w in withdrawals}
+
+    out: list[tuple[MixerEvent, MixerEvent, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for t in transfers:
+        sender = getattr(t, "sender", None)
+        recipient = getattr(t, "recipient", None)
+        if sender is None or recipient is None:
+            continue
+        a, b = sender.key.lower(), recipient.key.lower()
+        for depositor, payee in ((a, b), (b, a)):
+            if depositor in depositors and payee in recipients:
+                pair = (depositor, payee)
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                out.append(
+                    (depositors[depositor], recipients[payee], getattr(t.tx, "hash", ""))
+                )
+    return out
+
+
+def reuse_attribution(
+    deposit: MixerEvent, withdrawal: MixerEvent, chain: ChainId | None = None
+) -> Attribution:
+    """A claim from address reuse, which is the one case that is not inference.
+
+    HIGH rather than the MEDIUM ceiling the timing heuristic carries, and the
+    difference is real: timing says "these two events are consistent", while
+    this says "the same address is on both sides". Capping it at MEDIUM would
+    understate it as badly as reporting a timing coincidence as HIGH would
+    overstate one.
+    """
+    return Attribution(
+        label=f"deposited and withdrew: {deposit.address}",
+        category=Category.MIXER,
+        confidence=Confidence.HIGH,
+        # ONCHAIN, not INFERENCE. Nothing is being guessed.
+        method=Method.ONCHAIN,
+        source="chainscope mixer address-reuse (Wicht et al., IACR 2023/1902)",
+        address=withdrawal.address,
+        chain=chain,
+        rationale=(
+            f"{deposit.address} deposited at block {deposit.block} and the same "
+            f"address received a withdrawal at block {withdrawal.block}. The pool "
+            f"returned value to the address it came from, so the mixer's "
+            f"unlinkability does not apply --- this is an observation about what "
+            f"the chain records, not a probable pairing. It says nothing about "
+            f"the operator's *other* withdrawals, which may well have gone to "
+            f"fresh addresses and remain unlinked."
+        ),
+    )

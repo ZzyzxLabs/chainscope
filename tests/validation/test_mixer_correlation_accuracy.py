@@ -276,3 +276,151 @@ class TestTheShapeOfTheCollapse:
             assert match.anonymity_set <= MAX_ANONYMITY_SET
             if match.anonymity_set > 3:
                 assert match.confidence is Confidence.SPECULATIVE
+
+
+class TestTheStrongerPublishedHeuristics:
+    """Checking the literature changed what this module leads with.
+
+    Three heuristics are published against Tornado Cash; this module began with
+    the weakest of them. Wicht, Wang, Le & Cachin (IACR ePrint 2023/1902, FC'24)
+    formalise address reuse as reducing the unlinkability score to **zero** ---
+    not a very likely pairing but an identification. Transactional linkage rests
+    on an observed transfer. Neither involves an anonymity set, so neither
+    decays as the pool gets busier, which is the failure mode the timing rule
+    lives with.
+    """
+
+    def test_address_reuse_finds_the_round_trip(self):
+        from chainscope.analysis.mixer import address_reuse
+
+        same = "0xoperator"
+        deposits = [MixerEvent(tx="d0", block=100, address=same)]
+        withdrawals = [
+            MixerEvent(tx="w0", block=150, address="0xstranger"),
+            MixerEvent(tx="w1", block=200, address=same),
+        ]
+        pairs = address_reuse(deposits, withdrawals)
+        assert [(d.tx, w.tx) for d, w in pairs] == [("d0", "w1")]
+
+    def test_it_survives_a_pool_too_busy_for_timing(self):
+        """The point of having it. A hundred competing withdrawals destroy the
+        timing rule and leave this one untouched."""
+        from chainscope.analysis.mixer import address_reuse
+
+        same = "0xoperator"
+        deposits = [MixerEvent(tx="d0", block=100, address=same)]
+        withdrawals = [
+            MixerEvent(tx=f"n{i}", block=101 + i, address=f"0xother{i}") for i in range(100)
+        ]
+        withdrawals.append(MixerEvent(tx="w0", block=300, address=same))
+
+        assert correlate_withdrawals(deposits, withdrawals).ambiguous
+        assert len(address_reuse(deposits, withdrawals)) == 1
+
+    def test_a_withdrawal_before_the_deposit_is_not_a_round_trip(self):
+        from chainscope.analysis.mixer import address_reuse
+
+        same = "0xoperator"
+        assert (
+            address_reuse(
+                [MixerEvent(tx="d0", block=200, address=same)],
+                [MixerEvent(tx="w0", block=100, address=same)],
+            )
+            == []
+        )
+
+    def test_a_fresh_withdrawal_address_is_invisible_to_it(self):
+        """Which is the entire point of using a mixer, and why the timing rule
+        still exists alongside this one."""
+        from chainscope.analysis.mixer import address_reuse
+
+        assert (
+            address_reuse(
+                [MixerEvent(tx="d0", block=100, address="0xoperator")],
+                [MixerEvent(tx="w0", block=200, address="0xbrandnew")],
+            )
+            == []
+        )
+
+    def test_reuse_is_high_confidence_and_onchain(self):
+        """Timing caps at MEDIUM because it is circumstantial. This is not:
+        capping it there would understate it as badly as reporting a timing
+        coincidence as HIGH would overstate one."""
+        from chainscope.analysis.mixer import address_reuse, reuse_attribution
+
+        same = "0xoperator"
+        d, w = address_reuse(
+            [MixerEvent(tx="d0", block=100, address=same)],
+            [MixerEvent(tx="w0", block=200, address=same)],
+        )[0]
+        claim = reuse_attribution(d, w, ETHEREUM)
+        assert claim.confidence is Confidence.HIGH
+        assert claim.method.value == "onchain"
+        assert "not a probable pairing" in claim.rationale
+
+    def test_it_does_not_overreach_to_the_operators_other_withdrawals(self):
+        from chainscope.analysis.mixer import reuse_attribution
+
+        claim = reuse_attribution(
+            MixerEvent(tx="d", block=1, address="0xa"),
+            MixerEvent(tx="w", block=2, address="0xa"),
+        )
+        assert "other" in claim.rationale and "remain unlinked" in claim.rationale
+
+    def test_transactional_linkage_uses_an_observed_transfer(self):
+        from chainscope.analysis.mixer import transactional_linkage
+
+        class Tx:
+            hash = "0xlink"
+
+        class T:
+            tx = Tx()
+            sender = type("A", (), {"key": "0xdepositor"})()
+            recipient = type("A", (), {"key": "0xrecipient"})()
+
+        found = transactional_linkage(
+            [MixerEvent(tx="d0", block=100, address="0xdepositor")],
+            [MixerEvent(tx="w0", block=200, address="0xrecipient")],
+            [T()],
+        )
+        assert len(found) == 1
+        assert found[0][2] == "0xlink"
+
+    def test_linkage_works_in_either_direction(self):
+        """Funding a withdrawal address beforehand and sweeping into it
+        afterwards are both ordinary, and either links the pair."""
+        from chainscope.analysis.mixer import transactional_linkage
+
+        class Tx:
+            hash = "0xlink"
+
+        class T:
+            tx = Tx()
+            sender = type("A", (), {"key": "0xrecipient"})()
+            recipient = type("A", (), {"key": "0xdepositor"})()
+
+        assert transactional_linkage(
+            [MixerEvent(tx="d0", block=100, address="0xdepositor")],
+            [MixerEvent(tx="w0", block=200, address="0xrecipient")],
+            [T()],
+        )
+
+    def test_an_unrelated_transfer_links_nothing(self):
+        from chainscope.analysis.mixer import transactional_linkage
+
+        class Tx:
+            hash = "0x"
+
+        class T:
+            tx = Tx()
+            sender = type("A", (), {"key": "0xsomebody"})()
+            recipient = type("A", (), {"key": "0xelse"})()
+
+        assert (
+            transactional_linkage(
+                [MixerEvent(tx="d0", block=1, address="0xdepositor")],
+                [MixerEvent(tx="w0", block=2, address="0xrecipient")],
+                [T()],
+            )
+            == []
+        )
