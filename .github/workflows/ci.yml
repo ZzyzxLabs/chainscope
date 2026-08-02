@@ -132,9 +132,17 @@ jobs:
           test -f "$RUNNER_TEMP/case/.chainscope/store.db"
       - name: the MCP agent answers a handshake over stdio
         run: |
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
-            | docker run --rm -i --entrypoint chainscope-mcp chainscope:ci \
-            | head -c 400 | grep -q '"protocolVersion"'
+          # The whole reply, then matched. An earlier version piped through
+          # `head -c 400` and grepped for "protocolVersion" -- the server's
+          # `instructions` string pushes that field past the cut, so a
+          # perfectly good handshake was reported as a failure. The container
+          # was fine; the assertion was written against an assumed shape.
+          reply=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+            | docker run --rm -i --entrypoint chainscope-mcp chainscope:ci)
+          echo "$reply" | head -c 200
+          echo "$reply" | grep -q '"result"'
+          echo "$reply" | grep -q '"protocolVersion"'
+          echo "$reply" | grep -q 'chainscope'
 
   nix:
     name: nix flake
