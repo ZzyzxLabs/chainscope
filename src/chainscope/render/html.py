@@ -60,8 +60,8 @@ def _json_for_script(value: Any) -> str:
         .replace("<", "\\u003c")
         .replace(">", "\\u003e")
         .replace("&", "\\u0026")
-        .replace(" ", "\\u2028")
-        .replace(" ", "\\u2029")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
     )
 
 
@@ -89,7 +89,8 @@ svg { width:100%; height:100%; display:block; cursor:grab; }
 svg:active { cursor:grabbing; }
 aside { width:320px; border-left:1px solid var(--line); padding:16px;
   overflow-y:auto; background:var(--panel); }
-@media (max-width:760px){ aside{width:auto; border-left:none; border-top:1px solid var(--line);} }
+@media (max-width:760px){ aside{width:auto; border-left:none;
+  border-top:1px solid var(--line);} }
 aside h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em;
   color:var(--muted); margin:0 0 10px; }
 .row { display:flex; justify-content:space-between; gap:10px; padding:4px 0;
