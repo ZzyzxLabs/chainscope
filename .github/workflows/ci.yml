@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A PR that only rewords a docstring should not queue behind five stale runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Deterministic Hypothesis runs; a property test that fails only on Tuesdays
+  # is worse than no property test.
+  HYPOTHESIS_PROFILE: ci
+  PYTHONHASHSEED: "0"
+
+jobs:
+  lint:
+    name: lint & types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev,all]"
+      - name: ruff
+        run: ruff check src tests
+      - name: ruff format check
+        run: ruff format --check src tests
+      - name: mypy (strict)
+        run: mypy
+
+  test:
+    name: pytest ${{ matrix.python }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        os: [ubuntu-latest]
+        include:
+          # Path handling and SQLite behaviour differ enough to be worth one
+          # run each; no need for the full matrix.
+          - python: "3.12"
+            os: macos-latest
+          - python: "3.12"
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -e ".[dev,all]"
+      # Note the absence of --network. The suite blocks sockets at the fixture
+      # level (tests/conftest.py); this is the second line of defence, not the
+      # first.
+      - run: pytest -q --tb=short
+
+  build:
+    name: build & metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - name: validate package metadata
+        run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  data-sources:
+    name: attribution sources are documented
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # An attribution source whose provenance nobody wrote down becomes, three
+      # tools later, a fact nobody can trace back. This check makes that
+      # omission fail the build rather than fail an investigation.
+      - name: every source module has a row in docs/data-sources.md
+        run: |
+          python - <<'PY'
+          import pathlib, sys
+
+          src_dir = pathlib.Path("src/chainscope/attribution/sources")
+          if not src_dir.exists():
+              print("no sources yet; nothing to check")
+              sys.exit(0)
+
+          doc = pathlib.Path("docs/data-sources.md").read_text().lower()
+          missing = [
+              p.stem for p in src_dir.glob("*.py")
+              if not p.stem.startswith("_") and p.stem.lower() not in doc
+          ]
+          if missing:
+              print("Undocumented attribution sources:", ", ".join(missing))
+              print("Add a row to docs/data-sources.md covering publisher,")
+              print("license, redistribution terms, and confidence level.")
+              sys.exit(1)
+          print("all attribution sources documented")
+          PY

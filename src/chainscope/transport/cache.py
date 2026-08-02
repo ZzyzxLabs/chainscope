@@ -146,17 +146,17 @@ class Cache:
         ttl = self.policy.ttl(volatility)
         if ttl == 0.0:
             return None
-        row = self._db().execute(
-            "SELECT value, stored_at FROM entries WHERE key = ?", (key,)
-        ).fetchone()
+        row = (
+            self._db()
+            .execute("SELECT value, stored_at FROM entries WHERE key = ?", (key,))
+            .fetchone()
+        )
         if row is None:
             return None
         value, stored_at = row
         if ttl is not None and (time.time() - stored_at) > ttl:
             return None
-        self._db().execute(
-            "UPDATE entries SET hits = hits + 1 WHERE key = ?", (key,)
-        )
+        self._db().execute("UPDATE entries SET hits = hits + 1 WHERE key = ?", (key,))
         self._db().commit()
         return json.loads(value)
 
@@ -175,8 +175,7 @@ class Cache:
             "(key, value, volatility, stored_at, provider, hits) "
             "VALUES (?, ?, ?, ?, ?, COALESCE("
             "  (SELECT hits FROM entries WHERE key = ?), 0))",
-            (key, json.dumps(value, default=str), volatility.value,
-             time.time(), provider, key),
+            (key, json.dumps(value, default=str), volatility.value, time.time(), provider, key),
         )
         self._db().commit()
 
@@ -197,13 +196,15 @@ class Cache:
         return removed
 
     def stats(self) -> dict[str, Any]:
-        total, hits = self._db().execute(
-            "SELECT COUNT(*), COALESCE(SUM(hits), 0) FROM entries"
-        ).fetchone()
+        total, hits = (
+            self._db()
+            .execute("SELECT COUNT(*), COALESCE(SUM(hits), 0) FROM entries")
+            .fetchone()
+        )
         by_vol = dict(
-            self._db().execute(
-                "SELECT volatility, COUNT(*) FROM entries GROUP BY volatility"
-            ).fetchall()
+            self._db()
+            .execute("SELECT volatility, COUNT(*) FROM entries GROUP BY volatility")
+            .fetchall()
         )
         size = self.path.stat().st_size if self.path.exists() else 0
         return {

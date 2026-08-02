@@ -55,9 +55,7 @@ class TestExpiry:
     def test_immutable_never_expires(self, cache):
         cache.put("k", "v", Volatility.IMMUTABLE)
         # Backdate a decade; finalised history is still finalised.
-        cache._db().execute(
-            "UPDATE entries SET stored_at = ?", (time.time() - 86_400 * 3650,)
-        )
+        cache._db().execute("UPDATE entries SET stored_at = ?", (time.time() - 86_400 * 3650,))
         assert cache.get("k", Volatility.IMMUTABLE) == "v"
 
     def test_head_expires_quickly(self, tmp_path):
@@ -75,7 +73,7 @@ class TestExpiry:
     def test_ttl_ladder_is_monotonic(self):
         """Volatility classes must be ordered, or the taxonomy is meaningless."""
         p = CachePolicy()
-        assert p.ttl(Volatility.IMMUTABLE) is None       # unbounded
+        assert p.ttl(Volatility.IMMUTABLE) is None  # unbounded
         assert p.ttl(Volatility.SETTLED) > p.ttl(Volatility.SLOW)
         assert p.ttl(Volatility.SLOW) > p.ttl(Volatility.LIVE)
         assert p.ttl(Volatility.LIVE) > p.ttl(Volatility.HEAD)

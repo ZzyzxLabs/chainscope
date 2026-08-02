@@ -36,7 +36,11 @@ from enum import Enum, IntEnum
 from .chainid import ChainId
 
 __all__ = [
-    "Attribution", "Category", "Confidence", "Method", "ResolvedEntity",
+    "Attribution",
+    "Category",
+    "Confidence",
+    "Method",
+    "ResolvedEntity",
 ]
 
 
@@ -130,9 +134,7 @@ class Category(str, Enum):
         return self in _TERMINAL
 
 
-_TERMINAL = frozenset(
-    {Category.CEX, Category.MIXER, Category.BRIDGE, Category.SANCTIONED}
-)
+_TERMINAL = frozenset({Category.CEX, Category.MIXER, Category.BRIDGE, Category.SANCTIONED})
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,11 +223,7 @@ class ResolvedEntity:
     @property
     def disputed(self) -> bool:
         """True when sources of comparable strength assign different categories."""
-        strong = {
-            c.category
-            for c in self.all_claims
-            if c.confidence >= Confidence.HIGH
-        }
+        strong = {c.category for c in self.all_claims if c.confidence >= Confidence.HIGH}
         return len(strong) > 1
 
     def categories(self) -> frozenset[Category]:

@@ -58,9 +58,7 @@ class ChainId:
 
     def __post_init__(self) -> None:
         if not _CAIP2.match(f"{self.namespace}:{self.reference}"):
-            raise ValueError(
-                f"not a valid CAIP-2 id: {self.namespace}:{self.reference}"
-            )
+            raise ValueError(f"not a valid CAIP-2 id: {self.namespace}:{self.reference}")
 
     @classmethod
     def parse(cls, text: str) -> ChainId:
@@ -110,19 +108,34 @@ TRON = ChainId("tron", "0x2b6653dc")
 
 #: Human-friendly aliases accepted at the CLI boundary only.
 ALIASES: dict[str, ChainId] = {
-    "eth": ETHEREUM, "ethereum": ETHEREUM, "mainnet": ETHEREUM,
-    "op": OPTIMISM, "optimism": OPTIMISM,
-    "bsc": BSC, "bnb": BSC, "binance": BSC,
-    "gnosis": GNOSIS, "xdai": GNOSIS,
-    "polygon": POLYGON, "matic": POLYGON,
+    "eth": ETHEREUM,
+    "ethereum": ETHEREUM,
+    "mainnet": ETHEREUM,
+    "op": OPTIMISM,
+    "optimism": OPTIMISM,
+    "bsc": BSC,
+    "bnb": BSC,
+    "binance": BSC,
+    "gnosis": GNOSIS,
+    "xdai": GNOSIS,
+    "polygon": POLYGON,
+    "matic": POLYGON,
     "base": BASE,
-    "arb": ARBITRUM, "arbitrum": ARBITRUM,
-    "avax": AVALANCHE, "avalanche": AVALANCHE,
-    "linea": LINEA, "scroll": SCROLL, "sepolia": SEPOLIA,
-    "btc": BITCOIN, "bitcoin": BITCOIN,
-    "ltc": LITECOIN, "litecoin": LITECOIN,
-    "sol": SOLANA, "solana": SOLANA,
-    "trx": TRON, "tron": TRON,
+    "arb": ARBITRUM,
+    "arbitrum": ARBITRUM,
+    "avax": AVALANCHE,
+    "avalanche": AVALANCHE,
+    "linea": LINEA,
+    "scroll": SCROLL,
+    "sepolia": SEPOLIA,
+    "btc": BITCOIN,
+    "bitcoin": BITCOIN,
+    "ltc": LITECOIN,
+    "litecoin": LITECOIN,
+    "sol": SOLANA,
+    "solana": SOLANA,
+    "trx": TRON,
+    "tron": TRON,
 }
 
 
@@ -136,6 +149,5 @@ def resolve(text: str) -> ChainId:
     if t.isdigit():
         return ChainId.evm(int(t))
     raise UnknownChainError(
-        f"unknown chain {text!r}; try a CAIP-2 id or one of: "
-        f"{', '.join(sorted(ALIASES))}"
+        f"unknown chain {text!r}; try a CAIP-2 id or one of: {', '.join(sorted(ALIASES))}"
     )

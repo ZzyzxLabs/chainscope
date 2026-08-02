@@ -78,8 +78,20 @@ class TestArithmetic:
             total([])
 
     def test_total_sums_exactly(self):
-        deposits = ["250", "210", "690", "750", "50", "784",
-                    "1000", "347", "1008", "850", "277", "1900"]
+        deposits = [
+            "250",
+            "210",
+            "690",
+            "750",
+            "50",
+            "784",
+            "1000",
+            "347",
+            "1008",
+            "850",
+            "277",
+            "1900",
+        ]
         got = total([Amount.parse(d, **ETH) for d in deposits])
         assert got.raw == 8116 * 10**18  # the real CH08-F03 answer, in wei
 
