@@ -95,6 +95,7 @@ common_funder = "chainscope.analysis.funding:CommonFunderAnalyzer"
 temporal = "chainscope.analysis.temporal:TemporalAnalyzer"
 probing = "chainscope.analysis.probing:ProbingAnalyzer"
 mixer = "chainscope.analysis.mixer:MixerAnalyzer"
+taint = "chainscope.analysis.taint:TaintAnalyzer"
 
 [project.entry-points."chainscope.stores"]
 sqlite = "chainscope.store.sqlite:SqliteStore"

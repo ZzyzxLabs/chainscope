@@ -42,6 +42,7 @@ from ..analysis.probing import (
     MIN_ESCALATION_STEPS,
     detect_probes,
 )
+from ..analysis.taint import TaintPolicy, trace_taint
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..store.base import Query
@@ -487,6 +488,70 @@ def build_server(config: ServerConfig) -> MCPServer:
                 "paced beyond what the store holds, leaves no run to find."
             )
         return result
+
+    @server.tool(
+        description=(
+            "Trace how much of each address's holdings came from a source "
+            "address, using the store. Answers 'how much of this balance is "
+            "stolen', which is different from 'is this reachable from the "
+            "theft' --- after a few hops almost everything is reachable. "
+            "Defaults to FIFO (Clayton's Case, 1816), the only rule of the "
+            "three that conserves the stolen amount. The reply separates "
+            "addresses that HOLD tainted value from those it merely passed "
+            "through; those are different claims."
+        )
+    )
+    def trace_stolen_funds(
+        source: str,
+        amount: str | None = None,
+        chain: str | None = None,
+        policy: str = "fifo",
+        limit: int = 5000,
+    ) -> dict[str, Any]:
+        if not source.strip():
+            raise AgentError("source address is required")
+        try:
+            rule = TaintPolicy(policy)
+        except ValueError as exc:
+            raise AgentError(
+                f"policy must be one of {', '.join(p.value for p in TaintPolicy)}"
+            ) from exc
+
+        capped = _cap(limit, config.max_rows)
+        store = _store()
+        try:
+            rows = list(store.transfers(Query(chain=_chain(chain), limit=capped)))
+        finally:
+            store.close()
+
+        seed = source.strip().lower()
+        try:
+            sources: Any = {seed: int(amount)} if amount else {seed}
+        except ValueError as exc:
+            raise AgentError(
+                f"amount is a raw integer string in the asset's smallest unit: {exc}"
+            ) from exc
+
+        result = trace_taint(rows, sources, policy=rule)
+        out = result.to_dict()
+        out["source"] = seed
+        out["transfers_examined"] = len(rows)
+        # Held and touched are reported separately on purpose, and named so an
+        # agent summarising this cannot merge them.
+        out["passed_through_but_holds_none"] = sorted(result.touched - set(result.tainted))
+        if len(rows) >= capped:
+            out["truncated"] = (
+                f"only {capped} transfers were read, and FIFO depends on arrival "
+                f"order --- a clipped window changes which funds paid for what, "
+                f"not merely how far the trace reached"
+            )
+        if rule is not TaintPolicy.FIFO:
+            out["policy_warning"] = (
+                "haircut loses value it cannot recover and poison invents value "
+                "never stolen. Only FIFO conserves the amount; the others are "
+                "here for comparison."
+            )
+        return out
 
     # ------------------------------------------------------------------ writing
 

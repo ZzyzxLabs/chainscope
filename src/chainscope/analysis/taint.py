@@ -66,10 +66,15 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-__all__ = ["Lot", "TaintPolicy", "TaintResult", "trace_taint"]
+from ..core.result import Finding, Result, Severity
+from ..providers.base import Capability
+from .base import Analyzer, Context
+
+__all__ = ["Lot", "TaintAnalyzer", "TaintPolicy", "TaintResult", "trace_taint"]
 
 
 class TaintPolicy(str, Enum):
@@ -310,3 +315,101 @@ def _receive(
             queue.append(Lot(amount, amount))
             return
     queue.append(Lot(amount, min(tainted, amount)))
+
+
+class TaintAnalyzer(Analyzer):
+    """Trace stolen value forward from a source address."""
+
+    name = "taint"
+    version = "1.0"
+    description = "Trace how much of each address's holdings came from a given source"
+
+    def applicable(self, ctx: Context) -> bool:
+        return bool(ctx.router.candidates(ctx.chain, Capability.ADDRESS_HISTORY))
+
+    def run(
+        self,
+        ctx: Context,
+        *,
+        source: str = "",
+        amount: str = "",
+        policy: str = TaintPolicy.FIFO.value,
+        start_block: int = 0,
+        end_block: int | str = "latest",
+        **_: Any,
+    ) -> Result:
+        started = datetime.now(timezone.utc)
+        if not source:
+            raise ValueError("taint tracing needs a `source` address to trace from")
+        try:
+            rule = TaintPolicy(policy)
+        except ValueError as exc:
+            raise ValueError(
+                f"policy must be one of {', '.join(p.value for p in TaintPolicy)}"
+            ) from exc
+
+        seed = source.lower()
+        per_node = ctx.limit("per_node", 1000)
+        history = ctx.router.dispatch(
+            ctx.chain,
+            Capability.ADDRESS_HISTORY,
+            lambda p: p.address_history(
+                ctx.chain, seed, start_block=start_block, end_block=end_block, limit=per_node
+            ),
+        )
+        transfers = [t for tx in history for t in tx.value_transfers()]
+
+        warnings: list[str] = []
+        if len(history) >= per_node:
+            # Taint is order-dependent, so a window that clips the start does
+            # not merely lose hops --- it changes which value funded which
+            # payment, and every downstream figure with it.
+            warnings.append(
+                f"history filled the {per_node}-row limit. FIFO depends on the "
+                f"order value arrived in, so a clipped window does not just "
+                f"lose hops: it changes which funds paid for what."
+            )
+        if rule is not TaintPolicy.FIFO:
+            warnings.append(
+                f"policy={rule.value} is implemented for comparison, not for use. "
+                f"Measured on one graph from 100 ETH stolen: haircut reports 86.4 "
+                f"(losing value it cannot recover) and poison 320.0 (inventing "
+                f"value never stolen). Only FIFO conserves the amount."
+            )
+
+        sources: dict[str, int] | set[str] = {seed: int(amount)} if amount else {seed}
+        result = trace_taint(transfers, sources, policy=rule)
+
+        findings = [
+            Finding(
+                title=f"{address} holds tainted value",
+                severity=Severity.NOTABLE,
+                detail=(
+                    f"{held} raw units traceable to {seed} under {rule.value}. "
+                    f"This is value held, not value that merely passed through."
+                ),
+                data={"address": address, "tainted_raw": str(held), "policy": rule.value},
+            )
+            for address, held in sorted(result.tainted.items(), key=lambda kv: -kv[1])
+        ]
+        if result.unresolved:
+            warnings.append(
+                f"{len(result.unresolved)} transfers spent from holdings that "
+                f"arrived before this window. They are not counted as clean --- "
+                f"clean is a claim about money nobody watched arrive."
+            )
+        passed_through = len(result.touched) - len(result.tainted)
+        if passed_through > 0:
+            warnings.append(
+                f"{passed_through} further addresses were touched but hold none "
+                f"now. Reporting those as holders is how a payment processor "
+                f"gets described as a launderer."
+            )
+
+        return self._result(
+            ctx,
+            findings=tuple(findings),
+            warnings=tuple(warnings),
+            params={"source": seed, "policy": rule.value},
+            started=started,
+        )
