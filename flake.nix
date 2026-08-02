@@ -24,11 +24,18 @@
           duckdb
           eth-utils
           eth-abi
+          # eth-utils delegates keccak to eth-hash, which ships no backend of
+          # its own. Declaring eth-utils alone installs cleanly and then fails
+          # at the first hash --- pyproject.toml pins the backend for the same
+          # reason, and the flake did not carry that across. The Nix job caught
+          # it, which is what the job is for.
+          eth-hash
+          pycryptodome
           base58
           rich
         ];
 
-        dev = ps: with ps; [ pytest hypothesis mypy ruff ];
+        dev = ps: with ps; [ pytest pytest-asyncio hypothesis mypy ruff ];
 
         chainscope = python.pkgs.buildPythonApplication {
           pname = "chainscope";

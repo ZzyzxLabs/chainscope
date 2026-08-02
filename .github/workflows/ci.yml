@@ -108,7 +108,7 @@ jobs:
       # and mounts a case directory, so uid 0 is a bad trade for nothing.
       - name: it does not run as root
         run: |
-          uid=$(docker run --rm --entrypoint id -u chainscope:ci)
+          uid=$(docker run --rm --entrypoint id chainscope:ci -u)
           test "$uid" != "0" || { echo "container runs as root"; exit 1; }
       # `doctor` exits non-zero when ADDRESS_HISTORY is unreachable, which is
       # the state of a fresh container with no key -- so the expected outcome
