@@ -70,11 +70,12 @@ v0.1 建置中。已完成:
 - [x] `core.units` —— `Amount` 精確整數運算,永不使用 float
 - [x] `core.chainid` —— CAIP-2 鏈識別
 - [x] `core.attribution` —— 來源、信心度、非破壞性合併
-- [x] `transport.cache` —— 內容定址快取,TTL 由 finality 推導
-- [ ] `transport.{throttle,audit,http}`
-- [ ] `providers` —— 以「能力」路由的資料源
-- [ ] `chains` —— EVM / Bitcoin / Solana / Tron 轉接器
+- [x] `transport` —— 內容定址快取、finality 推導 TTL、節流、稽核日誌
+- [x] `providers` —— 以「能力」路由的資料源,含失敗轉移
+- [x] `chains` —— EVM 與 Bitcoin 轉接器
+- [x] `attribution` —— OFAC、瀏覽器標籤、本地標註、衝突解析
 - [ ] `analysis` —— 歸集、跨鏈配對、剝離鏈、聚類
+- [ ] `cli` 與 renderers
 
 ## 擴充
 

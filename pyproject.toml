@@ -68,10 +68,14 @@ jsonrpc = "chainscope.providers.jsonrpc:JsonRpcProvider"
 
 [project.entry-points."chainscope.chains"]
 evm = "chainscope.chains.evm:EvmAdapter"
+bitcoin = "chainscope.chains.bitcoin:BitcoinAdapter"
 
 [project.entry-points."chainscope.analyzers"]
 
 [project.entry-points."chainscope.attribution_sources"]
+ofac = "chainscope.attribution.sources.ofac:OfacSource"
+explorer_nametags = "chainscope.attribution.sources.etherscan_dump:ExplorerDumpSource"
+local = "chainscope.attribution.sources.local:LocalSource"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chainscope"]

@@ -9,6 +9,23 @@ label came from and whether you are allowed to use it that way.
 
 ---
 
+## Shipped source adapters
+
+Each module under `src/chainscope/attribution/sources/` must appear here. CI
+fails the build otherwise --- see [CONTRIBUTING](../CONTRIBUTING.md).
+
+| Module | Adapter | Confidence ceiling | Redistributable |
+|---|---|---|---|
+| `ofac` | `OfacSource` | `CERTAIN` | Yes --- US government work |
+| `etherscan_dump` | `ExplorerDumpSource` | `HIGH` | No --- upstream terms apply |
+| `local` | `LocalSource` | `MEDIUM` | N/A --- your own data |
+
+The ceilings are enforced in code (`SourceMeta.max_confidence`), not merely
+documented. A community nametag dump cannot assert `CERTAIN` even if its adapter
+passes that value in.
+
+---
+
 ## Rule of thumb
 
 | If the label came from… | You may… | You must… |

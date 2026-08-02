@@ -222,8 +222,20 @@ class ResolvedEntity:
 
     @property
     def disputed(self) -> bool:
-        """True when sources of comparable strength assign different categories."""
-        strong = {c.category for c in self.all_claims if c.confidence >= Confidence.HIGH}
+        """True when sources of comparable strength contradict each other.
+
+        SANCTIONED is excluded from the comparison because it is an overlay, not
+        a service type: a mixer that is also on a sanctions list is described
+        correctly by both claims, and they are complementary rather than in
+        conflict. Counting that as a disagreement would fire a warning on nearly
+        every sanctioned entity --- and a warning that is usually wrong is one
+        people learn to ignore.
+        """
+        strong = {
+            c.category
+            for c in self.all_claims
+            if c.confidence >= Confidence.HIGH and c.category is not Category.SANCTIONED
+        }
         return len(strong) > 1
 
     def categories(self) -> frozenset[Category]:

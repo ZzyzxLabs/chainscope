@@ -71,10 +71,12 @@ v0.1 is being built. Implemented so far:
 - [x] `core.units` — exact `Amount` arithmetic, no floats, ever
 - [x] `core.chainid` — CAIP-2 chain identity
 - [x] `core.attribution` — provenance, confidence, non-destructive merge
-- [ ] `transport` — content-addressed cache, finality-derived TTL, audit log
-- [ ] `providers` — capability-routed data sources
-- [ ] `chains` — EVM / Bitcoin / Solana / Tron adapters
+- [x] `transport` — content-addressed cache, finality-derived TTL, throttling, audit log
+- [x] `providers` — capability-routed data sources with fallback
+- [x] `chains` — EVM and Bitcoin adapters
+- [x] `attribution` — OFAC, explorer nametags, local labels, conflict resolution
 - [ ] `analysis` — consolidation, cross-chain matching, peel chains, clustering
+- [ ] `cli` and renderers
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and roadmap.
 

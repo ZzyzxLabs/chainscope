@@ -207,6 +207,38 @@ class TestMerge:
         assert e.disputed
         assert "disagree" in str(e)
 
+    def test_sanctions_plus_service_type_is_not_a_disagreement(self):
+        """A mixer that is also sanctioned is described correctly by both.
+
+        Treating this as a conflict would warn on nearly every sanctioned
+        entity, and a warning that is usually wrong gets ignored.
+        """
+        e = merge(
+            [
+                Attribution(
+                    address=TORNADO_100,
+                    chain=ETHEREUM,
+                    label="Tornado.Cash: 100 ETH",
+                    category=Category.MIXER,
+                    confidence=Confidence.HIGH,
+                    method=Method.LABEL,
+                    source="etherscan-nametag",
+                ),
+                Attribution(
+                    address=TORNADO_100,
+                    chain=ETHEREUM,
+                    label="OFAC SDN",
+                    category=Category.SANCTIONED,
+                    confidence=Confidence.CERTAIN,
+                    method=Method.LIST,
+                    source="ofac-sdn@2026-08-01",
+                ),
+            ]
+        )
+        assert not e.disputed
+        assert e.is_sanctioned
+        assert Category.MIXER in e.categories()
+
     def test_weak_claims_do_not_create_a_dispute(self):
         e = merge(
             [

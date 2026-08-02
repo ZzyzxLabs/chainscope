@@ -91,8 +91,11 @@ class Throttle:
     def acquire(self, url: str) -> float:
         """Block until a request to ``url`` is permitted. Returns seconds waited."""
         host = self.host_of(url)
+        # _bucket() takes the lock itself; threading.Lock is not reentrant, so
+        # this must not be called while holding it.
+        bucket = self._bucket(host)
         with self._lock:
-            wait = self._bucket(host).take()
+            wait = bucket.take()
         if wait > 0:
             time.sleep(wait)
         return wait
