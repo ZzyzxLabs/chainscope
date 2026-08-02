@@ -270,11 +270,24 @@ def trace_taint(
 
         available = sum(lot.amount for lot in queue)
         if available < amount.raw:
-            # Sent more than we watched arrive. The shortfall is money whose
-            # origin is outside the window, and calling it clean would be a
-            # claim about it.
+            # Sent more than we watched arrive. Spend what we *did* watch and
+            # treat only the shortfall as unknown.
+            #
+            # Dropping the whole transfer instead lost the trail completely: an
+            # address that received ten tainted ETH and paid out eleven --- an
+            # ordinary situation, since it had a balance before the window ---
+            # passed zero taint downstream and kept all ten forever. The answer
+            # became "the money stopped here", which is not merely incomplete
+            # but the opposite of what happened.
+            #
+            # The shortfall stays uncounted rather than assumed clean, and the
+            # transfer is recorded in `unresolved` either way.
             result.unresolved.append(getattr(getattr(transfer, "tx", None), "hash", "") or dst)
-            _receive(bucket(dst, asset), amount.raw, 0, policy)
+            moved_taint = _spend(queue, available, policy) if available else 0
+            _receive(bucket(dst, asset), amount.raw, moved_taint, policy)
+            if moved_taint > 0:
+                result.touched.add(src)
+                result.touched.add(dst)
             continue
 
         moved_taint = _spend(queue, amount.raw, policy)

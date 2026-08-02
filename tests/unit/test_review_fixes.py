@@ -254,3 +254,41 @@ class TestAnonymitySetCountsThePoolNotTheBookkeeping:
         deposits, withdrawals = self._world()
         result = correlate_withdrawals(deposits, withdrawals)
         assert len({m.withdrawal.tx for m in result.matches}) == len(result.matches)
+
+
+class TestTaintSurvivesAnOverspend:
+    """An address that received ten tainted ETH and paid out eleven --- which is
+    ordinary, since it had a balance before the window --- passed *zero* taint
+    downstream and kept all ten forever. The trace answered "the money stopped
+    here", which is not incomplete but backwards."""
+
+    ROWS: ClassVar = (
+        move(THIEF, "0xa", 10 * ETH, 1),
+        move("0xa", "0xb", 11 * ETH, 2),
+    )
+
+    def test_the_taint_moves_on(self):
+        result = trace_taint(list(self.ROWS), {THIEF: 10 * ETH})
+        assert result.tainted.get("0xb") == 10 * ETH
+
+    def test_it_does_not_stay_parked(self):
+        result = trace_taint(list(self.ROWS), {THIEF: 10 * ETH})
+        assert "0xa" not in result.tainted
+
+    def test_the_shortfall_is_still_reported(self):
+        """The extra ETH came from outside the window and is not counted as
+        clean --- that would be a claim about money nobody watched arrive."""
+        result = trace_taint(list(self.ROWS), {THIEF: 10 * ETH})
+        assert result.unresolved
+
+    def test_conservation_still_holds(self):
+        result = trace_taint(list(self.ROWS), {THIEF: 10 * ETH})
+        assert result.total <= 10 * ETH
+
+    def test_an_ordinary_chain_is_unaffected(self):
+        rows = [
+            move(THIEF, "0xa", 10 * ETH, 1),
+            move("0xa", "0xb", 10 * ETH, 2),
+            move("0xb", "0xc", 10 * ETH, 3),
+        ]
+        assert trace_taint(rows, {THIEF: 10 * ETH}).tainted["0xc"] == 10 * ETH

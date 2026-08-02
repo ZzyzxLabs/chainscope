@@ -177,3 +177,50 @@ class TestKeying:
         result = run(router(FakeSource("a", ["x", "x", "y"]), FakeSource("b", ["x", "y"])))
         assert result.corroborated
         assert sorted(result.rows) == ["x", "y"]
+
+
+class TestItWalksPastFailures:
+    """`options[:2]` meant one failing provider left a single-source answer
+    even when a third could have corroborated it. Free public endpoints fail
+    constantly --- that is why the router falls back at all --- so two
+    *successes* is the target, not two attempts."""
+
+    def test_a_third_source_is_tried_when_the_first_fails(self):
+        result = run(
+            router(
+                FakeSource("bad", THIRTEEN, fails=True),
+                FakeSource("b", THIRTEEN),
+                FakeSource("c", THIRTEEN),
+            )
+        )
+        assert result.sources == ("b", "c")
+        assert result.corroborated
+
+    def test_it_stops_at_two_successes_rather_than_polling_everything(self):
+        """Corroboration is two independent readings, not a survey. Asking
+        every provider spends quota for no extra confidence."""
+        result = run(router(*(FakeSource(n, THIRTEEN) for n in ("a", "b", "c", "d"))))
+        assert result.sources == ("a", "b")
+
+    def test_an_adapter_bug_does_not_take_the_query_down(self):
+        """Same shape as dispatch: a parsing error in one provider's adapter
+        should not stop another from answering."""
+
+        class Broken(FakeSource):
+            def fetch(self):
+                raise KeyError("adapter bug")
+
+        result = run(router(Broken("broken", []), FakeSource("b", THIRTEEN)))
+        assert result.sources == ("b",)
+        assert any("KeyError" in f for f in result.failures)
+
+    def test_the_failure_type_is_recorded_not_flattened(self):
+        """An upstream refusal and a bug in our own parsing need different
+        responses, and a message that says only "failed" invites the wrong one."""
+
+        class Broken(FakeSource):
+            def fetch(self):
+                raise ValueError("bad shape")
+
+        result = run(router(Broken("broken", []), FakeSource("b", THIRTEEN)))
+        assert any("ValueError" in f for f in result.failures)

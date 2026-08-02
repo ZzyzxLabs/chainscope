@@ -208,11 +208,26 @@ class Router:
         by_source: dict[str, set[Hashable]] = {}
         failures: list[str] = []
 
-        for provider in options[:2]:
+        # Walk past a failure rather than stopping at the first two candidates.
+        #
+        # Truncating to options[:2] meant one failing provider left a
+        # single-source answer even when a third could have corroborated it ---
+        # and free public endpoints fail constantly, which is the reason the
+        # router falls back at all. Two *successes* is the target, not two
+        # attempts.
+        for provider in options:
+            if len(by_source) >= 2:
+                break
             try:
                 rows = list(call(provider))
             except ProviderError as exc:
                 failures.append(f"{provider.name}: {exc}")
+                continue
+            except Exception as exc:
+                # Same shape as dispatch: a parsing bug in one provider's
+                # adapter should not take down a query another can answer.
+                # Recorded by type so it is not mistaken for an upstream error.
+                failures.append(f"{provider.name}: {type(exc).__name__}: {exc}")
                 continue
             keys = set()
             for row in rows:
