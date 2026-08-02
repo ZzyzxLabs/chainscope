@@ -277,7 +277,31 @@ swaps agreeing on a discount to within 0.06 percentage points is far harder to
 explain by coincidence than any single pairing, and scattered discounts are
 reported as inconsistent rather than averaged into a plausible-looking number.
 
-All four techniques now have measured ground truth.
+### ENS names
+
+EIP-137 publishes namehash vectors, so the derivation is byte-exact or wrong.
+All three match.
+
+What the module refuses to do matters more than what it computes:
+
+| | |
+|---|---|
+| Forward-confirmed reverse record | `MEDIUM` — a self-declaration, nothing more |
+| Unconfirmed reverse record | `LOW`, with the asymmetry in the rationale |
+| Reverse record never checked forward | **no claim at all** |
+| Forward record alone | `LOW`, labelled as the *name owner's* claim |
+
+A name is never `HIGH`. Anybody can point a name at any address, so a forward
+record is a stranger's assertion; a reverse record requires a transaction from
+the key, which establishes intent and not identity. The resemblance between
+`uniswap.eth` and Uniswap is exactly what an impersonator is counting on.
+
+Normalisation is deliberately *not* UTS-46, and says so: the confusable
+characters that standard exists to handle are the whole mechanism behind ENS
+impersonation, so nothing here compares names for equality — only addresses,
+which have no such ambiguity.
+
+All five techniques now have measured ground truth.
 
 ## Open questions
 
