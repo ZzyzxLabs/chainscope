@@ -128,6 +128,25 @@ _FORBIDDEN = (
 _COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 _STRING = re.compile(r"'(?:[^']|'')*'")
 
+#: PRAGMA is two verbs wearing one name in DuckDB: it inspects, and it
+#: configures. Only the inspecting forms are admitted, by name, because the
+#: configuring ones take a value and the guard cannot tell a harmless setting
+#: from a consequential one by shape alone.
+_READ_PRAGMAS = frozenset(
+    {
+        "version",
+        "database_size",
+        "database_list",
+        "show_tables",
+        "show_tables_expanded",
+        "table_info",
+        "storage_info",
+        "collations",
+        "platform",
+        "user_agent",
+    }
+)
+
 
 def assert_read_only_sql(query: str) -> None:
     """Reject anything that writes, reaches outside the database, or chains.
@@ -142,16 +161,35 @@ def assert_read_only_sql(query: str) -> None:
     real control, and this exists so a mistake fails with an explanation rather
     than a DuckDB error about a permission the caller never knew existed.
     """
-    stripped = _STRING.sub("''", _COMMENT.sub(" ", query)).strip().lower()
+    # Strings first, then comments. The other order let a `--` *inside a string*
+    # swallow the rest of the line for this check while DuckDB saw the original
+    # text -- so `select '--' ; drop table transfers` passed here, DuckDB ran
+    # both statements, and the table was gone. Measured, not hypothesised.
+    #
+    # This direction is safe in the way the other was not: blanking a literal
+    # cannot create a comment marker, whereas removing a comment can expose or
+    # unbalance a quote.
+    stripped = _COMMENT.sub(" ", _STRING.sub("''", query)).strip().lower()
     if not stripped:
         raise UnsafeQuery("empty query")
 
-    # Multiple statements: only the first would be checked otherwise.
+    # Multiple statements: only the first would be checked otherwise, and
+    # DuckDB's execute() runs all of them with nothing to roll back to.
     if ";" in stripped.rstrip().rstrip(";"):
         raise UnsafeQuery(
             "one statement at a time. Chained statements are refused because "
             "only the first would be checked."
         )
+
+    if stripped.startswith("pragma"):
+        name = stripped[len("pragma") :].strip().split("(")[0].split("=")[0].strip()
+        if name not in _READ_PRAGMAS or "=" in stripped:
+            raise UnsafeQuery(
+                f"only inspecting pragmas are allowed ({', '.join(sorted(_READ_PRAGMAS))}). "
+                f"PRAGMA also sets configuration, and a query surface should not "
+                f"be able to reconfigure the engine it runs on."
+            )
+        return
 
     if not stripped.startswith(_ALLOWED_LEADS):
         raise UnsafeQuery(
