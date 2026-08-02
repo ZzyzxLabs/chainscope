@@ -24,8 +24,10 @@ the case directory. Saying which of the two is the whole value; a file called
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
+import sqlite3
 import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -45,8 +47,9 @@ def add_parser(sub: Any, name: str) -> None:
     p.add_argument(
         "--cache",
         type=Path,
-        default=Path(".chainscope/cache"),
-        help="the response cache to hash",
+        default=Path(".chainscope/cache.db"),
+        help="the response cache to hash. A SQLite file --- the same one "
+        "CHAINSCOPE_CACHE_DIR names, despite what it is called",
     )
     p.add_argument(
         "--audit",
@@ -98,30 +101,94 @@ def _queries(audit: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _cached_files(cache: Path) -> dict[str, Path]:
-    """Cache key to file, for whatever is on disk now."""
-    if not cache.is_dir():
-        return {}
-    return {p.stem: p for p in sorted(cache.rglob("*")) if p.is_file()}
+class NotACache(RuntimeError):
+    """The path given is not a response cache this can read."""
+
+
+def _responses(cache: Path) -> dict[str, dict[str, Any]]:
+    """Every cached response, keyed by cache key, hashed as stored.
+
+    The cache is a **SQLite file** with an `entries` table --- not a directory
+    of response files. This function scanned a directory, which meant it found
+    nothing against a real cache: zero responses hashed, every audited query
+    reported as having no cached response, and `--verify` structurally unable
+    to detect drift. The command was a no-op in its documented workflow, and it
+    passed its own tests because the fixture was built to match the assumption
+    rather than the interface.
+
+    Hence :class:`NotACache`: a path that is not a readable cache raises rather
+    than returning an empty dict. An attestation over nothing is worse than a
+    refusal, because it produces a file that looks like provenance.
+    """
+    if not cache.exists():
+        raise NotACache(f"no cache at {cache}")
+    if cache.is_dir():
+        raise NotACache(
+            f"{cache} is a directory. The response cache is a single SQLite "
+            f"file --- the setting is spelled CHAINSCOPE_CACHE_DIR but names a "
+            f"file, which is confusing and is not something this command can "
+            f"paper over."
+        )
+    try:
+        conn = sqlite3.connect(f"file:{cache}?mode=ro", uri=True)
+        rows = conn.execute("SELECT key, value FROM entries").fetchall()
+    except sqlite3.Error as exc:
+        raise NotACache(f"{cache} is not a readable response cache: {exc}") from None
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+    out: dict[str, dict[str, Any]] = {}
+    for key, value in rows:
+        # The stored bytes, not a parsed form --- the same reasoning as
+        # `digest_for`: a parser that changed how it renders a field would
+        # otherwise look like tampering.
+        raw = value.encode("utf-8") if isinstance(value, str) else bytes(value)
+        out[str(key)] = {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+    return out
 
 
 def run(args: argparse.Namespace, render: Renderer) -> int:
     queries = _queries(args.audit)
-    files = _cached_files(args.cache)
     unreadable = sum(1 for q in queries if "_unreadable" in q)
 
-    if not queries and not files:
+    try:
+        entries = _responses(args.cache)
+    except NotACache as exc:
+        if not args.cache.exists() and not queries:
+            # Cold start: neither exists, and the usual cause is that neither
+            # environment variable was set. Naming them is more use than
+            # naming the missing file.
+            print(
+                f"nothing to attest: no audit log at {args.audit} and no cache "
+                f"at {args.cache}.\nRun an analysis with CHAINSCOPE_AUDIT_LOG "
+                f"and CHAINSCOPE_CACHE_DIR set first.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"cannot attest: {exc}", file=sys.stderr)
+        return 2
+
+    if not queries and not entries:
         print(
-            f"nothing to attest: no audit log at {args.audit} and no cache at "
-            f"{args.cache}.\nRun an analysis with CHAINSCOPE_AUDIT_LOG and "
+            f"nothing to attest: no audit log at {args.audit} and no responses "
+            f"in {args.cache}.\nRun an analysis with CHAINSCOPE_AUDIT_LOG and "
             f"CHAINSCOPE_CACHE_DIR set first.",
             file=sys.stderr,
         )
         return 2
 
-    entries: dict[str, dict[str, Any]] = {}
-    for key, path in files.items():
-        entries[key] = {"sha256": digest_for(path), "bytes": path.stat().st_size}
+    if queries and not entries:
+        # The shape the directory-scanning bug produced. An attestation over
+        # zero responses is a file that looks like provenance and is not, so it
+        # is refused rather than written.
+        print(
+            f"{len(queries)} quer(ies) are recorded in {args.audit} and "
+            f"{args.cache} holds no responses.\nRefusing to write an "
+            f"attestation that binds nothing --- check the cache path.",
+            file=sys.stderr,
+        )
+        return 2
 
     # A query whose response is not in the cache is named. It is the ordinary
     # case for anything uncacheable, and it is also what a pruned cache looks

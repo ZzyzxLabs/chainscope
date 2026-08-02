@@ -6,6 +6,17 @@ number rests on these responses, and here is a hash of each*.
 
 Without that, "the tool said so" is the whole provenance, which is a claim
 about a claim.
+
+**The fixture writes a real `Cache`.** It used to build a directory of JSON
+files, because that is what the command assumed a cache was. The real one is a
+single SQLite file with an `entries` table, so the command found nothing
+against it: zero responses hashed, every query reported as uncached, and
+`--verify` structurally unable to detect drift. It was a no-op in its own
+documented workflow, and these tests passed the whole time --- because the
+fixture had been built to match the assumption instead of the interface.
+
+A fixture that agrees with the code about a shape neither has checked tests
+nothing. Everything below now goes through `chainscope.transport.cache.Cache`.
 """
 
 from __future__ import annotations
@@ -19,16 +30,25 @@ from chainscope.cli.main import main
 
 @pytest.fixture
 def case(tmp_path, monkeypatch):
-    cache = tmp_path / ".chainscope/cache"
-    cache.mkdir(parents=True)
-    (cache / "abc123.json").write_text('{"result":"0x1"}')
-    (cache / "def456.json").write_text('{"result":"0x2"}')
+    from chainscope.transport.cache import Cache, Volatility
+
+    (tmp_path / ".chainscope").mkdir(parents=True)
+    cache = Cache(tmp_path / ".chainscope/cache.db")
+    cache.put("abc123", {"result": "0x1"}, Volatility.SETTLED, provider="etherscan")
+    cache.put("def456", {"result": "0x2"}, Volatility.SETTLED, provider="rpc")
     (tmp_path / ".chainscope/audit.jsonl").write_text(
         '{"cache_key":"abc123","provider":"etherscan"}\n'
         '{"cache_key":"ghost","provider":"rpc"}\n'
     )
     monkeypatch.chdir(tmp_path)
     return tmp_path
+
+
+def _put(case, key, value):
+    """Write a response through the same class the tool writes through."""
+    from chainscope.transport.cache import Cache, Volatility
+
+    Cache(case / ".chainscope/cache.db").put(key, value, Volatility.SETTLED)
 
 
 class TestItRecordsWhatACaseRestsOn:
@@ -75,14 +95,19 @@ class TestVerifyCatchesDrift:
         that."""
         main(["attest"])
         capsys.readouterr()
-        (case / ".chainscope/cache/abc123.json").write_text('{"result":"0xTAMPERED"}')
+        _put(case, "abc123", {"result": "0xTAMPERED"})
         assert main(["attest", "--verify"]) == 1
         assert "CHANGED  abc123" in capsys.readouterr().out
 
     def test_a_deleted_response_is_reported_and_fails(self, case, capsys):
         main(["attest"])
         capsys.readouterr()
-        (case / ".chainscope/cache/abc123.json").unlink()
+        import sqlite3
+
+        conn = sqlite3.connect(case / ".chainscope/cache.db")
+        conn.execute("DELETE FROM entries WHERE key = 'abc123'")
+        conn.commit()
+        conn.close()
         assert main(["attest", "--verify"]) == 1
         assert "MISSING  abc123" in capsys.readouterr().out
 
@@ -90,7 +115,7 @@ class TestVerifyCatchesDrift:
         """Work continued. Reported so the count reconciles, not as drift."""
         main(["attest"])
         capsys.readouterr()
-        (case / ".chainscope/cache/new999.json").write_text("{}")
+        _put(case, "new999", {})
         assert main(["attest", "--verify"]) == 0
         assert "new      new999" in capsys.readouterr().out
 
@@ -108,16 +133,51 @@ class TestItRefusesWhereThereIsNothing:
         # Names the env vars, because the usual cause is that neither was set.
         assert "CHAINSCOPE_AUDIT_LOG" in err
 
-    def test_the_hash_is_of_the_bytes(self, case):
+    def test_a_cache_holding_nothing_is_refused_rather_than_attested(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The exact shape the directory-scanning bug produced.
+
+        An attestation over zero responses is a file that looks like provenance
+        and binds nothing --- worse than refusing, because somebody would ship
+        it. This is the check that would have caught the original defect.
+        """
+        from chainscope.transport.cache import Cache
+
+        (tmp_path / ".chainscope").mkdir()
+        Cache(tmp_path / ".chainscope/cache.db")._db()
+        (tmp_path / ".chainscope/audit.jsonl").write_text('{"cache_key":"q1"}\n')
+        monkeypatch.chdir(tmp_path)
+
+        assert main(["attest"]) == 2
+        assert "binds nothing" in capsys.readouterr().err
+        assert not (tmp_path / ".chainscope/attestation.json").exists()
+
+    def test_a_directory_is_refused_with_the_reason(self, case, capsys):
+        # What this command used to assume a cache was. Saying so beats
+        # returning zero entries and calling it an attestation.
+        assert main(["attest", "--cache", ".chainscope"]) == 2
+        assert "is a directory" in capsys.readouterr().err
+
+    def test_the_hash_is_of_the_stored_bytes(self, case):
         """Not of a parsed form: a parser that changed how it renders a field
         would otherwise look like tampering, and a real change the parser
         normalises away would not show up at all."""
         import hashlib
+        import json as _json
+        import sqlite3
 
-        from chainscope.cli.commands.attest import digest_for
+        from chainscope.cli.commands.attest import _responses
 
-        path = case / ".chainscope/cache/abc123.json"
-        assert digest_for(path) == hashlib.sha256(path.read_bytes()).hexdigest()
+        conn = sqlite3.connect(case / ".chainscope/cache.db")
+        stored = conn.execute("SELECT value FROM entries WHERE key = 'abc123'").fetchone()[0]
+        conn.close()
+
+        got = _responses(case / ".chainscope/cache.db")["abc123"]
+        assert got["sha256"] == hashlib.sha256(stored.encode()).hexdigest()
+        # And it really is what the cache stored, not something re-serialised
+        # on the way through.
+        assert _json.loads(stored) == {"result": "0x1"}
 
 
 class TestCompare:

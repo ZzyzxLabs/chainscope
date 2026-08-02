@@ -259,6 +259,25 @@ address, and through what --- is composable from the taint and graph code that
 already exists, and would need saying loudly that it is a heuristic, because a
 number between 0 and 100 invites being read as a measurement.
 
+**Defensibility.** *Shipped, then found broken by an external review.* `attest`
+scanned a **directory** of response files. The cache is a single SQLite file
+with an `entries` table, so against a real cache it hashed zero responses,
+reported every recorded query as uncached, and `--verify` was structurally
+unable to detect drift. The command was a no-op in the workflow its own
+docstring described.
+
+Its tests passed throughout, because the fixture built a directory of JSON
+files --- it had been written to match the assumption rather than the
+interface. *Observed:* **a fixture that agrees with the code about a shape
+neither has checked tests nothing.** This is the fourth time this project has
+hit an assertion against an assumed interface, and the first time it survived
+into shipped behaviour rather than being caught by a failing test.
+
+Now: it reads the `entries` table, and it **refuses** rather than writing an
+attestation over zero responses --- a file that looks like provenance and binds
+nothing is worse than no file, because somebody would ship it. That refusal is
+the check that would have caught the original defect.
+
 **Reporting.** *Shipped.* `chainscope note` is the case narrative that did not
 exist at all --- rationale attached to a claim and nothing attached to the
 investigation. It is append-only, four kinds, and each note carries its author
