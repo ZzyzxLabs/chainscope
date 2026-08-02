@@ -50,6 +50,17 @@ MAX_RECORDS = 10_000
 
 _NO_DATA = ("no transactions found", "no records found", "no internal transactions found")
 
+#: Stand-in for "the chain tip". Etherscan documents `endblock` as an integer,
+#: so "latest" cannot be passed through. The common idiom is 99,999,999 --- but
+#: BSC produces a block every three seconds and would reach that around 2030,
+#: at which point queries would silently start missing recent history. A billion
+#: buys roughly a century even at that rate.
+END_OF_CHAIN = 999_999_999
+
+
+def _end_block(value: int | str) -> int:
+    return END_OF_CHAIN if value == "latest" else int(value)
+
 
 class ResultTruncated(ProviderError):
     """The API returned its maximum and there is certainly more.
@@ -155,22 +166,29 @@ class EtherscanProvider(ReadOnlyProvider):
     def _paged(
         self, chain: ChainId, module: str, action: str, *, limit: int, **params: Any
     ) -> list[dict[str, Any]]:
+        # Compare against what was actually requested, not just the API cap. A
+        # caller asking for 1000 and receiving exactly 1000 is truncated too,
+        # and checking only MAX_RECORDS lets that pass silently -- which is the
+        # failure mode this class exists to make impossible.
+        effective = min(limit, MAX_RECORDS)
         rows = self._get(
             chain,
             module,
             action,
             page=1,
-            offset=min(limit, MAX_RECORDS),
+            offset=effective,
             sort="asc",
             **params,
         )
         if not isinstance(rows, list):
             raise ProviderError(f"{action}: expected a list of records")
-        if len(rows) >= MAX_RECORDS:
+        if len(rows) >= effective:
+            cap = " (the API maximum)" if effective >= MAX_RECORDS else ""
             raise ResultTruncated(
-                f"{action} returned the API maximum of {MAX_RECORDS} records. "
-                f"There is more data. Narrow the block range and query again; "
-                f"any total from this set is a lower bound."
+                f"{action} returned {effective} records, exactly the number "
+                f"requested{cap}. There is almost certainly more. Narrow the "
+                f"block range and query again; any total from this set is a "
+                f"lower bound."
             )
         return rows
 
@@ -205,7 +223,7 @@ class EtherscanProvider(ReadOnlyProvider):
             limit=limit,
             address=address,
             startblock=start_block,
-            endblock=99_999_999 if end_block == "latest" else end_block,
+            endblock=_end_block(end_block),
         )
         return [
             Transaction(
@@ -242,7 +260,7 @@ class EtherscanProvider(ReadOnlyProvider):
         them --- and they are exactly where swap proceeds and withdrawal payouts
         live.
         """
-        end = 99_999_999 if end_block == "latest" else end_block
+        end = _end_block(end_block)
         start = 0 if start_block == "latest" else int(start_block)
         out: list[Transfer] = []
 

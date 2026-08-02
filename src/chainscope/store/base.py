@@ -86,6 +86,9 @@ class Query:
                 ("max", self.max_amount),
                 ("after", self.after),
                 ("before", self.before),
+                ("min_block", self.min_block),
+                ("max_block", self.max_block),
+                ("kinds", ",".join(self.kinds) or None),
             )
             if v is not None
         ]

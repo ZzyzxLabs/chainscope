@@ -11,6 +11,7 @@ import pytest
 from chainscope.core.chainid import BITCOIN, BSC, ETHEREUM
 from chainscope.providers.base import Capability, ProviderError
 from chainscope.providers.etherscan import (
+    END_OF_CHAIN,
     MAX_RECORDS,
     EtherscanProvider,
     ResultTruncated,
@@ -133,6 +134,25 @@ class TestResponseShapes:
         with pytest.raises(ResultTruncated, match="lower bound"):
             p.address_history(ETHEREUM, ADDR)
 
+    def test_filling_the_requested_limit_also_counts_as_truncated(self):
+        """A caller asking for 5 and receiving 5 is truncated too.
+
+        Checking only against the API cap lets this pass silently, which is the
+        failure mode ResultTruncated exists to make impossible.
+        """
+        p = provider({"txlist": {"status": "1", "result": [tx_row()] * 5}})
+        with pytest.raises(ResultTruncated, match="exactly the number requested"):
+            p.address_history(ETHEREUM, ADDR, limit=5)
+
+    def test_under_the_limit_is_complete(self):
+        p = provider({"txlist": {"status": "1", "result": [tx_row()] * 3}})
+        assert len(p.address_history(ETHEREUM, ADDR, limit=5)) == 3
+
+    def test_api_cap_message_says_so(self):
+        p = provider({"txlist": {"status": "1", "result": [tx_row()] * MAX_RECORDS}})
+        with pytest.raises(ResultTruncated, match="API maximum"):
+            p.address_history(ETHEREUM, ADDR, limit=MAX_RECORDS)
+
     def test_truncation_is_a_distinct_type(self):
         """Callers handle 'incomplete but usable' differently from 'failed'."""
         assert issubclass(ResultTruncated, ProviderError)
@@ -160,9 +180,13 @@ class TestAddressHistory:
         assert not tx.success
 
     def test_latest_becomes_a_concrete_end_block(self):
+        """Etherscan documents endblock as an integer, so "latest" cannot pass
+        through. The sentinel must also outlast fast chains: BSC at three
+        seconds a block would reach the common 99,999,999 idiom around 2030."""
         p = provider({"txlist": {"status": "1", "result": []}})
         p.address_history(ETHEREUM, ADDR, end_block="latest")
-        assert p.client.calls[0]["endblock"] == 99_999_999
+        assert p.client.calls[0]["endblock"] == END_OF_CHAIN
+        assert END_OF_CHAIN > 500_000_000
 
 
 class TestAssetTransfers:

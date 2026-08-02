@@ -16,14 +16,10 @@
 language: en-US
 
 tone_instructions: >
-  Be direct and specific. Point at the line and say what is wrong and why it
-  matters. Skip praise, skip preamble, skip restating the diff.
+  Be direct. Point at the line, say what is wrong and why it matters. No praise,
+  no preamble. This project's output reaches journalism and litigation: when a
+  change affects how confidently a conclusion is presented, say so plainly.
 
-  This project produces output that reaches journalism and litigation. When a
-  change affects how confidently a conclusion is presented, say so plainly --
-  that is more important than style.
-
-  If a change looks fine, say nothing about it.
 
 early_access: false
 

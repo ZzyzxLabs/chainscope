@@ -28,7 +28,7 @@ subtly wrong, and near-identical in every project of this kind:
 | Label addresses | Multi-source resolver that merges conflicts without hiding them |
 | Store and query it | Rebuildable SQLite store with typed filters |
 | Analyse it | An `Analyzer` protocol; four techniques ship as working references |
-| Alert on it | Watches as pure functions of a block range — no daemon to run |
+| Alert on it | *(planned)* Watches as pure functions of a block range — no daemon to run |
 | Report it | Terminal, Markdown, JSON — all preserving confidence |
 | Prove it | Case bundles anyone can replay offline |
 

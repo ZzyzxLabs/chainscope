@@ -21,7 +21,7 @@
 | 標註地址 | 多來源解析器,合併衝突但不隱藏衝突 |
 | 儲存與查詢 | 可重建的 SQLite store,附型別化過濾 |
 | 分析 | `Analyzer` 協定;四個技術作為可運作的參考實作 |
-| 警報 | Watch 是區塊範圍的純函式 —— 不用跑 daemon |
+| 警報 | *(規劃中)* Watch 是區塊範圍的純函式 —— 不用跑 daemon |
 | 產出報告 | 終端機、Markdown、JSON —— 全都保留信心度 |
 | 舉證 | 任何人都能離線重播的 case bundle |
 
@@ -121,7 +121,7 @@ SPECULATIVE  單一巧合
 
 ```bash
 pip install chainscope            # 核心
-pip install "chainscope[all]"     # + EVM、Bitcoin、Solana、美化輸出
+pip install "chainscope[all]"     # + EVM、Bitcoin、Solana、Tron、美化輸出
 ```
 
 ## 目前進度
@@ -138,26 +138,21 @@ v0.1 建置中。已完成:
 - [x] `analysis` —— 歸集、跨鏈配對、剝離鏈、共同輸入聚類
 - [x] `cli` 與 renderers —— 終端機、Markdown、JSON
 - [x] `case` —— 可離線重播的案件包
-- [x] `store` —— 實體儲存 + 型別化過濾,可從 cache 完整重建
-
-**尚未完成**(設計已寫在 ARCHITECTURE,程式碼還沒有):
-
-- [ ] **explorer 等級的 provider** —— `ADDRESS_HISTORY` 沒有任何實作,所以「列出某地址的交易」目前無法達成,**內建分析器也因此無法端到端運行**。這是接下來要做的;在它落地之前,那些分析器是參考實作而不是工具
-- [ ] 錄製的 cassette —— provider 抽象尚未見過真實 API 回應,介面形狀未經驗證
-- [ ] 標註來源的 fetcher —— 目前只讀你自己準備的本地檔案
+- [x] `store` —— 實體儲存 + 型別化過濾,可從 cache 完整重建([§4.8](ARCHITECTURE.md))
+- [x] `providers.etherscan` —— explorer 等級的 `ADDRESS_HISTORY` 與 `ASSET_TRANSFERS`,一把 key 通吃 60+ 條 EVM 鏈。**這是讓內建分析器能端到端運行的關鍵**
 
 **已設計、尚未實作。** 理由先寫下來是刻意的:這幾項一旦有人依賴就很難反悔。
 
-- [ ] `store` —— 實體儲存層,可從快取重建([§4.8](ARCHITECTURE.md))
-- [ ] explorer 等級的 provider —— `ADDRESS_HISTORY` 目前**沒有任何實作**,所以「列出某地址的交易」現在做不到
+- [ ] 錄製的 cassette —— provider 抽象尚未見過真實 API 回應,介面形狀未經驗證
+- [ ] 標註來源的 fetcher —— 目前只讀你自己準備的本地檔案
 - [ ] `watch` —— 對區塊範圍求值的 `evaluate()`([§4.10](ARCHITECTURE.md))
-- [ ] 插件協定版本化與穩定度分級([§4.11](ARCHITECTURE.md))
+- [ ] 外掛協定版本化與穩定度分級([§4.11](ARCHITECTURE.md))
 - [ ] `analyze --bundle` —— 一行指令重播;目前只能用 `Bundle.replay_cache()`
 - [ ] 圖匯出、本機唯讀 API
 
 ## 擴充
 
-新增一條鏈、一個資料源、一個分析器或一個標註來源,**應該只需要一個檔案加一份測試 cassette**。這是這套架構被檢驗的標準。全部透過 entry points 註冊,不需要改動核心:
+新增一條鏈、provider、**store 後端**、分析器或標註來源,**應該只需要一個檔案加一份測試 cassette,而且不需要 fork 這個 repo**。這是這套架構被檢驗的標準。全部透過 entry points 註冊,不需要改動核心:
 
 ```toml
 [project.entry-points."chainscope.analyzers"]

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,7 +135,9 @@ def _ts(dt: datetime | None) -> int | None:
 
 
 def _dt(value: int | None) -> datetime | None:
-    return datetime.fromtimestamp(value, tz=timezone.utc) if value else None
+    # `is not None`, not truthiness: timestamp 0 is the Unix epoch, a real
+    # instant, and 1970 block data exists in test fixtures and some testnets.
+    return datetime.fromtimestamp(value, tz=timezone.utc) if value is not None else None
 
 
 class SqliteStore(Store):
@@ -253,13 +255,29 @@ class SqliteStore(Store):
             self._conn.commit()
 
     def is_expanded(self, address: str, chain: ChainId) -> bool:
-        return (
-            self._conn.execute(
+        return bool(
+            self._fetch(
                 "SELECT 1 FROM expanded WHERE address = ? AND chain = ?",
                 (address.lower(), str(chain)),
-            ).fetchone()
-            is not None
+            )
         )
+
+    # ---------------------------------------------------------------- access
+
+    def _fetch(self, sql: str, params: Sequence[object] = ()) -> list[sqlite3.Row]:
+        """Run a read under the connection lock and materialise the rows.
+
+        Materialising inside the lock, rather than returning a cursor, is the
+        point. `transfers()` is a generator, and holding the lock across a yield
+        would keep it held for as long as the *caller* takes to process each row
+        --- so one slow consumer would serialise every other thread's reads. It
+        also means `close()` cannot land mid-iteration.
+
+        Rows are bounded by the query's own LIMIT or by one address's transfer
+        count, so materialising is proportionate.
+        """
+        with self._lock:
+            return self._conn.execute(sql, tuple(params)).fetchall()
 
     # ---------------------------------------------------------------- reading
 
@@ -314,19 +332,16 @@ class SqliteStore(Store):
             "block": "block ASC",
             "time": "timestamp ASC",
         }.get(query.order, "timestamp ASC")
-        rows = self._conn.execute(
+        for row in self._fetch(
             f"SELECT * FROM transfers WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
             [*params, query.limit, query.offset],
-        )
-        for row in rows:
+        ):
             yield self._to_transfer(row)
 
     def count(self, query: Query) -> int:
         where, params = self._where(query)
-        row = self._conn.execute(
-            f"SELECT COUNT(*) AS n FROM transfers WHERE {where}", params
-        ).fetchone()
-        return int(row["n"])
+        rows = self._fetch(f"SELECT COUNT(*) AS n FROM transfers WHERE {where}", params)
+        return int(rows[0]["n"])
 
     def edges(
         self,
@@ -348,11 +363,11 @@ class SqliteStore(Store):
         into memory is proportionate.
         """
         side, other = ("sender", "recipient") if direction == "out" else ("recipient", "sender")
-        rows = self._conn.execute(
+        rows = self._fetch(
             f"SELECT sender, recipient, asset, amount_raw, timestamp "
             f"FROM transfers WHERE chain = ? AND {side} = ?",
             (str(chain), address.lower()),
-        ).fetchall()
+        )
 
         buckets: dict[tuple[str | None, str | None], _Bucket] = {}
         for r in rows:
@@ -380,7 +395,7 @@ class SqliteStore(Store):
         return out
 
     def attributions(self, address: str) -> list[Attribution]:
-        rows = self._conn.execute(
+        rows = self._fetch(
             "SELECT * FROM attributions WHERE address = ? ORDER BY confidence DESC",
             (address.lower(),),
         )
@@ -400,7 +415,7 @@ class SqliteStore(Store):
         ]
 
     def frontier(self, chain: ChainId) -> list[str]:
-        rows = self._conn.execute(
+        rows = self._fetch(
             "SELECT DISTINCT a FROM ("
             "  SELECT sender AS a FROM transfers WHERE chain = ? AND sender IS NOT NULL"
             "  UNION SELECT recipient FROM transfers WHERE chain = ? AND recipient IS NOT NULL"
@@ -431,18 +446,17 @@ class SqliteStore(Store):
     # ---------------------------------------------------------------- lifecycle
 
     def stats(self) -> StoreStats:
-        c = self._conn
         return StoreStats(
-            transfers=int(c.execute("SELECT COUNT(*) n FROM transfers").fetchone()["n"]),
+            transfers=int(self._fetch("SELECT COUNT(*) n FROM transfers")[0]["n"]),
             addresses=int(
-                c.execute(
+                self._fetch(
                     "SELECT COUNT(DISTINCT a) n FROM ("
                     "  SELECT sender a FROM transfers UNION SELECT recipient FROM transfers"
                     ") WHERE a IS NOT NULL"
-                ).fetchone()["n"]
+                )[0]["n"]
             ),
-            attributions=int(c.execute("SELECT COUNT(*) n FROM attributions").fetchone()["n"]),
-            chains=[r["chain"] for r in c.execute("SELECT DISTINCT chain FROM transfers")],
+            attributions=int(self._fetch("SELECT COUNT(*) n FROM attributions")[0]["n"]),
+            chains=[r["chain"] for r in self._fetch("SELECT DISTINCT chain FROM transfers")],
             bytes=self.path.stat().st_size if self.path and self.path.exists() else 0,
         )
 
@@ -453,4 +467,5 @@ class SqliteStore(Store):
             self._conn.commit()
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
