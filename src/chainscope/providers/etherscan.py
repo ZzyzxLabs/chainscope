@@ -91,6 +91,16 @@ def is_cacheable(body: Any) -> bool:
     return any(n in str(body.get("message", "")).lower() for n in _NO_DATA)
 
 
+def _hex(value: Any) -> int | None:
+    """A hex-or-decimal quantity from a proxy response, or ``None``."""
+    if value in (None, "", "0x"):
+        return None
+    try:
+        return int(str(value), 0)
+    except (TypeError, ValueError):
+        return None
+
+
 def _row_index(action: str, row: dict[str, Any]) -> int:
     """What separates two movements inside one transaction.
 
@@ -455,6 +465,63 @@ class EtherscanProvider(ReadOnlyProvider):
             balance=Amount(int(balance or 0), 18, self.native_symbol),
             tx_count=int(str(nonce_hex), 16) if nonce_hex else None,
             is_contract=bool(code and code not in ("0x", "")),
+        )
+
+    def get_transaction(self, chain: ChainId, tx_hash: str) -> Transaction:
+        """One transaction by hash, through the proxy module.
+
+        The class declared `Capability.TRANSACTION` and inherited the base
+        implementation, which refuses --- so the router, which reads the
+        declaration, picked the primary EVM provider for every transaction
+        lookup and got "etherscan does not provide transactions". The mixer
+        resolves its deposit hashes through this capability; the same
+        declaration-without-implementation was fixed in the Sui and Blockscout
+        providers already, and this is the third.
+
+        `Capability`'s own docstring: "Overstating is worse than omitting: the
+        router will select you, the call returns partial data, and an analyzer
+        draws a conclusion from an incomplete picture."
+
+        The receipt is fetched too, because `success` cannot be read from the
+        transaction alone --- and a failed transaction counted as a movement is
+        how a trace follows money that never went anywhere.
+        """
+        raw = self._get(
+            chain,
+            "proxy",
+            "eth_getTransactionByHash",
+            volatility=Volatility.SETTLED,
+            txhash=tx_hash,
+        )
+        if not isinstance(raw, dict) or not raw.get("hash"):
+            raise ProviderError(f"no transaction {tx_hash} on {chain}")
+
+        receipt = self._get(
+            chain,
+            "proxy",
+            "eth_getTransactionReceipt",
+            volatility=Volatility.SETTLED,
+            txhash=tx_hash,
+        )
+        receipt = receipt if isinstance(receipt, dict) else {}
+
+        gas_used = _hex(receipt.get("gasUsed"))
+        gas_price = _hex(raw.get("gasPrice"))
+        block = _hex(raw.get("blockNumber"))
+        return Transaction(
+            ref=TxRef(chain, str(raw["hash"]).lower()),
+            sender=self._addr(chain, raw.get("from")),
+            recipient=self._addr(chain, raw.get("to")),
+            value=Amount(_hex(raw.get("value")) or 0, 18, self.native_symbol),
+            # Not available from this endpoint. Left as None rather than filled
+            # with "now", which would date a settled transaction to the moment
+            # it was looked up.
+            timestamp=None,
+            block=block or None,
+            success=_hex(receipt.get("status")) == 1 if receipt else True,
+            fee=Amount((gas_used or 0) * (gas_price or 0), 18, self.native_symbol),
+            nonce=_hex(raw.get("nonce")),
+            input_data=str(raw.get("input") or ""),
         )
 
     def contract_source(self, chain: ChainId, address: str) -> dict[str, Any]:

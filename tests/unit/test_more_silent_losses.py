@@ -9,6 +9,8 @@ import pathlib
 import tempfile
 from decimal import Decimal
 
+import pytest
+
 from chainscope.core.chainid import ETHEREUM
 from chainscope.core.models import Address, Transfer, TransferKind, TxRef
 from chainscope.core.units import Amount
@@ -603,3 +605,94 @@ class TestAProbeReportsItsOwnBlockRange:
         from chainscope.analysis.probing import _longest_increasing_run
 
         assert _longest_increasing_run([]) == ([], 0)
+
+
+class TestEtherscanKeepsItsCapabilityPromise:
+    """It declared `TRANSACTION` and inherited the refusal.
+
+    The router reads the declaration, so it picked the primary EVM provider for
+    every transaction lookup and got "etherscan does not provide transactions".
+    The mixer resolves its deposit hashes through this capability. The same
+    declaration-without-implementation was fixed in the Sui and Blockscout
+    providers already --- this was the third.
+
+    `Capability`'s docstring: "Overstating is worse than omitting: the router
+    will select you, the call returns partial data, and an analyzer draws a
+    conclusion from an incomplete picture."
+    """
+
+    class Fake:
+        def get(self, url, params, **kw):
+            if params["action"] == "eth_getTransactionByHash":
+                return {
+                    "status": "1",
+                    "result": {
+                        "hash": "0x" + "1" * 64,
+                        "from": "0x" + "a" * 40,
+                        "to": "0x" + "b" * 40,
+                        "value": "0xde0b6b3a7640000",
+                        "blockNumber": "0x1312d00",
+                        "gasPrice": "0x3b9aca00",
+                        "nonce": "0x5",
+                        "input": "0x",
+                    },
+                }
+            return {"status": "1", "result": {"gasUsed": "0x5208", "status": "0x1"}}
+
+    def _provider(self):
+        from chainscope.providers.etherscan import EtherscanProvider
+
+        return EtherscanProvider(api_key="x", client=self.Fake())
+
+    def test_the_declared_capability_actually_works(self) -> None:
+        from chainscope.providers.base import Capability
+
+        provider = self._provider()
+        assert provider.supports(ETHEREUM, Capability.TRANSACTION)
+        assert provider.get_transaction(ETHEREUM, "0x" + "1" * 64).block == 20_000_000
+
+    def test_amounts_survive_the_hex(self) -> None:
+        from decimal import Decimal
+
+        found = self._provider().get_transaction(ETHEREUM, "0x" + "1" * 64)
+        assert found.value.decimal == Decimal(1)
+        # 21000 gas at 1 gwei.
+        assert found.fee.decimal == Decimal("0.000021")
+
+    def test_a_failed_transaction_is_not_reported_as_a_movement(self) -> None:
+        """`success` cannot be read from the transaction alone.
+
+        A failed transaction counted as a movement is how a trace follows money
+        that never went anywhere, so the receipt is fetched too.
+        """
+        from chainscope.providers.etherscan import EtherscanProvider
+
+        class Reverted(self.Fake):
+            def get(self, url, params, **kw):
+                out = super().get(url, params, **kw)
+                if params["action"] == "eth_getTransactionReceipt":
+                    out["result"]["status"] = "0x0"
+                return out
+
+        found = EtherscanProvider(api_key="x", client=Reverted()).get_transaction(
+            ETHEREUM, "0x" + "1" * 64
+        )
+        assert found.success is False
+
+    def test_a_missing_transaction_is_refused(self) -> None:
+        from chainscope.providers.base import ProviderError
+        from chainscope.providers.etherscan import EtherscanProvider
+
+        class Nothing:
+            def get(self, url, params, **kw):
+                return {"status": "1", "result": None}
+
+        with pytest.raises(ProviderError, match="no transaction"):
+            EtherscanProvider(api_key="x", client=Nothing()).get_transaction(
+                ETHEREUM, "0x" + "1" * 64
+            )
+
+    def test_the_timestamp_is_not_invented(self) -> None:
+        # This endpoint does not carry one. Filling it with "now" would date a
+        # settled transaction to the moment it was looked up.
+        assert self._provider().get_transaction(ETHEREUM, "0x" + "1" * 64).timestamp is None
