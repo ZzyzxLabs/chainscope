@@ -367,3 +367,110 @@ class TestEveryTopicPairGetsAnOperator:
     def test_one_topic_needs_no_operator(self) -> None:
         params = self._params(["0xa"])
         assert not any(k.endswith("_opr") for k in params)
+
+
+class TestAFailedBuildPublishesNothing:
+    """A partial analytics view is the worst possible artefact.
+
+    `self._conn` was assigned inside `finally`, so a build that died partway
+    left a live view answering from half a dataset --- measured: transfers
+    copied, attributions raised, and the view then reported ten transfers and
+    no attributions as though that were the store. Every query afterwards is
+    quietly answered from a subset.
+    """
+
+    def _seeded(self, tmp_path):
+        path = tmp_path / "store.db"
+        store = SqliteStore(path)
+        try:
+            store.put_transfers(
+                [
+                    Transfer(
+                        chain=ETHEREUM,
+                        tx=TxRef(ETHEREUM, f"0x{i:064x}"),
+                        sender=A,
+                        recipient=B,
+                        amount=Amount(1, 18, "ETH"),
+                        kind=TransferKind.NATIVE,
+                        index=i,
+                        block=i,
+                    )
+                    for i in range(10)
+                ]
+            )
+        finally:
+            store.close()
+        return path
+
+    def test_an_in_memory_view_is_not_published(self, tmp_path, monkeypatch) -> None:
+        import pytest
+
+        pytest.importorskip("duckdb")
+        from chainscope.store.analytics import AnalyticsView
+
+        def boom(self, conn, src, batch):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(AnalyticsView, "_copy_attributions", boom)
+        view = AnalyticsView(":memory:")
+        with pytest.raises(RuntimeError, match="disk full"):
+            view.build_from_sqlite(self._seeded(tmp_path))
+        assert view._conn is None
+
+    def test_a_partial_file_is_removed(self, tmp_path, monkeypatch) -> None:
+        import pytest
+
+        pytest.importorskip("duckdb")
+        from chainscope.store.analytics import AnalyticsView
+
+        def boom(self, conn, src, batch):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(AnalyticsView, "_copy_attributions", boom)
+        target = tmp_path / "view.duckdb"
+        with pytest.raises(RuntimeError, match="disk full"):
+            AnalyticsView(target).build_from_sqlite(self._seeded(tmp_path))
+        # Left behind, a later connect() would open it as if it were valid.
+        assert not target.exists()
+
+    def test_a_clean_build_still_publishes(self, tmp_path) -> None:
+        import pytest
+
+        pytest.importorskip("duckdb")
+        from chainscope.store.analytics import AnalyticsView
+
+        view = AnalyticsView(":memory:")
+        view.build_from_sqlite(self._seeded(tmp_path))
+        assert view.sql("SELECT COUNT(*) FROM transfers") == [(10,)]
+
+
+class TestTwoRowsThatDisagreeAreNotDuplicates:
+    def _plan(self, tmp_path, rows: str):
+        from chainscope.attribution.ingest import plan_import
+
+        path = tmp_path / "labels.csv"
+        path.write_text("address,label,category,confidence\n" + rows)
+        return plan_import(path, source="team")
+
+    def test_a_different_category_is_a_conflict(self, tmp_path) -> None:
+        """One file calling an address `cex` on one row and `service` on the next.
+
+        The dedup key was (address, label, chain) --- no category --- so the
+        second row was counted as a duplicate and the disagreement vanished.
+        This module surfaces a clash with the *store* as a Conflict; a clash
+        inside the file is the same fact about somebody's spreadsheet.
+        """
+        plan = self._plan(tmp_path, "0xaaa,Binance,cex,high\n0xaaa,Binance,service,high\n")
+        assert len(plan.conflicts) == 1
+        assert plan.duplicates == 0
+
+    def test_a_genuine_duplicate_is_still_a_duplicate(self, tmp_path) -> None:
+        plan = self._plan(tmp_path, "0xbbb,Kraken,cex,high\n0xbbb,Kraken,cex,high\n")
+        assert plan.duplicates == 1
+        assert plan.conflicts == []
+
+    def test_only_the_first_of_a_disagreeing_pair_is_written(self, tmp_path) -> None:
+        # Reported, not resolved: which is right is a judgement for a person,
+        # and the resolver decides at read time anyway.
+        plan = self._plan(tmp_path, "0xaaa,Binance,cex,high\n0xaaa,Binance,service,high\n")
+        assert len(plan.attributions) == 1

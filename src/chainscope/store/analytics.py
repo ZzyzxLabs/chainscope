@@ -424,6 +424,7 @@ class AnalyticsView:
             Path(target).parent.mkdir(parents=True, exist_ok=True)
         conn = duckdb.connect(target, config={"enable_external_access": True})
         src = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+        loaded = False
         try:
             conn.execute("DROP TABLE IF EXISTS transfers")
             conn.execute("DROP TABLE IF EXISTS attributions")
@@ -431,9 +432,24 @@ class AnalyticsView:
             transfers = self._copy_transfers(conn, src, batch)
             attributions = self._copy_attributions(conn, src, batch)
             self._index(conn)
+            loaded = True
         finally:
             src.close()
-            if target == ":memory:":
+            if not loaded:
+                # Published on failure, so a build that died partway through
+                # left a live view answering from half a dataset. Measured:
+                # transfers copied, attributions raised, and the view then
+                # reported ten transfers and no attributions as though that
+                # were the store.
+                #
+                # A partial analytics view is the worst possible artefact ---
+                # every query against it is quietly answered from a subset, and
+                # `built_from` is the only clue anybody would have.
+                conn.close()
+                self._conn = None
+                if target != ":memory:":
+                    Path(target).unlink(missing_ok=True)
+            elif target == ":memory:":
                 # An in-memory view lives *in* its connection, so closing it
                 # would discard everything just loaded. The handle is kept ---
                 # and locked down before it is, because otherwise the default

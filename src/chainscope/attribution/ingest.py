@@ -434,21 +434,32 @@ def plan_import(
         columns=columns,
     )
 
-    seen: set[tuple[str, str, str]] = set()
+    seen: dict[tuple[str, str, str], Attribution] = {}
     unique: list[Attribution] = []
     duplicates = 0
+    internal: list[Conflict] = []
     for a in attributions:
         # The chain belongs in the key. Without it, the same label on Ethereum
         # and BSC collapses to one row and a chain-scoped attribution is lost
         # before it is written.
         key = ((a.address or "").lower(), a.label.lower(), str(a.chain or ""))
-        if key in seen:
+        prior = seen.get(key)
+        if prior is None:
+            seen[key] = a
+            unique.append(a)
+            continue
+        if prior.category is a.category:
             duplicates += 1
             continue
-        seen.add(key)
-        unique.append(a)
+        # Same address and label, different category --- two rows in one file
+        # that disagree about what something is. Counting it as a duplicate
+        # dropped the disagreement silently, which is the one thing this module
+        # is careful about everywhere else: it already surfaces a clash with the
+        # *store* as a Conflict, and a clash inside the file is the same fact
+        # about somebody's spreadsheet.
+        internal.append(Conflict(address=a.address or "", incoming=a, existing=prior))
 
-    conflicts: list[Conflict] = []
+    conflicts: list[Conflict] = list(internal)
     if existing:
         lookup = {k.lower(): v for k, v in existing.items()}
         for a in unique:
