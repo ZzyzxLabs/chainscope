@@ -27,8 +27,22 @@ __all__ = ["ChainId", "Ecosystem", "UnknownChainError"]
 _CAIP2 = re.compile(r"^(?P<ns>[-a-z0-9]{3,8}):(?P<ref>[-_a-zA-Z0-9]{1,32})$")
 
 
-class UnknownChainError(KeyError):
-    """Raised when an alias cannot be resolved to a chain."""
+class UnknownChainError(KeyError, ValueError):
+    """Raised when an alias cannot be resolved to a chain.
+
+    Both bases, on purpose. ``KeyError`` is what it has always been and existing
+    handlers still catch it. ``ValueError`` is what it actually *is* --- a value
+    that could not be parsed, not a missing key --- and it is what the layers
+    that validate user input catch: the CLI's tag command turns a ``ValueError``
+    into an exit code and a message, and without this the same input would
+    escape as an unhandled exception.
+
+    ``__str__`` is overridden because ``KeyError`` renders its argument with
+    ``repr``, so a carefully worded message came out wrapped in quotes.
+    """
+
+    def __str__(self) -> str:
+        return str(self.args[0]) if self.args else ""
 
 
 class Ecosystem(str, Enum):

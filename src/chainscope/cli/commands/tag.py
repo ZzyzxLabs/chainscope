@@ -30,7 +30,7 @@ from typing import Any
 
 from ...attribution.ingest import ImportError_, ingest_file, plan_import
 from ...core.attribution import Attribution, Category, Confidence, Method
-from ...core.chainid import ChainId
+from ...core.chainid import ChainId, resolve
 from ...render.base import Renderer
 from ...store.sqlite import SqliteStore
 
@@ -108,12 +108,24 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
 
 
 def _chain(raw: str | None) -> ChainId | None:
-    if not raw:
+    """Resolve ``--chain``, distinguishing absent from invalid.
+
+    Absent is a real answer: a claim with no chain applies everywhere, which is
+    how sanctions lists are published. Invalid is not, and the two used to
+    collapse into the same ``None`` --- so ``--chain bsc``, the obvious thing to
+    type, produced a claim applying to *every* chain rather than to BSC. So did
+    a typo. Only a bare number or a full CAIP-2 string worked.
+
+    The failure is quiet and it spreads: the graph layer takes care not to put a
+    BSC label on the Ethereum address sharing its hex, and a claim scoped to
+    nothing defeats that from the other end.
+
+    :func:`~chainscope.core.chainid.resolve` knows the aliases and raises on
+    anything it does not, which is what a CLI boundary is for.
+    """
+    if raw is None or not raw.strip():
         return None
-    if raw.isdigit():
-        return ChainId.evm(int(raw))
-    namespace, _, reference = raw.partition(":")
-    return ChainId(namespace, reference) if reference else None
+    return resolve(raw)
 
 
 def _tag_one(args: argparse.Namespace, render: Renderer) -> int:

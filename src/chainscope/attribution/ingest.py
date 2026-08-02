@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.attribution import Attribution, Category, Confidence, Method
-from ..core.chainid import ChainId
+from ..core.chainid import ChainId, resolve
 
 __all__ = [
     "DEFAULT_COLUMNS",
@@ -382,24 +382,28 @@ def parse_rows(
 
 
 def _to_chain(value: Any) -> ChainId | None:
+    """Resolve a chain cell, distinguishing absent from unrecognised.
+
+    An empty cell means the row makes no chain-specific claim, which is a real
+    answer --- that is how sanctions lists are published.
+
+    Anything non-empty that cannot be resolved **raises**, and the caller turns
+    that into a :class:`RowError` naming the row. It used to return ``None``,
+    which the importer reads as "applies to every chain" --- so a typo in
+    ``ethereum`` did not reject the row, it *widened* it, from one chain to all
+    of them. Filed against the wrong chain is bad; filed against all of them
+    looks answered and contaminates every lookup that address takes part in.
+
+    The old comment here claimed bare names were not guessed at, while the code
+    below it resolved them by attribute lookup on the chainid module. The
+    comment was right about the principle and wrong about the code;
+    :func:`~chainscope.core.chainid.resolve` is the one place that decides what
+    a chain name means.
+    """
     text = str(value).strip()
     if not text:
         return None
-    try:
-        if text.isdigit():
-            return ChainId.evm(int(text))
-        if ":" in text:
-            namespace, _, reference = text.partition(":")
-            return ChainId(namespace, reference)
-    except ValueError:
-        pass
-    # A bare name such as "ethereum" is ambiguous across namespaces and is not
-    # guessed at: a label filed against the wrong chain is worse than one filed
-    # against none, because it looks answered.
-    from ..core import chainid as _chainid
-
-    named = getattr(_chainid, text.upper(), None)
-    return named if isinstance(named, ChainId) else None
+    return resolve(text)
 
 
 # --------------------------------------------------------------------- planning
