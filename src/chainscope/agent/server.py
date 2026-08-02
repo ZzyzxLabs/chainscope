@@ -44,6 +44,7 @@ from ..analysis.probing import (
     detect_probes,
 )
 from ..analysis.taint import TaintPolicy, trace_origins, trace_taint
+from ..chains import address_key
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..store.base import Query
@@ -93,6 +94,20 @@ class ServerConfig:
     max_rows: int = 500
     """Hard cap on any result. Exceeding it is reported, never silently applied
     --- an agent cannot tell a short list from a truncated one."""
+
+    max_corpus: int = 50_000
+    """Transfers a *trace* may read, as distinct from rows it may return.
+
+    These were the same number, and they are different things. `max_rows`
+    caps output; a taint trace has to read the transfers the money moved
+    through, which is a corpus and not a result. Capping the corpus at 500
+    meant the trace read the first five hundred transfers in the store ---
+    measured: on a store of six hundred, the theft being traced was **not
+    among them**, and the answer came back "nothing tainted".
+
+    That is not a short answer. It is a confident wrong one, produced by
+    looking in the wrong place.
+    """
 
 
 def _chain(raw: str | None) -> ChainId | None:
@@ -522,14 +537,37 @@ def build_server(config: ServerConfig) -> MCPServer:
                 f"policy must be one of {', '.join(p.value for p in TaintPolicy)}"
             ) from exc
 
-        capped = _cap(limit, config.max_rows)
+        capped = _cap(limit, config.max_corpus)
         store = _store()
+        chain_id = _chain(chain)
+        seed = address_key(chain_id, source)
         try:
-            rows = list(store.transfers(Query(chain=_chain(chain), limit=capped)))
+            # Ordered by time, because FIFO depends on arrival order --- an
+            # unordered corpus changes which funds paid for what.
+            rows = list(store.transfers(Query(chain=chain_id, limit=capped, order="time")))
+            reachable = store.count(Query(chain=chain_id, address=seed))
         finally:
             store.close()
 
-        seed = source.strip().lower()
+        if not reachable:
+            raise AgentError(
+                f"{source} appears in no transfer in this store. That is not "
+                f"'nothing was traced' --- it is 'the trace never had anything to "
+                f"start from'. Ingest the source's history first."
+            )
+        if not any(
+            (t.sender and t.sender.key == seed) or (t.recipient and t.recipient.key == seed)
+            for t in rows
+        ):
+            # The source exists but fell outside the corpus that was read.
+            # Reporting an empty trace here would be the confident wrong answer.
+            raise AgentError(
+                f"{source} is in this store but not in the {len(rows)} transfers "
+                f"read for this trace. Narrow the chain, or raise the corpus "
+                f"limit --- an empty result here would mean 'not looked at', not "
+                f"'not found'."
+            )
+
         try:
             sources: Any = {seed: int(amount)} if amount else {seed}
         except ValueError as exc:
@@ -579,16 +617,26 @@ def build_server(config: ServerConfig) -> MCPServer:
     ) -> dict[str, Any]:
         if not address.strip():
             raise AgentError("address is required")
-        capped = _cap(limit, config.max_rows)
+        capped = _cap(limit, config.max_corpus)
         store = _store()
+        chain_id = _chain(chain)
+        key = address_key(chain_id, address)
         try:
-            rows = list(store.transfers(Query(chain=_chain(chain), limit=capped)))
+            rows = list(store.transfers(Query(chain=chain_id, limit=capped, order="time")))
+            reachable = store.count(Query(chain=chain_id, address=key))
         finally:
             store.close()
 
-        target: Any = (
-            (address.strip().lower(), asset.lower()) if asset else address.strip().lower()
-        )
+        if not reachable:
+            raise AgentError(
+                f"{address} appears in no transfer in this store. Reverse tracing "
+                f"would return 'no origins', which reads as a finding about the "
+                f"balance rather than about the corpus."
+            )
+
+        # `address_key`, not `.lower()`: base58 is case-sensitive, so lowering a
+        # Solana or Bitcoin address asks about a different account.
+        target: Any = (key, asset.lower()) if asset else key
         try:
             want = int(amount) if amount else None
         except ValueError as exc:
@@ -598,7 +646,7 @@ def build_server(config: ServerConfig) -> MCPServer:
 
         origins = trace_origins(rows, target, amount=want)
         out: dict[str, Any] = {
-            "address": address.strip().lower(),
+            "address": key,
             "asset": asset,
             "transfers_examined": len(rows),
             # Strings: base units are wei-scale and do not survive JSON as

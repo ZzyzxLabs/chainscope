@@ -532,3 +532,90 @@ class TestRecordNote:
         server = _server(store_path, case_path, writable=True)
         message = _raises(server, "record_note", {"kind": "hunch", "body": "maybe"})
         assert "hunch" in message
+
+
+class TestATraceLooksWhereTheMoneyIs:
+    """`max_rows` capped the *corpus* a taint trace read, not just its output.
+
+    Those are different things. A trace has to read the transfers the money
+    moved through; capping that at 500 meant reading the first five hundred
+    rows in the store. Measured on a store of 601: the theft being traced was
+    **not among them**, and the answer came back "nothing tainted" --- a
+    confident wrong answer produced by looking in the wrong place.
+    """
+
+    @pytest.fixture
+    def busy_store(self, tmp_path):
+        from datetime import datetime, timezone
+
+        path = tmp_path / "store.db"
+        store = SqliteStore(path)
+        # Not `UNKNOWN`, which is 0x999… and is used below as an address
+        # that is genuinely absent.
+        thief = "0x" + "7" * 40
+        rows = [
+            Transfer(
+                chain=ETHEREUM,
+                tx=TxRef(ETHEREUM, f"0x{i:064x}"),
+                sender=Address(ETHEREUM, f"0x{i:040x}", f"0x{i:040x}"),
+                recipient=Address(ETHEREUM, f"0x{i + 1:040x}", f"0x{i + 1:040x}"),
+                amount=Amount(10**18, 18, "ETH"),
+                kind=TransferKind.NATIVE,
+                timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                block=i,
+            )
+            for i in range(600)
+        ]
+        rows.append(
+            Transfer(
+                chain=ETHEREUM,
+                tx=TxRef(ETHEREUM, "0x" + "f" * 64),
+                sender=Address(ETHEREUM, thief, thief),
+                recipient=Address(ETHEREUM, B, B),
+                amount=Amount(TEN_ETH, 18, "ETH"),
+                kind=TransferKind.NATIVE,
+                timestamp=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                block=999,
+            )
+        )
+        store.put_transfers(rows)
+        store.close()
+        return path, thief
+
+    def _server(self, path, **kw):
+        from chainscope.agent.server import ServerConfig, build_server
+
+        return build_server(ServerConfig(store=path, **kw))
+
+    def test_the_corpus_is_not_capped_by_the_output_limit(self, busy_store):
+        path, thief = busy_store
+        out = _call(
+            self._server(path),
+            "trace_stolen_funds",
+            {"source": thief, "chain": "eip155:1"},
+        )
+        # The theft is row 601 of 601. Found only if the corpus is not 500.
+        assert out["transfers_examined"] > 600
+
+    def test_an_address_absent_from_the_store_is_refused(self, busy_store):
+        """Not "nothing tainted".
+
+        An empty trace reads as a finding about the money. This one is a fact
+        about the corpus, and the two must not be reported the same way.
+        """
+        path, _ = busy_store
+        message = _raises(
+            self._server(path),
+            "trace_stolen_funds",
+            {"source": UNKNOWN, "chain": "eip155:1"},
+        )
+        assert "never had anything to start from" in message
+
+    def test_reverse_tracing_refuses_the_same_way(self, busy_store):
+        path, _ = busy_store
+        message = _raises(
+            self._server(path),
+            "trace_origins_of",
+            {"address": UNKNOWN, "chain": "eip155:1"},
+        )
+        assert "reads as a finding" in message

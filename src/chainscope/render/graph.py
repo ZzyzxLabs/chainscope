@@ -183,17 +183,40 @@ class Graph:
         winner = node if node.confidence > existing.confidence else existing
         loser = existing if winner is node else node
 
+        # Fall back to the weaker claim only where the stronger one is silent
+        # --- an unlabelled HIGH-confidence sighting should not erase a label
+        # somebody actually recorded.
+        label = winner.label or loser.label
+        category = winner.category or loser.category
+
+        # The confidence of the *retained fields*, which is not the same as the
+        # winner's. It used to be the winner's whenever the winner supplied any
+        # field at all --- so a HIGH sighting carrying only a category, merged
+        # with a SPECULATIVE claim carrying a label, rendered "Probably Lazarus"
+        # at HIGH. The flow view drops its `?` hedge at HIGH, so a hunch was
+        # drawn as an identification: the precise confusion this package exists
+        # to prevent, produced by the merge rather than by any source.
+        #
+        # So: the weakest confidence among the claims that actually contributed
+        # a field. A mixed-source node cannot be reported above the confidence
+        # of its own weakest contributor.
+        contributors = [
+            source.confidence
+            for source, field_ in ((winner, winner.label), (loser, loser.label))
+            if field_ and field_ == label
+        ] + [
+            source.confidence
+            for source, field_ in ((winner, winner.category), (loser, loser.category))
+            if field_ and field_ == category
+        ]
         merged = Node(
             address=existing.address,
             chain=existing.chain,
-            # Fall back to the weaker claim only where the stronger one is
-            # silent --- an unlabelled HIGH-confidence sighting should not
-            # erase a label somebody actually recorded.
-            label=winner.label or loser.label,
-            category=winner.category or loser.category,
-            confidence=winner.confidence
-            if winner.label or winner.category
-            else loser.confidence,
+            label=label,
+            category=category,
+            # Nothing claimed by either: keep the winner's, since there is no
+            # field whose strength could be overstated.
+            confidence=min(contributors) if contributors else winner.confidence,
             source=winner.source or loser.source,
             # These are facts about what was fetched rather than claims about
             # what something is, so they merge independently and always widen.
