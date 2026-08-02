@@ -140,6 +140,55 @@ never be buried under a friendlier label during merge.
 This is not defensive boilerplate. It is the professional ethic of the field,
 enforced by the compiler instead of by whoever happens to be reading.
 
+## What it does
+
+Nine analyzers, and the number beside each is where it stops working. That
+column is the point: a technique with no measured failure boundary is a
+technique that answers confidently in cases it cannot handle.
+
+| `chainscope analyze …` | Answers | Where it breaks |
+|---|---|---|
+| `taint` | how much of this balance came from that theft | FIFO depends on arrival order, so a clipped window changes *which* funds paid for what |
+| `mixer` | which withdrawal matches this deposit | precision 100% / 57% / 33% / **8.3%** at 0 / 1 / 2 / 4 competing withdrawals; refuses past 5 |
+| `probing` | did they send a test payment first | needs 5 increasing steps **and** 8× growth — length alone fires on **38%** of ordinary accumulation |
+| `common_funder` | which addresses share an origin | an exchange funds its customers: without the service guard, precision **0.7%** |
+| `co_spend_cluster` | which addresses share a wallet (UTXO) | one CoinJoin halves precision |
+| `temporal` | what hours the operator keeps | needs 30 timestamps, and **refuses** when the plausible band spans most of the clock |
+| `peel_chain` | follow a peel chain | halts on a contested or missing hop rather than guessing |
+| `cross_chain` | the far side of a swap | **ranks a decoy first when the true payout is absent** |
+| `consolidation` | where an address's counterparties send funds | — |
+
+Also, reachable from Python and the agent: reverse taint (what funded this
+balance), bytecode family comparison (same contract, new address?), one-hop
+relay detection, revenue-split analysis (who takes a fixed cut), memo
+authorship, and historical token decimals.
+
+**Getting data in and out**
+
+- **Label** one address from the CLI, import somebody's CSV or JSON with the
+  columns it already has, tag from the browser extension, or let an agent do it
+  — every path records where the claim came from and cannot be told to lie
+  about that.
+- **Query** with `chainscope sql`, a Dune-shaped surface over DuckDB with exact
+  128-bit arithmetic. `--schema` documents the traps, not just the columns.
+- **Store** is one SQLite file. A case is a file you can copy.
+
+**Seeing it**
+
+- `graph -f flow` lays the money out left to right by hop. Click an address for
+  *every* route from the seed, click `+n` to open one more ring, drag the
+  slider to watch the case develop. Dashed boxes are frontier — seen, never
+  expanded.
+- `dashboard` for a case overview that states the unattributed share out loud.
+
+**Interfaces**
+
+CLI (8 commands) · MCP agent (10 tools, including writes) · MV3 browser
+extension · third-party analyzers via entry points · Docker, Nix flake, and
+uvx.
+
+See [`docs/demo.md`](docs/demo.md) for an eight-minute walkthrough.
+
 ## Install
 
 ```bash
