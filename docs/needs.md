@@ -351,6 +351,51 @@ so `cron` or a person decides what happens next --- the same line `watch` draws.
 
 ---
 
+## 8. Where the chain runs out
+
+**Observed.** An investigation runs out of chain long before it runs out of
+question. Money reaches a deposit address and the next move is off-chain --- a
+handle, a domain, a forum post --- and that is where a careful tool most easily
+stops being careful, because the material stops being verifiable and nobody
+changes how they talk about it.
+
+The reference point for this was OffcierCia's on-chain investigation lists.
+What is worth taking from that body of work is not code: it is the *taxonomy of
+next moves*. The tooling it catalogues is mostly other people's services; the
+durable part is knowing which pivots exist and what each one is worth.
+
+**What follows.** :mod:`chainscope.osint.leads` --- and the design decision is
+the type, not the extraction. A **lead is not an attribution**. `Attribution`
+says what an address *is*; a lead says where somebody might find out. An ENS
+text record reading `com.twitter = alice` does not mean the address belongs to
+@alice, it means whoever controls that name typed "alice" into a field. Stored
+as an attribution it would sit beside forward-confirmed claims and be quoted as
+one.
+
+So: a separate type, never a claim on its own, and every lead carries
+`verify_by` --- the specific thing that would confirm it. A lead with no stated
+verification step is a rumour with a schema. `Lead` refuses to be constructed
+without one, for the same reason `Attribution` refuses to be constructed
+without a source.
+
+Two refusals fall out of it. Text records are read **only from a
+forward-confirmed name**: an unconfirmed one is a stranger's claim about this
+address, so its text records are that stranger's handles, and attaching them
+here would put another person's identity on the address --- worse than finding
+nothing. And unknown resolver keys are skipped rather than passed through,
+because a lead named after a key nobody recognises reads as a finding about a
+field the reader assumes was understood.
+
+**Still open.** *Inferred:* the pivots this does not have are cross-chain
+address reuse as a lead rather than an analysis, and donation addresses
+published in public profiles. Both are the same shape --- self-asserted, worth
+following, never a conclusion --- so they fit the type. What does not fit, and
+should stay out, is anything that scrapes a service: the provenance becomes
+"we saw it on a page once", which is exactly the claim-about-a-claim this
+package refuses everywhere else.
+
+---
+
 ## What this note is not
 
 It is not a survey of users, because none has been conducted. Every *observed*

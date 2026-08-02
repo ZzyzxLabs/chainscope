@@ -104,6 +104,7 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
 
     steps = [
         _known(args, address),
+        _leads(args, address),
         _temporal(ctx, address),
         _probing(ctx, address),
     ]
@@ -165,6 +166,42 @@ def _known(args: argparse.Namespace, address: str) -> Step:
             f'chainscope tag {address} -l "<what it is>" -t service '
             f'-C medium -s "<where you learnt it>"'
         )
+    return step
+
+
+def _leads(args: argparse.Namespace, address: str) -> Step:
+    """Off-chain leads recorded against this address.
+
+    Read from the store rather than fetched: a lead is somewhere a person looks
+    next, and generating them mid-run would put unverified handles on the
+    screen beside measured findings. What this does is *surface* what is
+    already recorded, with the verification step attached.
+    """
+    step = Step(name="somewhere to look next")
+    if not args.store.exists():
+        step.note = "no store yet"
+        return step
+
+    from ...store.sqlite import SqliteStore
+
+    store = SqliteStore(args.store)
+    try:
+        claims = store.attributions(address)
+    finally:
+        store.close()
+
+    named = [c for c in claims if "ENS" in c.source]
+    step.ran = True
+    step.findings = len(named)
+    if named:
+        step.note = f"{len(named)} name claim(s); text records may carry handles"
+        step.next_command = (
+            f"chainscope label {address} --local labels.json   # and read the rationale on each"
+        )
+    else:
+        # Said in the terms that matter: no ENS name is not "no identity", it
+        # is "nothing self-published on this chain".
+        step.note = "no ENS name --- nothing self-published here to follow"
     return step
 
 
