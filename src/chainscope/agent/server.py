@@ -85,13 +85,27 @@ class ServerConfig:
 
 
 def _chain(raw: str | None) -> ChainId | None:
+    """Parse a chain id, or refuse. Absence is fine; a typo is not.
+
+    Returning None for an unparsable value meant "bsc" or a mistyped CAIP-2 was
+    treated as *unspecified*, which `flows` and `export_graph` then read as
+    Ethereum and `search_transfers` read as "every chain". An agent asking
+    about one chain would get a confident answer about another.
+    """
     if not raw:
         return None
     text = str(raw).strip()
+    if not text:
+        return None
     if text.isdigit():
         return ChainId.evm(int(text))
     namespace, _, reference = text.partition(":")
-    return ChainId(namespace, reference) if reference else None
+    if not reference:
+        raise AgentError(
+            f"not a chain id: {raw!r}. Use an EVM chain number (1, 56) or a "
+            f"CAIP-2 identifier (eip155:1, sui:mainnet)."
+        )
+    return ChainId(namespace, reference)
 
 
 def _cap(limit: int, ceiling: int) -> int:
@@ -319,7 +333,11 @@ def build_server(config: ServerConfig) -> MCPServer:
             if needs_build:
                 view.build_from_sqlite(config.store)
             columns = view.columns(query)
-            rows = view.sql(query)
+            # One past the cap, so "there is more" is a fact rather than an
+            # inference -- and so a query returning millions of rows does not
+            # materialise all of them first. max_rows capped the response and
+            # not the work until this existed.
+            rows = view.sql_limited(query, capped + 1)
         finally:
             view.close()
 

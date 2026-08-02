@@ -356,3 +356,30 @@ class TestViewFreshness:
         assert (
             _call(srv2, "sql", {"query": "SELECT COUNT(*) FROM transfers"})["rows"][0][0] == 6
         )
+
+
+class TestMalformedChainsAreRefused:
+    @pytest.mark.parametrize("bad", ["bsc", "ethereum", "eip155", "oops"])
+    def test_a_typo_does_not_become_a_different_chain(self, server, bad):
+        """Returning None meant "unspecified", which flows and export_graph
+        then read as Ethereum and search_transfers read as "every chain". An
+        agent asking about one chain would get a confident answer about
+        another."""
+        assert "not a chain id" in _raises(server, "flows", {"address": A, "chain": bad})
+
+    def test_an_absent_chain_is_still_fine(self, server):
+        assert _call(server, "search_transfers", {"address": A})["shown"] >= 1
+
+
+class TestSqlIsBoundedAtTheEngine:
+    def test_the_cap_limits_the_fetch_not_just_the_response(self, server):
+        """max_rows capped the response and not the work: fetchall() ran first,
+        so a query over a large store could exhaust the process before the
+        caller's limit was ever applied."""
+        got = _call(server, "sql", {"query": "SELECT * FROM transfers", "limit": 2})
+        assert got["shown"] == 2
+        assert got["truncated"] is True
+
+    def test_a_short_result_is_not_marked_truncated(self, server):
+        got = _call(server, "sql", {"query": "SELECT * FROM transfers", "limit": 100})
+        assert got["truncated"] is False

@@ -45,7 +45,10 @@ tron = ["base58>=2.1"]
 sui = []
 report = ["rich>=13.0"]
 analytics = ["duckdb>=1.0"]
-agent = ["mcp>=1.2"]
+# The server imports mcp.server.mcpserver, which is a v2 API. `>=1.2` admits
+# a 1.x install that satisfies the constraint and then fails at first import
+# with a missing-module error that reads like a broken package.
+agent = ["mcp>=2.0"]
 all = ["chainscope[evm,bitcoin,solana,tron,sui,report,analytics,agent]"]
 dev = [
     "pytest>=8.0",
@@ -73,18 +76,21 @@ chainscope-serve = "chainscope.server.local:main"
 [project.entry-points."chainscope.providers"]
 jsonrpc = "chainscope.providers.jsonrpc:JsonRpcProvider"
 etherscan = "chainscope.providers.etherscan:EtherscanProvider"
+sui = "chainscope.providers.sui:SuiProvider"
 
 [project.entry-points."chainscope.chains"]
 evm = "chainscope.chains.evm:EvmAdapter"
 bitcoin = "chainscope.chains.bitcoin:BitcoinAdapter"
 solana = "chainscope.chains.solana:SolanaAdapter"
 tron = "chainscope.chains.tron:TronAdapter"
+sui = "chainscope.chains.sui:SuiAdapter"
 
 [project.entry-points."chainscope.analyzers"]
 consolidation = "chainscope.analysis.consolidation:ConsolidationAnalyzer"
 cross_chain = "chainscope.analysis.xchain:CrossChainMatcher"
 peel_chain = "chainscope.analysis.peel:PeelChainAnalyzer"
 co_spend_cluster = "chainscope.analysis.cluster:CoSpendClusterAnalyzer"
+temporal = "chainscope.analysis.temporal:profile_activity"
 
 [project.entry-points."chainscope.stores"]
 sqlite = "chainscope.store.sqlite:SqliteStore"

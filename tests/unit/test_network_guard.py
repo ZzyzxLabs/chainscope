@@ -114,3 +114,24 @@ class TestLocalStillWorks:
             return 42
 
         assert asyncio.run(nothing()) == 42
+
+
+class TestDatagramsAreGuardedToo:
+    def test_sendto_a_remote_host_is_refused(self):
+        """An unconnected UDP socket never touches connect, so guarding that
+        alone leaves a route straight out."""
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            with pytest.raises(NetworkAccessAttempted):
+                s.sendto(b"probe", ("8.8.8.8", 53))
+        finally:
+            s.close()
+
+    def test_sendto_loopback_is_allowed(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.sendto(b"probe", ("127.0.0.1", 9))  # discard port; nothing listens
+        except OSError as exc:
+            assert not isinstance(exc, NetworkAccessAttempted)
+        finally:
+            s.close()

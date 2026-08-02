@@ -194,7 +194,17 @@ def _rows_from_csv(path: Path) -> Iterator[Mapping[str, Any]]:
 def _rows_from_json(path: Path) -> Iterator[Mapping[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(data, list):
-        yield from (r for r in data if isinstance(r, dict))
+        for position, record in enumerate(data, 1):
+            if isinstance(record, dict):
+                yield record
+            else:
+                # Surfaced as a row rather than dropped. A file with malformed
+                # entries otherwise imports "cleanly" while data goes missing.
+                yield {
+                    "_malformed": (
+                        f"entry {position} is a {type(record).__name__}, not an object"
+                    )
+                }
     elif isinstance(data, dict):
         # The address-keyed shape that label files usually take.
         for address, value in data.items():
@@ -218,6 +228,8 @@ def _rows_from_jsonl(path: Path) -> Iterator[Mapping[str, Any]]:
                 raise ImportError_(f"{path}:{n}: {exc}") from exc
             if isinstance(record, dict):
                 yield record
+            else:
+                yield {"_malformed": f"line {n} is a {type(record).__name__}, not an object"}
 
 
 def read_rows(path: Path | str) -> Iterator[Mapping[str, Any]]:
@@ -329,6 +341,8 @@ def parse_rows(
 
     for n, row in enumerate(rows, 1):
         try:
+            if "_malformed" in row:
+                raise ValueError(str(row["_malformed"]))
             address = _pick(row, mapping["address"])
             if not address:
                 raise ValueError(
@@ -416,11 +430,14 @@ def plan_import(
         columns=columns,
     )
 
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     unique: list[Attribution] = []
     duplicates = 0
     for a in attributions:
-        key = ((a.address or "").lower(), a.label.lower())
+        # The chain belongs in the key. Without it, the same label on Ethereum
+        # and BSC collapses to one row and a chain-scoped attribution is lost
+        # before it is written.
+        key = ((a.address or "").lower(), a.label.lower(), str(a.chain or ""))
         if key in seen:
             duplicates += 1
             continue
@@ -477,10 +494,37 @@ def ingest_file(
     addresses is far harder than not writing them, and a column-mapping mistake
     produces exactly that quantity of them.
     """
+    # Parsed first, so the store is only asked about addresses the file
+    # actually mentions. `plan_import` is called twice rather than reaching
+    # into its internals: the second pass is over already-validated rows and
+    # costs nothing next to reading the file.
+    parsed = plan_import(
+        path,
+        source=source,
+        chain=chain,
+        default_confidence=default_confidence,
+        default_method=default_method,
+        columns=columns,
+    )
+
+    # Conflicts were dead in this path until this existed: `ingest_file` holds
+    # the store and never asked it anything, so `chainscope tag file --apply`
+    # imported a "mixer" claim over an existing "cex" one and reported nothing.
+    # The whole point of recording disagreement is that somebody sees it.
+    existing: dict[str, list[Attribution]] = {}
+    for attribution in parsed.attributions:
+        address = attribution.address or ""
+        if address and address not in existing:
+            try:
+                existing[address] = list(store.attributions(address))
+            except Exception:
+                existing[address] = []
+
     plan = plan_import(
         path,
         source=source,
         chain=chain,
+        existing=existing,
         default_confidence=default_confidence,
         default_method=default_method,
         columns=columns,

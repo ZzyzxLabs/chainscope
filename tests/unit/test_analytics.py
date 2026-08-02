@@ -278,3 +278,155 @@ class TestSqlSafety:
     def test_a_broken_query_reports_clearly(self, view):
         with pytest.raises(AnalyticsError, match="query failed"):
             view.sql("SELECT nosuchcolumn FROM transfers")
+
+
+class TestChainIsPartOfIdentity:
+    def test_native_transfers_on_two_chains_do_not_merge(self, tmp_path):
+        """Native transfers all carry asset IS NULL, so without chain in the
+        grouping ETH and BNB between one pair of addresses summed into a figure
+        denominated in nothing, and any_value(symbol) picked one arbitrarily."""
+        path = tmp_path / "s.db"
+        store = SqliteStore(path)
+        store.put_transfers(
+            [
+                transfer(A, B, TEN_ETH, symbol="ETH", chain=ETHEREUM, i=1),
+                transfer(A, B, TEN_ETH * 2, symbol="BNB", chain=BSC, i=2),
+            ],
+            source="t",
+        )
+        store.close()
+        view = AnalyticsView(":memory:")
+        try:
+            view.build_from_sqlite(path)
+            flows = view.flows(A)
+            assert len(flows) == 2
+            assert {f.symbol for f in flows} == {"ETH", "BNB"}
+        finally:
+            view.close()
+
+    def test_totals_group_by_identity_not_display_text(self, tmp_path):
+        """A fake token borrowing a real symbol is a standard trick, and
+        grouping on the symbol sums it into the real one's total."""
+        path = tmp_path / "s.db"
+        store = SqliteStore(path)
+        store.put_transfers(
+            [
+                Transfer(
+                    chain=ETHEREUM,
+                    tx=TxRef(ETHEREUM, "0x" + "1" * 64),
+                    sender=addr(A),
+                    recipient=addr(B),
+                    amount=Amount(1_000_000, 6, "USDC"),
+                    kind=TransferKind.TOKEN,
+                    block=1,
+                    asset=addr("0x" + "d" * 40),
+                ),
+                Transfer(
+                    chain=ETHEREUM,
+                    tx=TxRef(ETHEREUM, "0x" + "2" * 64),
+                    sender=addr(A),
+                    recipient=addr(B),
+                    amount=Amount(9_999_999, 6, "USDC"),
+                    kind=TransferKind.TOKEN,
+                    block=2,
+                    asset=addr("0x" + "e" * 40),
+                ),
+            ],
+            source="t",
+        )
+        store.close()
+        view = AnalyticsView(":memory:")
+        try:
+            view.build_from_sqlite(path)
+            rows = view.totals_by_asset(A)
+            assert len(rows) == 2, "two contracts sharing a symbol merged into one total"
+        finally:
+            view.close()
+
+
+class TestBoundedQueries:
+    def test_sql_limited_stops_fetching(self, view):
+        rows = view.sql_limited("SELECT * FROM transfers", 2)
+        assert len(rows) == 2
+
+    def test_a_broken_query_still_reports_clearly(self, view):
+        with pytest.raises(AnalyticsError, match="query failed"):
+            view.sql_limited("SELECT nosuchcolumn FROM transfers", 10)
+
+    def test_columns_wraps_failures_too(self, view):
+        """It had no handling at all, so a bad query raised duckdb's own
+        exception rather than the one callers catch."""
+        with pytest.raises(AnalyticsError, match="query failed"):
+            view.columns("SELECT nosuchcolumn FROM transfers")
+
+
+class TestReadFailuresAreNotSilent:
+    """Catching every exception turned a locked database, a corrupt file, or an
+    incompatible schema into a successful build reporting zero labels --- a view
+    that silently lost every attribution in the case."""
+
+    @staticmethod
+    def _store_with_a_transfer(tmp_path):
+        path = tmp_path / "s.db"
+        store = SqliteStore(path)
+        store.put_transfers([transfer(A, B, TEN_ETH, i=1)], source="t")
+        store.close()
+        return path
+
+    @staticmethod
+    def _failing_connect(real_connect, message):
+        """Wrap a real connection so only the attributions read fails.
+
+        sqlite3.Connection is immutable from 3.12, so the substitution happens
+        one level up at `connect`.
+        """
+        import sqlite3
+
+        class Wrapper:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kwargs):
+                if "FROM attributions" in sql:
+                    raise sqlite3.OperationalError(message)
+                return self._inner.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        def connect(*args, **kwargs):
+            return Wrapper(real_connect(*args, **kwargs))
+
+        return connect
+
+    def test_a_real_error_is_raised(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        path = self._store_with_a_transfer(tmp_path)
+        monkeypatch.setattr(
+            sqlite3, "connect", self._failing_connect(sqlite3.connect, "database is locked")
+        )
+        view = AnalyticsView(":memory:")
+        try:
+            with pytest.raises(AnalyticsError, match="could not read attributions"):
+                view.build_from_sqlite(path)
+        finally:
+            view.close()
+
+    def test_a_missing_table_is_still_tolerated(self, tmp_path, monkeypatch):
+        """The one case this was ever meant to cover: an older store."""
+        import sqlite3
+
+        path = self._store_with_a_transfer(tmp_path)
+        monkeypatch.setattr(
+            sqlite3,
+            "connect",
+            self._failing_connect(sqlite3.connect, "no such table: attributions"),
+        )
+        view = AnalyticsView(":memory:")
+        try:
+            stats = view.build_from_sqlite(path)
+            assert stats.attributions == 0
+            assert stats.transfers == 1
+        finally:
+            view.close()

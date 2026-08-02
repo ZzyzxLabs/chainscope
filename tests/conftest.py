@@ -90,6 +90,18 @@ class _GuardedSocket(_real_socket):  # type: ignore[misc,valid-type]
             raise _refuse()
         return int(super().connect_ex(address))
 
+    def sendto(self, data: Any, *args: Any) -> int:
+        """Datagrams carry their destination per call.
+
+        An unconnected UDP socket never touches `connect`, so guarding that
+        alone leaves a route out: `sendto(payload, ("8.8.8.8", 53))` would have
+        gone straight through.
+        """
+        destination = args[-1] if args else None
+        if destination is not None and not _is_local(destination):
+            raise _refuse()
+        return int(super().sendto(data, *args))
+
 
 def _guarded_create_connection(address: Any, *args: Any, **kwargs: Any) -> Any:
     if not _is_local(address):

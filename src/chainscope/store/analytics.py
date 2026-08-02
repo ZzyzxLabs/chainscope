@@ -43,6 +43,7 @@ before execution; see :func:`assert_read_only_sql`.
 from __future__ import annotations
 
 import re
+import sqlite3
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -296,8 +297,6 @@ class AnalyticsView:
         External access is disabled on the connection, so the scanner is not
         available here in any case.
         """
-        import sqlite3
-
         source = Path(store_path)
         if not source.is_file():
             raise AnalyticsError(f"no store at {source}")
@@ -375,7 +374,14 @@ class AnalyticsView:
                 "SELECT address, chain, label, category, confidence, method, "
                 "source, rationale, observed_at FROM attributions"
             )
-        except Exception:
+        except sqlite3.OperationalError as exc:
+            # Only the case this was ever meant to tolerate: a store written
+            # before the table existed. Catching everything turned a locked
+            # database, a corrupt file, or an incompatible schema into a
+            # successful build reporting zero labels --- a view that silently
+            # lost every attribution in the case, and looked fine doing it.
+            if "no such table" not in str(exc).lower():
+                raise AnalyticsError(f"could not read attributions: {exc}") from exc
             return 0
         total = 0
         while True:
@@ -406,10 +412,31 @@ class AnalyticsView:
         except Exception as exc:
             raise AnalyticsError(f"query failed: {exc}") from exc
 
+    def sql_limited(
+        self, query: str, limit: int, params: Sequence[Any] = ()
+    ) -> list[tuple[Any, ...]]:
+        """Run a read-only statement, fetching at most ``limit`` rows.
+
+        ``sql`` materialises the whole result. That is fine for a human at a
+        prompt and wrong for anything reachable by an agent, where a query over
+        a large store can exhaust the process before the caller ever gets to
+        apply its own cap.
+        """
+        assert_read_only_sql(query)
+        try:
+            cursor = self.connect().execute(query, list(params))
+            rows: list[tuple[Any, ...]] = cursor.fetchmany(max(1, limit))
+            return rows
+        except Exception as exc:
+            raise AnalyticsError(f"query failed: {exc}") from exc
+
     def columns(self, query: str, params: Sequence[Any] = ()) -> list[str]:
         """Column names for a query, for rendering a table without guessing."""
         assert_read_only_sql(query)
-        cur = self.connect().execute(query, list(params))
+        try:
+            cur = self.connect().execute(query, list(params))
+        except Exception as exc:
+            raise AnalyticsError(f"query failed: {exc}") from exc
         return [d[0] for d in (cur.description or [])]
 
     # ------------------------------------------------------------ aggregations
@@ -442,15 +469,20 @@ class AnalyticsView:
             where.append("chain = ?")
             params.append(str(chain))
 
+        # Chain and symbol both belong in the grouping. Without chain, native
+        # transfers -- which all carry asset IS NULL -- summed ETH and BNB
+        # between one pair of addresses into a figure denominated in nothing,
+        # and any_value(symbol) then picked one of the two arbitrarily. Symbol
+        # is there because one contract address can be reused across chains.
         rows = (
             self.connect()
             .execute(
                 f"""
-            SELECT {subject}, {other}, asset, any_value(symbol),
+            SELECT {subject}, {other}, asset, symbol, chain, any_value(decimals),
                    SUM(amount_raw), COUNT(*), MIN(timestamp), MAX(timestamp)
             FROM transfers
             WHERE {" AND ".join(where)}
-            GROUP BY {subject}, {other}, asset
+            GROUP BY {subject}, {other}, asset, symbol, chain
             HAVING SUM(amount_raw) >= ?
             ORDER BY SUM(amount_raw) DESC
             LIMIT ?
@@ -466,10 +498,10 @@ class AnalyticsView:
                 recipient=r[1] if direction == "out" else r[0],
                 asset=r[2],
                 symbol=r[3] or "",
-                total_raw=int(r[4]),
-                transfer_count=r[5],
-                first_seen=r[6],
-                last_seen=r[7],
+                total_raw=int(r[6]),
+                transfer_count=r[7],
+                first_seen=r[8],
+                last_seen=r[9],
             )
             for r in rows
         ]
@@ -484,9 +516,12 @@ class AnalyticsView:
         rows = (
             self.connect()
             .execute(
+                # Grouped by asset *identity*, not by the symbol shown to a human.
+                # A fake token borrowing a real name is a standard trick, and
+                # grouping on display text sums it into the real one's total.
                 f"""SELECT COALESCE(symbol, ''), SUM(amount_raw), COUNT(*)
                 FROM transfers WHERE {subject} = ?
-                GROUP BY symbol ORDER BY 2 DESC""",
+                GROUP BY chain, asset, symbol ORDER BY 2 DESC""",
                 [address],
             )
             .fetchall()

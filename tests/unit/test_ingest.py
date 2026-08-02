@@ -229,3 +229,93 @@ class TestApplying:
         summary = plan_import(path, source="team").summary()
         assert summary["by_category"] == {"cex": 1, "sanctioned": 1}
         assert summary["source"] == "team"
+
+
+class TestConflictsReachThePathPeopleUse:
+    def test_apply_reports_disagreement_with_what_is_stored(self, csv_file, tmp_path):
+        """This was dead: ingest_file held the store and never asked it
+        anything, so `tag file --apply` wrote a mixer claim over a cex one and
+        said nothing. The whole point of recording disagreement is that
+        somebody sees it."""
+        store = SqliteStore(tmp_path / "s.db")
+        try:
+            store.put_attributions(
+                [
+                    Attribution(
+                        label="Binance 14",
+                        category=Category.CEX,
+                        confidence=Confidence.HIGH,
+                        method=Method.LABEL,
+                        source="etherscan",
+                        address=A,
+                        chain=ETHEREUM,
+                    )
+                ]
+            )
+            path = csv_file(f"address,label,category\n{A},Suspicious mixer,mixer\n")
+            plan = ingest_file(path, store, source="team", apply=True)
+            assert len(plan.conflicts) == 1
+            assert "mixer" in str(plan.conflicts[0])
+        finally:
+            store.close()
+
+    def test_a_dry_run_reports_them_too(self, csv_file, tmp_path):
+        store = SqliteStore(tmp_path / "s.db")
+        try:
+            store.put_attributions(
+                [
+                    Attribution(
+                        label="Binance 14",
+                        category=Category.CEX,
+                        confidence=Confidence.HIGH,
+                        method=Method.LABEL,
+                        source="etherscan",
+                        address=A,
+                        chain=ETHEREUM,
+                    )
+                ]
+            )
+            path = csv_file(f"address,label,category\n{A},Suspicious mixer,mixer\n")
+            assert ingest_file(path, store, source="team", apply=False).conflicts
+        finally:
+            store.close()
+
+
+class TestChainAwareDeduplication:
+    def test_one_label_on_two_chains_survives_as_two_claims(self, csv_file):
+        """The dedup key ignored the chain, so a chain-scoped attribution was
+        lost before it was ever written."""
+        path = csv_file(f"address,label,chain\n{A},Bridge,1\n{A},Bridge,56\n")
+        plan = plan_import(path, source="team")
+        assert len(plan.attributions) == 2
+        assert plan.duplicates == 0
+
+    def test_a_genuine_duplicate_still_collapses(self, csv_file):
+        path = csv_file(f"address,label,chain\n{A},Bridge,1\n{A},Bridge,1\n")
+        plan = plan_import(path, source="team")
+        assert len(plan.attributions) == 1
+        assert plan.duplicates == 1
+
+
+class TestMalformedRecordsAreReported:
+    def test_a_non_object_in_a_json_list_becomes_a_row_error(self, tmp_path):
+        """Dropped silently, a file with bad entries imports "cleanly" while
+        data goes missing."""
+        path = tmp_path / "mixed.json"
+        path.write_text(json.dumps([{"address": A, "label": "ok"}, "just a string", 42]))
+        plan = plan_import(path, source="team")
+        assert len(plan.attributions) == 1
+        assert len(plan.errors) == 2
+        assert "not an object" in plan.errors[0].reason
+
+    def test_the_error_names_the_position(self, tmp_path):
+        path = tmp_path / "mixed.json"
+        path.write_text(json.dumps([{"address": A, "label": "ok"}, "bad"]))
+        assert "entry 2" in plan_import(path, source="team").errors[0].reason
+
+    def test_jsonl_reports_the_line(self, tmp_path):
+        path = tmp_path / "s.jsonl"
+        path.write_text(json.dumps({"address": A, "label": "ok"}) + "\n" + '"a bare string"\n')
+        plan = plan_import(path, source="team")
+        assert len(plan.attributions) == 1
+        assert "line 2" in plan.errors[0].reason
