@@ -43,15 +43,19 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol
 
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
-from ..core.models import Transfer
+from ..core.result import Finding, Result, Severity
+from ..providers.base import Capability
+from .base import Analyzer, Context
 
 __all__ = [
     "MIN_SAMPLES",
     "ActivityProfile",
+    "TemporalAnalyzer",
+    "Timed",
     "profile_activity",
     "temporal_attribution",
 ]
@@ -267,14 +271,33 @@ def _quiet_window(by_hour: Sequence[int]) -> tuple[int, int] | None:
     return best_start, (best_start + min(best_len, 23)) % 24
 
 
+class Timed(Protocol):
+    """Anything with a time and two ends.
+
+    Both :class:`~chainscope.core.models.Transfer` and
+    :class:`~chainscope.core.models.Transaction` satisfy this, and profiling
+    accepts either on purpose. A *reverted* transaction moves no value but is
+    still an action this key took at a moment --- somebody was awake, signed,
+    and broadcast. Dropping those would bias the profile toward the hours in
+    which things happened to succeed.
+    """
+
+    @property
+    def timestamp(self) -> datetime | None: ...
+    @property
+    def sender(self) -> Any: ...
+    @property
+    def recipient(self) -> Any: ...
+
+
 def profile_activity(
-    transfers: Iterable[Transfer], address: str, *, direction: str = "out"
+    transfers: Iterable[Timed], address: str, *, direction: str = "out"
 ) -> ActivityProfile:
     """Build a temporal profile from an address's own actions.
 
-    Only transfers the address *sent* count by default. Inbound ones are
-    somebody else's timing, and folding them in measures the union of two
-    schedules --- which is nobody's.
+    Only actions the address *sent* count by default. Inbound ones are somebody
+    else's timing, and folding them in measures the union of two schedules ---
+    which is nobody's.
     """
     key = address.lower()
     times: list[datetime] = []
@@ -366,3 +389,98 @@ def temporal_attribution(
         chain=chain,
         rationale=profile.summary(),
     )
+
+
+class TemporalAnalyzer(Analyzer):
+    """Profile when an address acts."""
+
+    name = "temporal"
+    version = "1.0"
+    description = "Profile an address's operating hours from its own outbound activity"
+
+    def applicable(self, ctx: Context) -> bool:
+        return bool(ctx.router.candidates(ctx.chain, Capability.ADDRESS_HISTORY))
+
+    def run(
+        self,
+        ctx: Context,
+        *,
+        address: str = "",
+        direction: str = "out",
+        start_block: int = 0,
+        end_block: int | str = "latest",
+        **_: Any,
+    ) -> Result:
+        started = datetime.now(timezone.utc)
+        if not address:
+            raise ValueError("temporal profiling needs an `address`")
+        if direction not in ("out", "in"):
+            raise ValueError(f"direction must be 'out' or 'in', got {direction!r}")
+
+        seed = address.lower()
+        per_node = ctx.limit("per_node", 1000)
+        history = ctx.router.dispatch(
+            ctx.chain,
+            Capability.ADDRESS_HISTORY,
+            lambda p: p.address_history(
+                ctx.chain, seed, start_block=start_block, end_block=end_block, limit=per_node
+            ),
+        )
+        warnings: list[str] = []
+        if len(history) >= per_node:
+            # A profile built from the most recent N transfers describes the
+            # window, not the address. Saying so is the difference between a
+            # measurement and an impression.
+            warnings.append(
+                f"history was capped at {per_node} transfers, so this profile "
+                f"describes that window rather than the address's whole life"
+            )
+
+        undated = sum(1 for t in history if t.timestamp is None)
+        if undated:
+            warnings.append(
+                f"{undated} of {len(history)} transfers carry no timestamp and "
+                f"were excluded; some providers omit them"
+            )
+
+        profile = profile_activity(history, seed, direction=direction)
+        if profile.samples < MIN_SAMPLES:
+            return self._result(
+                ctx,
+                warnings=(
+                    *warnings,
+                    f"only {profile.samples} timestamped {direction}bound transfers, "
+                    f"below the {MIN_SAMPLES} needed before any pattern claim is made",
+                ),
+                params={"address": seed, "direction": direction},
+                started=started,
+            )
+
+        claim = temporal_attribution(profile, ctx.chain)
+        findings = [
+            Finding(
+                title=claim.label if claim else f"no timing pattern for {seed}",
+                severity=Severity.INFO,
+                detail=profile.summary(),
+                data={
+                    "address": seed,
+                    "samples": profile.samples,
+                    "by_hour": list(profile.by_hour),
+                    "by_weekday": list(profile.by_weekday),
+                    "peak_hour_utc": profile.peak_hour_utc,
+                    "quiet_window_utc": profile.quiet_window_utc,
+                    "concentration": profile.concentration,
+                    "likely_utc_offset": profile.likely_utc_offset,
+                    "offset_range": profile.offset_range,
+                    "looks_automated": profile.looks_automated,
+                    "confidence": claim.confidence.name if claim else None,
+                },
+            )
+        ]
+        return self._result(
+            ctx,
+            findings=tuple(findings),
+            warnings=tuple(warnings),
+            params={"address": seed, "direction": direction},
+            started=started,
+        )

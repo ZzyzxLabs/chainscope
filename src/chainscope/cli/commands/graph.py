@@ -188,6 +188,14 @@ def _walk(
     for _ in range(max(0, depth)):
         following: list[str] = []
         for address in frontier:
+            # Marked here, at the point its edges are actually read, because
+            # that is what the flag claims. Marking the ring after collecting it
+            # meant the *last* ring was flagged expanded and then the loop
+            # ended, so an address with five hundred onward transfers rendered
+            # as a leaf --- indistinguishable from one that genuinely had
+            # nowhere to go, and `graph.frontier()` came back empty on a walk
+            # that had stopped early.
+            graph.add_node(Node(address=address, chain=str(chain), expanded=True))
             for way in ways:
                 edges = store.edges(address, chain, direction=way)
                 edges.sort(key=lambda e: e.total_raw, reverse=True)
@@ -222,11 +230,13 @@ def _walk(
                         graph.truncated = True
                         continue
                     following.append(other)
+                    # This set means "queued", which is deliberately *not* the
+                    # same as the node's `expanded` flag: the last queue never
+                    # gets processed, and conflating the two is what produced
+                    # the false leaves above.
                     expanded.add(other.lower())
         if not following:
             break
-        for address in following:
-            graph.add_node(Node(address=address, chain=str(chain), expanded=True))
         frontier = following
 
     return graph

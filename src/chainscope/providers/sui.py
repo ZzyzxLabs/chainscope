@@ -48,7 +48,7 @@ from ..core.models import Account, Address, Transaction, Transfer, TransferKind,
 from ..core.units import Amount
 from ..transport.cache import Volatility
 from ..transport.http import Client, TransportError
-from .base import Capability, CostTier, ProviderError, ReadOnlyProvider
+from .base import Capability, CostTier, Provider, ProviderError, ReadOnlyProvider
 
 __all__ = ["SUI_MAINNET_RPC", "SuiProvider"]
 
@@ -99,6 +99,19 @@ class SuiProvider(ReadOnlyProvider):
     @property
     def endpoint(self) -> str:
         return self.url
+
+    @classmethod
+    def from_settings(cls, settings: Any, chain: ChainId) -> list[Provider]:
+        """Always available: Sui's public fullnode needs no key.
+
+        The configured endpoint wins if there is one, but the absence of a
+        credential is not a reason to return nothing here --- unlike the keyed
+        providers, this one works out of the box, and returning ``[]`` would
+        leave Sui with no provider at all on a fresh install.
+        """
+        if not cls.serves(chain):
+            return []
+        return [cls(settings.rpc.get("sui") or SUI_MAINNET_RPC, chain=chain)]
 
     # ---------------------------------------------------------------- request
 
@@ -391,6 +404,132 @@ class SuiProvider(ReadOnlyProvider):
             )
         out.sort(key=lambda t: t.block or 0)
         return out
+
+    def get_transaction(self, chain: ChainId, tx_hash: str) -> Transaction:
+        """One transaction block by digest.
+
+        The class declared ``Capability.TRANSACTION`` while inheriting the base
+        implementation, which refuses. The router read the declaration, picked
+        this provider, and got "sui does not provide transactions" --- and since
+        it is the only Sui provider, there was nothing to fall back to. An
+        analyzer checking ``applicable()`` was told yes and then failed at the
+        point of use, which is the expensive place to find out.
+
+        ``sender`` is the transaction's actual sender here, unlike
+        :meth:`address_history` where it is the subject being queried. There is
+        still no single ``recipient``: a programmable transaction block can
+        touch many addresses, so the detail is in ``transfers``.
+        """
+        raw = self._rpc(
+            "sui_getTransactionBlock",
+            [
+                tx_hash,
+                {
+                    "showBalanceChanges": True,
+                    "showEffects": True,
+                    "showInput": True,
+                },
+            ],
+        )
+        if not isinstance(raw, dict) or not raw.get("digest"):
+            raise ProviderError(f"transaction {tx_hash} not found")
+
+        sender = self._sender_of(raw)
+        gas = self._gas_cost(raw)
+        transfers = self._transfers_from(raw, subject=sender)
+
+        # The sender's own net native movement, gas removed. Without that
+        # correction every transaction looks like it moved its gas cost.
+        native_out = -sum(
+            int(c.get("amount", 0))
+            for c in (raw.get("balanceChanges") or [])
+            if self._owner(c.get("owner")) == sender
+            and normalize_coin_type(str(c.get("coinType") or SUI_TYPE))
+            == normalize_coin_type(SUI_TYPE)
+        )
+        status = ((raw.get("effects") or {}).get("status") or {}).get("status")
+        return Transaction(
+            ref=TxRef(self.chain, str(raw["digest"])),
+            sender=self._address(sender),
+            recipient=None,
+            value=Amount(max(0, native_out - gas), SUI_DECIMALS, "SUI"),
+            timestamp=self._when(raw),
+            block=int(raw["checkpoint"]) if raw.get("checkpoint") else None,
+            # Absent status is not success. Sui reports it in effects, and
+            # defaulting to True would silently turn every unparsed reply into a
+            # transaction that worked.
+            success=status == "success",
+            fee=Amount(max(0, gas), SUI_DECIMALS, "SUI"),
+            transfers=transfers,
+        )
+
+    @staticmethod
+    def _sender_of(tx: dict[str, Any]) -> str:
+        data = (tx.get("transaction") or {}).get("data") or {}
+        sender = data.get("sender")
+        return normalize_address(str(sender)) if sender else ""
+
+    def _transfers_from(self, tx: dict[str, Any], *, subject: str) -> tuple[Transfer, ...]:
+        """Pair balance changes into transfers for one transaction block.
+
+        Same sign-pairing rule as :meth:`asset_transfers`, applied to a single
+        already-fetched block rather than a query result.
+        """
+        digest = str(tx.get("digest") or "")
+        gas = self._gas_cost(tx)
+        native_type = normalize_coin_type(SUI_TYPE)
+
+        mine: dict[str, int] = {}
+        others: dict[str, list[tuple[str, int]]] = {}
+        for change in tx.get("balanceChanges") or []:
+            who = self._owner(change.get("owner"))
+            if who is None:
+                continue
+            try:
+                amount = int(change.get("amount", 0))
+            except (TypeError, ValueError):
+                continue
+            coin = str(change.get("coinType") or SUI_TYPE)
+            with contextlib.suppress(InvalidAddressError):
+                coin = normalize_coin_type(coin)
+            if who == subject:
+                mine[coin] = mine.get(coin, 0) + amount
+            else:
+                others.setdefault(coin, []).append((who, amount))
+
+        out: list[Transfer] = []
+        seen: set[tuple[str, str]] = set()
+        for coin, delta in mine.items():
+            native = coin == native_type
+            if native and delta < 0:
+                delta += gas
+            if delta == 0:
+                continue
+            outgoing = delta < 0
+            for who, other_delta in others.get(coin, []):
+                if (other_delta > 0) is not outgoing:
+                    continue
+                if (who, coin) in seen:
+                    continue
+                seen.add((who, coin))
+                out.append(
+                    Transfer(
+                        chain=self.chain,
+                        tx=TxRef(self.chain, digest),
+                        sender=self._address(subject if outgoing else who),
+                        recipient=self._address(who if outgoing else subject),
+                        amount=Amount(
+                            abs(other_delta),
+                            SUI_DECIMALS if native else 0,
+                            coin_symbol(coin),
+                        ),
+                        kind=TransferKind.NATIVE if native else TransferKind.TOKEN,
+                        timestamp=self._when(tx),
+                        block=int(tx["checkpoint"]) if tx.get("checkpoint") else None,
+                        asset=None if native else self._asset(coin),
+                    )
+                )
+        return tuple(out)
 
     def get_account(self, chain: ChainId, address: str) -> Account:
         """Balances for an address.

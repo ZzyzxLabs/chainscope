@@ -138,6 +138,28 @@ class Provider:
         """
         return not cls.ecosystems or chain.namespace in cls.ecosystems
 
+    @classmethod
+    def from_settings(cls, settings: Any, chain: ChainId) -> list[Provider]:
+        """Build whatever instances of this provider ``settings`` supports.
+
+        Returns a list because one provider class can yield several configured
+        instances --- an RPC provider produces one per endpoint --- and an empty
+        list because "no key for this one" is the ordinary case, not an error.
+
+        The default returns nothing. A provider that does not implement this is
+        usable from Python and invisible to the CLI, which is the safe direction:
+        the alternative is guessing at a constructor and handing the router
+        something misconfigured.
+
+        This exists because for a long time nothing built a populated router at
+        all. ``chainscope analyze`` passed an empty one, so every analyzer
+        needing a capability reported that no provider offered it --- while
+        ``doctor``, which reads entry points directly, listed the same
+        capabilities as available. Both were describing something real; neither
+        was describing the same thing.
+        """
+        return []
+
     def supports(self, chain: ChainId, capability: Capability) -> bool:
         return chain in self.chains and self.capabilities.covers(capability)
 

@@ -39,7 +39,7 @@ from ..core.models import (
 from ..core.units import Amount
 from ..transport.cache import Volatility
 from ..transport.http import Client, TransportError
-from .base import Capability, CostTier, ProviderError, ReadOnlyProvider
+from .base import Capability, CostTier, Provider, ProviderError, ReadOnlyProvider
 
 __all__ = ["ETHERSCAN_V2", "EtherscanProvider", "ResultTruncated", "is_cacheable"]
 
@@ -130,6 +130,25 @@ class EtherscanProvider(ReadOnlyProvider):
     @property
     def endpoint(self) -> str:
         return self.base_url
+
+    @classmethod
+    def from_settings(cls, settings: Any, chain: ChainId) -> list[Provider]:
+        """One instance, scoped to the chain asked for.
+
+        Etherscan V2 serves every supported EVM chain from one key, so the
+        instance is built for whichever chain the caller wants rather than a
+        fixed default --- ``chains={eth}`` on a BSC query is the exact shape of
+        misconfiguration that makes a router report "no provider" while the
+        credential sits right there.
+        """
+        if not cls.serves(chain):
+            return []
+        secret = settings.credentials.get(cls.name)
+        # `Secret.__bool__` is the emptiness check; `reveal()` is deliberately
+        # the only way out, so the call site is visible in a grep for it.
+        if not secret:
+            return []
+        return [cls(secret.reveal(), frozenset({chain}))]
 
     # ---------------------------------------------------------------- request
 

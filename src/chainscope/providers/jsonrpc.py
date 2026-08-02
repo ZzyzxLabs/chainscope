@@ -22,7 +22,7 @@ from ..core.models import Account, Address, Block, Transaction, TxRef
 from ..core.units import Amount
 from ..transport.cache import Volatility
 from ..transport.http import Client, TransportError
-from .base import Capability, CostTier, ProviderError, ReadOnlyProvider
+from .base import Capability, CostTier, Provider, ProviderError, ReadOnlyProvider
 
 __all__ = ["JsonRpcProvider"]
 
@@ -86,6 +86,30 @@ class JsonRpcProvider(ReadOnlyProvider):
         if trace:
             caps |= Capability.TRACE
         self.capabilities = caps
+
+    @classmethod
+    def from_settings(cls, settings: Any, chain: ChainId) -> list[Provider]:
+        """The configured endpoint for this chain, if there is one.
+
+        Endpoints are keyed by short name (``CHAINSCOPE_RPC_ETHEREUM``), so the
+        lookup goes through the alias table rather than CAIP-2 --- a user types
+        ``eth``, and ``eip155:1`` is not a thing anybody sets in a shell profile.
+
+        Archive and trace are left off. Whether a node keeps historical state is
+        a property of that node, not of the URL, and declaring a capability the
+        endpoint does not have makes the router pick it and fail rather than
+        pick something else that works.
+        """
+        from ..core.chainid import ALIASES
+
+        if not cls.serves(chain):
+            return []
+        names = [n for n, c in ALIASES.items() if c == chain]
+        for name in sorted(names, key=len, reverse=True):
+            url = settings.rpc.get(name)
+            if url:
+                return [cls(url, chain)]
+        return []
 
     @property
     def endpoint(self) -> str:

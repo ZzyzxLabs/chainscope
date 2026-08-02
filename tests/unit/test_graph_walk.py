@@ -129,3 +129,60 @@ class TestChainParsing:
         with pytest.raises(ValueError) as exc:
             _chain("bsc")
         assert "eip155:1" in str(exc.value)
+
+
+C = "0x" + "c" * 40
+D = "0x" + "d" * 40
+
+
+@pytest.fixture
+def chain_store(tmp_path):
+    """A → B → C → D, so a depth-limited walk has somewhere left to go."""
+    s = SqliteStore(tmp_path / "chain.db")
+    s.put_transfers(
+        [
+            transfer(A, B, TEN_ETH, block=100),
+            transfer(B, C, TEN_ETH, block=101),
+            transfer(C, D, TEN_ETH, block=102),
+        ],
+        source="t",
+    )
+    yield s
+    s.close()
+
+
+class TestTheFrontierIsHonest:
+    """``expanded`` claims this address's counterparties were fetched. The last
+    ring of a depth-limited walk was marked expanded before anything read its
+    edges, so an address with five hundred onward transfers rendered as a leaf
+    --- indistinguishable from one that genuinely had nowhere to go. That is the
+    visual form of the failure this project exists to prevent."""
+
+    def test_the_last_ring_is_frontier_not_leaf(self, chain_store):
+        graph = _walk(
+            chain_store, A, ETHEREUM, depth=1, max_nodes=50, per_node=10, direction="out"
+        )
+        b = graph.nodes[f"{ETHEREUM}:{B.lower()}"]
+        assert b.is_frontier, "B's edges were never read; it must not claim to be expanded"
+
+    def test_an_address_whose_edges_were_read_is_expanded(self, chain_store):
+        graph = _walk(
+            chain_store, A, ETHEREUM, depth=2, max_nodes=50, per_node=10, direction="out"
+        )
+        assert not graph.nodes[f"{ETHEREUM}:{B.lower()}"].is_frontier
+        # C is now the last ring: reached, but nobody looked past it.
+        assert graph.nodes[f"{ETHEREUM}:{C.lower()}"].is_frontier
+
+    def test_a_genuine_dead_end_is_not_a_frontier(self, chain_store):
+        """The distinction only means something if the other side holds: D has
+        no outbound edges, and a walk deep enough to look must say so."""
+        graph = _walk(
+            chain_store, A, ETHEREUM, depth=5, max_nodes=50, per_node=10, direction="out"
+        )
+        assert not graph.nodes[f"{ETHEREUM}:{D.lower()}"].is_frontier
+
+    def test_the_graph_reports_having_stopped_early(self, chain_store):
+        graph = _walk(
+            chain_store, A, ETHEREUM, depth=1, max_nodes=50, per_node=10, direction="out"
+        )
+        assert graph.frontier(), "a depth-limited walk with somewhere to go has a frontier"

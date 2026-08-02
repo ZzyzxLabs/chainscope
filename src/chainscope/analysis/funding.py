@@ -34,16 +34,24 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from functools import partial
 from typing import Any
 
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
+from ..core.models import Transaction
+from ..core.result import Finding, Result, Severity
+from ..providers.base import Capability, Provider
+from .base import Analyzer, Context
 
 __all__ = [
     "SERVICE_FUNDER_DEGREE",
+    "CommonFunderAnalyzer",
     "FundingCluster",
     "FundingEvent",
     "cluster_by_funder",
+    "first_funders",
 ]
 
 #: A funder paying this many distinct addresses is a service, not an operator.
@@ -160,19 +168,35 @@ def cluster_by_funder(
     will ask.
     """
     known_services = {a.lower() for a in (exclude or set())}
+
+    # Grouped on the lowercased address, and addresses deduplicated the same
+    # way. Grouping on the raw string split one funder written in two cases into
+    # two clusters of one --- and a cluster of one asserts nothing, so the
+    # technique returned "no shared funding" rather than failing. A false
+    # negative that reads as a finding.
+    #
+    # The internal pipeline happened to be safe (`Address.key` is already
+    # lowercase), which is precisely why this survived: the validation harness
+    # generated every funder in one case, so no amount of measured precision
+    # could have exposed it.
     by_funder: dict[str, list[FundingEvent]] = defaultdict(list)
+    display: dict[str, str] = {}
     for event in events:
-        by_funder[event.funder].append(event)
+        key = event.funder.lower()
+        by_funder[key].append(event)
+        # First spelling seen wins, so the output shows a checksummed address
+        # the way the user pasted it rather than a flattened one.
+        display.setdefault(key, event.funder)
 
     clusters: list[FundingCluster] = []
-    for funder, group in by_funder.items():
-        addresses = {e.address for e in group}
+    for key, group in by_funder.items():
+        addresses = {e.address.lower() for e in group}
         # Distinct addresses, not events: an operator topping one address up
         # forty times is not forty pieces of evidence.
-        is_service = funder.lower() in known_services or len(addresses) > service_degree
+        is_service = key in known_services or len(addresses) > service_degree
         clusters.append(
             FundingCluster(
-                funder=funder,
+                funder=display[key],
                 addresses=addresses,
                 events=sorted(group, key=lambda e: (e.block or 0, e.address)),
                 is_service=is_service,
@@ -218,3 +242,142 @@ def first_funders(transfers: list[Any]) -> list[FundingEvent]:
         )
         for key, (_, transfer) in earliest.items()
     ]
+
+
+def _history(
+    provider: Provider,
+    *,
+    chain: ChainId,
+    address: str,
+    lo: int,
+    hi: int | str,
+    cap: int,
+) -> list[Transaction]:
+    """A named function rather than a lambda in the loop.
+
+    A lambda closing over the loop variable is the classic way to fetch the same
+    address ``n`` times, and mypy cannot infer the type of the default-argument
+    workaround either.
+    """
+    return provider.address_history(chain, address, start_block=lo, end_block=hi, limit=cap)
+
+
+class CommonFunderAnalyzer(Analyzer):
+    """Group addresses by who first funded them."""
+
+    name = "common-funder"
+    version = "1.0"
+    description = "Group account-model addresses by who first funded them"
+
+    def applicable(self, ctx: Context) -> bool:
+        # Needs to enumerate each address's inbound history to find its *first*
+        # funder. Plain RPC cannot do that.
+        return bool(ctx.router.candidates(ctx.chain, Capability.ADDRESS_HISTORY))
+
+    def run(
+        self,
+        ctx: Context,
+        *,
+        addresses: str = "",
+        service_degree: int = SERVICE_FUNDER_DEGREE,
+        exclude: str = "",
+        start_block: int = 0,
+        end_block: int | str = "latest",
+        **_: Any,
+    ) -> Result:
+        started = datetime.now(timezone.utc)
+        seeds = [a.strip().lower() for a in addresses.split(",") if a.strip()]
+        if not seeds:
+            raise ValueError(
+                "common-funder clustering needs `addresses` --- a comma-separated "
+                "list of the addresses to group"
+            )
+
+        per_node = ctx.limit("per_node", 500)
+        warnings: list[str] = []
+        events: list[FundingEvent] = []
+
+        for seed in seeds:
+            fetch = partial(
+                _history,
+                chain=ctx.chain,
+                address=seed,
+                lo=start_block,
+                hi=end_block,
+                cap=per_node,
+            )
+            try:
+                history = ctx.router.dispatch(ctx.chain, Capability.ADDRESS_HISTORY, fetch)
+            except Exception as exc:
+                # Named, not swallowed. An address whose history could not be
+                # fetched has no funder here, and a cluster that silently omits
+                # it looks like a cluster that considered and excluded it.
+                warnings.append(f"could not fetch history for {seed}: {exc}")
+                continue
+
+            if len(history) >= per_node:
+                # The first funder is the *earliest* inbound transfer, and a
+                # capped page is not guaranteed to reach back that far. Without
+                # this the cluster still forms, and it is a cluster around
+                # whoever happened to pay first inside the window.
+                warnings.append(
+                    f"{seed} returned the full page of {per_node} transactions, so "
+                    f"its earliest inbound transfer may lie outside the window and "
+                    f"its apparent funder may not be its first"
+                )
+
+            # Failed transactions and zero-value calls are dropped here; a
+            # reverted transfer funds nothing, however it looks in a history.
+            inbound = [
+                t
+                for tx in history
+                for t in tx.value_transfers()
+                if t.recipient and t.recipient.key.lower() == seed
+            ]
+            events.extend(first_funders(inbound))
+
+        if not events:
+            return self._result(
+                ctx,
+                warnings=(*warnings, "no funding events found for any of the given addresses"),
+                params={"addresses": seeds},
+                started=started,
+            )
+
+        excluded = {a.strip().lower() for a in exclude.split(",") if a.strip()}
+        clusters = cluster_by_funder(events, service_degree=service_degree, exclude=excluded)
+
+        findings = [
+            Finding(
+                title=(
+                    f"{c.size} addresses share the funder {c.funder}"
+                    if c.links_members
+                    else f"{c.funder} looks like a service ({c.size} addresses)"
+                ),
+                # A service cluster is a link declined, not a link found.
+                severity=Severity.NOTABLE if c.links_members else Severity.INFO,
+                detail=c.summary(),
+                data=c.to_dict(),
+            )
+            for c in clusters
+            if c.size > 1
+        ]
+
+        unfunded = len(seeds) - len({e.address for e in events})
+        if unfunded > 0:
+            warnings.append(
+                f"{unfunded} of {len(seeds)} addresses had no inbound transfer in "
+                f"the window and appear in no cluster"
+            )
+
+        return self._result(
+            ctx,
+            findings=tuple(findings),
+            warnings=tuple(warnings),
+            params={
+                "addresses": seeds,
+                "service_degree": service_degree,
+                "exclude": sorted(excluded),
+            },
+            started=started,
+        )

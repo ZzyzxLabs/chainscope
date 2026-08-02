@@ -1,12 +1,32 @@
 name: CI
 
+# Deliberately small. `scripts/ci-local.sh` runs ruff, mypy, pytest, the build,
+# and the fixture scan on the developer's machine before every commit, so
+# running them again here on every push buys a second opinion on the same
+# question at the cost of minutes per push.
+#
+# What remains is what a macOS/3.12 laptop genuinely cannot answer:
+#   - Linux and the oldest supported Python, on every push (cheap, and the
+#     version floor is where syntax mistakes surface);
+#   - Windows, the rest of the version matrix, Docker, Nix, and uvx, on demand.
+#
+# The on-demand set is not decoration. Windows caught a socket guard that broke
+# the proactor event loop's self-pipe, and the Nix job is the only thing that
+# has ever verified the flake --- it was written on a machine without Nix and
+# was missing a keccak backend. Run `full` before tagging a release, after
+# touching packaging, or when anything reaches for the network or the loopback
+# server.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      full:
+        description: "Also run Windows, the version matrix, Docker, Nix, and uvx"
+        type: boolean
+        default: true
 
-# A PR that only rewords a docstring should not queue behind five stale runs.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -21,38 +41,43 @@ env:
   PYTHONHASHSEED: "0"
 
 jobs:
-  lint:
-    name: lint & types
+  # The one job that runs on every push. Python 3.10 rather than 3.12 because
+  # the local gates already cover 3.12 --- this is the floor, and the floor is
+  # where a 3.12-only syntax feature shows up as a syntax error.
+  check:
+    name: lint, types & tests (linux, 3.10)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.10"
           cache: pip
       - run: pip install -e ".[dev,all]"
-      - name: ruff
-        run: ruff check src tests
-      - name: ruff format check
-        run: ruff format --check src tests
-      - name: mypy (strict)
-        run: mypy
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+      - run: mypy
+      # Note the absence of --network. The suite blocks sockets at the fixture
+      # level (tests/conftest.py); this is the second line of defence.
+      - run: pytest -q --tb=short
 
-  test:
+  # ------------------------------------------------------------------ on demand
+
+  matrix:
     name: pytest ${{ matrix.python }} / ${{ matrix.os }}
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.11", "3.12", "3.13"]
-        os: [ubuntu-latest]
         include:
+          - { python: "3.11", os: ubuntu-latest }
+          - { python: "3.12", os: ubuntu-latest }
+          - { python: "3.13", os: ubuntu-latest }
           # Path handling and SQLite behaviour differ enough to be worth one
-          # run each; no need for the full matrix.
-          - python: "3.12"
-            os: macos-latest
-          - python: "3.12"
-            os: windows-latest
+          # run each. Windows is the one that has actually caught something.
+          - { python: "3.12", os: macos-latest }
+          - { python: "3.12", os: windows-latest }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -60,19 +85,36 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
       - run: pip install -e ".[dev,all]"
-      # Note the absence of --network. The suite blocks sockets at the fixture
-      # level (tests/conftest.py); this is the second line of defence, not the
-      # first.
       - run: pytest -q --tb=short
 
-  build:
-    name: build & metadata
+  loopback:
+    name: local server (loopback only)
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev,all]"
+      # These bind a socket on 127.0.0.1, so they carry the `network` marker and
+      # are deselected by default. They reach no remote host --- the marker is
+      # about binding --- and the security model they cover is the reason the
+      # browser extension is safe to run at all.
+      - run: pytest tests/unit/test_local_server.py -q --network
+
+  package:
+    name: build, docker, nix, uvx
+    if: github.event_name == 'workflow_dispatch' && inputs.full
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
       - run: pip install build twine
       - run: python -m build
       - name: validate package metadata
@@ -82,30 +124,9 @@ jobs:
           name: dist
           path: dist/
 
-  loopback:
-    name: local server (loopback only)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install -e ".[dev,all]"
-      # These bind a socket on 127.0.0.1, so they carry the `network` marker
-      # and are deselected by default. They reach no remote host --- the marker
-      # is about binding, not about the internet --- and the security model
-      # they cover is the reason the extension is safe to run at all.
-      - run: pytest tests/unit/test_local_server.py -q --network
-
-  container:
-    name: docker image builds and runs
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
       - run: docker build -t chainscope:ci .
-      # Runs as a non-root user; a forensics tool reads untrusted data all day
-      # and mounts a case directory, so uid 0 is a bad trade for nothing.
+      # A forensics tool reads untrusted data all day and mounts a case
+      # directory; uid 0 is a bad trade for nothing.
       - name: it does not run as root
         run: |
           uid=$(docker run --rm --entrypoint id chainscope:ci -u)
@@ -122,9 +143,9 @@ jobs:
       - name: the end-to-end path works in the container
         run: |
           mkdir -p "$RUNNER_TEMP/case"
-          # As the invoking user. The image defaults to uid 1000 and a runner
-          # is 1001, so without this the bind mount is unwritable -- which is
-          # exactly what a user on any shared machine would hit.
+          # As the invoking user. The image defaults to uid 1000 and a runner is
+          # 1001, so without this the bind mount is unwritable -- exactly what a
+          # user on any shared machine would hit.
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$RUNNER_TEMP/case:/case" chainscope:ci \
             tag 0x28C6c06298d514Db089934071355E5743bf21d60 \
@@ -134,121 +155,25 @@ jobs:
         run: |
           # The whole reply, then matched. An earlier version piped through
           # `head -c 400` and grepped for "protocolVersion" -- the server's
-          # `instructions` string pushes that field past the cut, so a
-          # perfectly good handshake was reported as a failure. The container
-          # was fine; the assertion was written against an assumed shape.
+          # `instructions` string pushes that field past the cut, so a perfectly
+          # good handshake was reported as a failure. The container was fine;
+          # the assertion was written against an assumed shape.
           reply=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
             | docker run --rm -i --entrypoint chainscope-mcp chainscope:ci)
-          echo "$reply" | head -c 200
           echo "$reply" | grep -q '"result"'
           echo "$reply" | grep -q '"protocolVersion"'
           echo "$reply" | grep -q 'chainscope'
 
-  nix:
-    name: nix flake
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: "experimental-features = nix-command flakes"
-      # The flake was written on a machine without Nix, so this job is its
-      # only verification. If it breaks, the flake is wrong -- not the job.
+      # The flake was written on a machine without Nix, so this is its only
+      # verification. If it breaks, the flake is wrong -- not the job.
       - run: nix flake check --no-build
       - run: nix build .#chainscope --print-build-logs
       - run: ./result/bin/chainscope --help
 
-  uvx:
-    name: uvx runs it with no install
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
-      # The zero-install path. If this breaks, the console scripts or the
-      # extras are wrong, and the first thing a new user tries fails.
-      - run: uvx --from '.[all]' chainscope doctor || true
+      # The zero-install path. If this breaks, the console scripts or the extras
+      # are wrong, and the first thing a new user tries fails.
       - run: uvx --from '.[all]' chainscope --help
-
-  cassettes:
-    name: recorded fixtures carry no credentials
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      # A cassette is committed to a public repository, so a key inside one is
-      # a disclosed key. Cassette.save() already refuses to write a leaking
-      # file, but a fixture edited by hand never passed through it -- and by
-      # the time anyone would notice, it is in the history.
-      - name: scan fixtures for credential shapes
-        run: |
-          python - <<'PY'
-          import pathlib, re, sys
-
-          FIXTURES = sorted(pathlib.Path("tests/cassettes").glob("*.json"))
-          if not FIXTURES:
-              print("no cassettes recorded yet; nothing to check")
-              sys.exit(0)
-
-          # Keys are opaque and long; the point is to catch anything that looks
-          # like one surviving next to a credential-ish name, plus the two
-          # embedded-in-path conventions.
-          SUSPECT = re.compile(
-              r"(?i)(apikey|api_key|token|secret|password|authorization)"
-              r"\"?\s*[:=]\s*\"?([A-Za-z0-9_\-]{16,})"
-          )
-          PATH_KEY = re.compile(r"/(v\d+)/([A-Za-z0-9_-]{20,})")
-
-          bad = []
-          for f in FIXTURES:
-              text = f.read_text()
-              for m in SUSPECT.finditer(text):
-                  if m.group(2) != "redacted":
-                      bad.append(f"{f}: {m.group(1)} looks unredacted")
-              for m in PATH_KEY.finditer(text):
-                  bad.append(f"{f}: key-shaped path segment /{m.group(1)}/...")
-
-          if bad:
-              print("Credential-shaped content in committed fixtures:")
-              for b in bad:
-                  print("  " + b)
-              print("\nRe-record with scripts/record_cassettes.py, and treat any")
-              print("key that reached a pushed fixture as disclosed.")
-              sys.exit(1)
-          print(f"{len(FIXTURES)} cassette(s) clean")
-          PY
-
-  data-sources:
-    name: attribution sources are documented
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      # An attribution source whose provenance nobody wrote down becomes, three
-      # tools later, a fact nobody can trace back. This check makes that
-      # omission fail the build rather than fail an investigation.
-      - name: every source module has a row in docs/data-sources.md
-        run: |
-          python - <<'PY'
-          import pathlib, sys
-
-          src_dir = pathlib.Path("src/chainscope/attribution/sources")
-          if not src_dir.exists():
-              print("no sources yet; nothing to check")
-              sys.exit(0)
-
-          doc = pathlib.Path("docs/data-sources.md").read_text().lower()
-          missing = [
-              p.stem for p in src_dir.glob("*.py")
-              if not p.stem.startswith("_") and p.stem.lower() not in doc
-          ]
-          if missing:
-              print("Undocumented attribution sources:", ", ".join(missing))
-              print("Add a row to docs/data-sources.md covering publisher,")
-              print("license, redistribution terms, and confidence level.")
-              sys.exit(1)
-          print("all attribution sources documented")
-          PY

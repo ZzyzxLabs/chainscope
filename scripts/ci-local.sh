@@ -9,13 +9,22 @@
 # gate that makes you wait ninety seconds to be told about a formatting slip
 # gets bypassed, and a bypassed gate is not a gate.
 #
-# WHAT THIS CANNOT CATCH: CI also runs Windows and macOS, and Python 3.10
-# through 3.13. Platform-specific failures --- a path separator, an event loop
-# that behaves differently, a stdlib change --- will still only appear there.
-# The last one that reached main was exactly that shape: Windows' proactor
-# event loop opens an AF_INET socket for its own self-pipe, which nothing on a
-# Unix machine does. Treat a green run here as "no obvious problem", not as
-# "CI will pass".
+# These gates are the primary ones. GitHub runs a single Linux/3.10 job on
+# push; everything else there --- Windows, the rest of the version matrix,
+# Docker, Nix, uvx --- is manual (`workflow_dispatch` with `full`), because
+# paying minutes per push for a second opinion on what already ran here is a
+# poor trade.
+#
+# WHAT THIS CANNOT CATCH, and what to run `full` for: platform-specific
+# failures. The last one that reached main was exactly that shape --- Windows'
+# proactor event loop opens an AF_INET socket for its own self-pipe, which
+# nothing on a Unix machine does. Packaging is the other: the Nix flake was
+# written on a machine without Nix and shipped without a keccak backend, and
+# the on-demand job is the only thing that has ever checked it.
+#
+# So: green here means "no obvious problem". Run `full` before a release, after
+# touching packaging, and when anything reaches the network or the loopback
+# server.
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -55,6 +64,25 @@ step "ruff check"        ruff check src tests scripts
 step "ruff format"       ruff format --check src tests scripts
 step "mypy (strict)"     mypy
 step "pytest"            "$PY" -m pytest -q --tb=short
+
+# Cheap, pure-Python, and previously GitHub-only. They belong on this side of
+# the line: they cost under a second and catch things that are expensive to
+# discover late --- a key in a committed fixture is a disclosed key by the time
+# anyone reads the diff.
+step "attribution sources documented" "$PY" - <<'PY'
+import pathlib, sys
+src = pathlib.Path("src/chainscope/attribution/sources")
+if not src.exists():
+    sys.exit(0)
+doc = pathlib.Path("docs/data-sources.md").read_text().lower()
+missing = [p.stem for p in src.glob("*.py")
+           if not p.stem.startswith("_") and p.stem.lower() not in doc]
+if missing:
+    print("Undocumented attribution sources:", ", ".join(missing))
+    print("Add a row to docs/data-sources.md: publisher, license,")
+    print("redistribution terms, confidence level.")
+    sys.exit(1)
+PY
 
 if [ "$FULL" = 1 ]; then
   step "fixtures carry no secrets" "$PY" - <<'PY'

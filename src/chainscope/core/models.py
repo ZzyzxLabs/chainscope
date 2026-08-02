@@ -151,6 +151,46 @@ class Transaction:
             return None
         return d[2:10].lower() if d.startswith("0x") else d[:8].lower()
 
+    def value_transfers(self) -> tuple[Transfer, ...]:
+        """The value movements this transaction actually produced.
+
+        ``address_history`` returns transactions, but most analysis is about
+        movements, and every analyzer that wanted them was reaching into
+        ``.value``/``.transfers`` by hand --- or, in one case, assuming the
+        provider returned :class:`Transfer` and quietly reading fields that do
+        not exist.
+
+        Two things are decided here rather than at each call site.
+
+        **A failed transaction moves nothing.** It appears in an address's
+        history, it cost gas, and its ``value`` is whatever was attempted. An
+        analyzer that counts it has found a payment that never happened --- and
+        for anything asking "who funded this address first", a reverted
+        transaction is precisely the wrong answer.
+
+        **A zero-value call is not a transfer.** Contract calls carry
+        ``value == 0`` constantly; emitting them would put an edge on the graph
+        for every approval anybody ever signed.
+        """
+        if not self.success:
+            return ()
+        out: list[Transfer] = []
+        if self.value.raw > 0:
+            out.append(
+                Transfer(
+                    chain=self.ref.chain,
+                    tx=self.ref,
+                    sender=self.sender,
+                    recipient=self.recipient,
+                    amount=self.value,
+                    kind=TransferKind.NATIVE,
+                    timestamp=self.timestamp,
+                    block=self.block,
+                )
+            )
+        out.extend(self.transfers)
+        return tuple(out)
+
 
 @dataclass(frozen=True, slots=True)
 class Block:

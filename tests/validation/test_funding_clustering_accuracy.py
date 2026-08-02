@@ -257,3 +257,54 @@ class TestScale:
         # Recall is below 1 only because the exchange customers are correctly
         # not linked --- and they were never one entity to begin with.
         assert recall == 1.0
+
+
+class TestCaseIsNotIdentity:
+    """The harness above generates every funder in one case, so no amount of
+    measured precision could expose a grouping key that is case-sensitive ---
+    and that is exactly the bug it missed. One funder written three ways became
+    three clusters of one, and a cluster of one asserts nothing, so the
+    technique reported "no shared funding" instead of failing.
+
+    Ground truth measures what the data can express. These cases exist because
+    the synthetic world was too clean to contain the failure."""
+
+    def test_one_funder_in_three_cases_is_one_cluster(self):
+        events = [
+            FundingEvent(address="0xaaa", funder="0xABCDEF"),
+            FundingEvent(address="0xbbb", funder="0xabcdef"),
+            FundingEvent(address="0xccc", funder="0xAbCdEf"),
+        ]
+        clusters = [c for c in cluster_by_funder(events) if c.links_members]
+        assert len(clusters) == 1
+        assert clusters[0].size == 3
+
+    def test_the_same_address_in_two_cases_is_one_member(self):
+        """Otherwise a cluster's size --- which is what the service guard reads
+        --- counts one address twice, and the guard trips early."""
+        events = [
+            FundingEvent(address="0xAAA", funder="0xf"),
+            FundingEvent(address="0xaaa", funder="0xf"),
+        ]
+        assert cluster_by_funder(events)[0].size == 1
+
+    def test_exclusion_ignores_case(self):
+        events = [FundingEvent(address=f"0xa{i}", funder="0xEXCHANGE") for i in range(3)]
+        cluster = cluster_by_funder(events, exclude={"0xexchange"})[0]
+        assert cluster.is_service
+        assert not cluster.links_members
+
+    def test_the_reported_funder_keeps_the_spelling_it_arrived_with(self):
+        """Lowercasing the key must not lowercase the output: a checksummed
+        address is how the user will search for it again."""
+        events = [FundingEvent(address=f"0xa{i}", funder="0xAbCdEf") for i in range(2)]
+        assert cluster_by_funder(events)[0].funder == "0xAbCdEf"
+
+    def test_the_service_guard_counts_case_folded_addresses(self):
+        """A funder just over the threshold, written in mixed case, must still
+        be caught --- the guard is the difference between 100% and 0.7%."""
+        events = [
+            FundingEvent(address=f"0xa{i:04X}", funder="0xSERVICE")
+            for i in range(SERVICE_FUNDER_DEGREE + 1)
+        ]
+        assert cluster_by_funder(events)[0].is_service

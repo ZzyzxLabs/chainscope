@@ -57,11 +57,17 @@ async function resolve(address, chain) {
   const key = `${chain}:${address.toLowerCase()}`;
   if (cache.has(key)) return cache.get(key);
   if (pending.has(key)) return null;
-  pending.add(key);
 
+  // Everything that can return early happens *before* the key is marked
+  // in-flight. It used to be marked first, and the no-token return sat above
+  // the try/finally that clears it -- so with no token configured, every
+  // address the user hovered was pinned in `pending` permanently. Setting a
+  // token afterwards did not help: those keys now short-circuit on the line
+  // above, for the life of the page, with no error anywhere.
   const { endpoint, token } = await settings();
   if (!token) return null;
 
+  pending.add(key);
   try {
     const url = `${endpoint}/resolve?address=${encodeURIComponent(address)}` +
                 `&chain=${encodeURIComponent(chain)}`;

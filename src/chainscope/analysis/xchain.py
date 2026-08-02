@@ -125,8 +125,15 @@ class CrossChainMatcher(Analyzer):
     version = "1.0"
     description = "Match a deposit on one chain to its payout on another"
 
-    def __init__(self, prices: PriceSource, scanner: Any = None) -> None:
+    def __init__(self, prices: PriceSource | None = None, scanner: Any = None) -> None:
         self.prices = prices
+        """Optional at construction so that ``cls()`` succeeds and ``--list``
+        can read this analyzer's description. Requiring it here made the
+        analyzer registered-but-unlistable --- present in the metadata,
+        invisible to the one command that exists to find it. Absence is
+        enforced in :meth:`run` instead, where the message can name what is
+        missing."""
+
         self.scanner = scanner
         """Object exposing ``outputs_between(t_lo, t_hi, min_amount, max_amount)``.
 
@@ -152,6 +159,8 @@ class CrossChainMatcher(Analyzer):
             raise ValueError("cross-chain matching needs `amount`, `asset`, and `at`")
         if at.tzinfo is None:
             raise ValueError("`at` must be timezone-aware")
+        if self.prices is None:
+            raise ValueError("no price source configured; cross-chain matching needs one")
         if self.scanner is None:
             raise ValueError("no scanner configured for the target chain")
 
