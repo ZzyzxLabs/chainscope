@@ -170,6 +170,28 @@ class JsonRpcProvider(ReadOnlyProvider):
         raw = self._call("eth_getBlockByNumber", [tag, False], vol)
         if not raw:
             raise ProviderError(f"block {number} not found")
+
+        # Verify the block that came back is the block that was asked for.
+        #
+        # Field notes from a real multi-chain trace record this failure costing
+        # a submitted answer: a block number off by one hex digit returned a
+        # different block, and the timestamps taken from it put an event days
+        # from where it happened. Nothing errored. Every conclusion built on
+        # that timestamp was confidently wrong.
+        #
+        # The conversion here cannot be mistyped, but the *response* can still
+        # be the wrong one: a cache entry scoped too loosely, a JSON-RPC batch
+        # whose ids got crossed -- the same notes warn about both. A response
+        # carries its own number, so checking is one comparison, and the
+        # alternative is a wrong timestamp that looks exactly like a right one.
+        returned = _hexint(raw.get("number"))
+        if not isinstance(number, str) and returned != number:
+            raise ProviderError(
+                f"asked for block {number} and the endpoint returned {returned}. "
+                f"Refusing rather than using it: timestamps from the wrong block "
+                f"are indistinguishable from correct ones downstream. This is "
+                f"usually a mis-scoped cache entry or crossed JSON-RPC batch ids."
+            )
         return Block(
             chain=chain,
             number=_hexint(raw["number"]),
