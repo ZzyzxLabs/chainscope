@@ -108,6 +108,25 @@ The lesson is the one the intuition keeps getting wrong: **the slow thing was
 data movement wearing a Python costume.** Reaching for another language would
 have been an expensive way to not fix it.
 
+**Re-run, because a documented number nobody checks is a stale assertion in a
+different font.** Every figure above still reproduces:
+
+| | measured then | measured now |
+|---|---:|---:|
+| SQLite write, 200k | 2.10 s | 1.71 s |
+| DuckDB view build, 200k | ~1 s | 1.15 s (173,792 rows/s) |
+| Aggregate over the whole table | 9.8 ms | 4.1 ms |
+
+`chains.address_key`, added later to fix a case-folding bug on three chains,
+runs on every written address --- and costs **2% of the write path** at 5.9
+million calls a second, because the adapter lookup is cached. That was the
+justification for the cache; now it is a number.
+
+`tests/validation/test_the_performance_claim_holds.py` pins the *shape* rather
+than the timings: bounds an order of magnitude clear of the measurements, so it
+fails when a per-row round trip creeps back in and stays quiet about the
+difference between two machines.
+
 **The case would change** if interactive traversal over tens of millions of
 edges becomes the bottleneck. If profiling ever shows that, the answer is to
 extract *that one component*, not to rewrite the framework.
