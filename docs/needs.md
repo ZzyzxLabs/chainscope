@@ -143,6 +143,43 @@ further; going past the outermost ring needs a live fetch, which needs the
 loopback server and a token. *Inferred:* worth doing, and it trades away the
 property that the file works with no network.
 
+### What an hour inside MetaSleuth showed
+
+**Observed** --- driving the product, signed in, on the Ronin bridge exploiter.
+The gap is not any single feature. It is that **their graph is a document and
+ours is an export.**
+
+Theirs opens as `untitled ✎` with a save button, undo and redo, and a share
+link. Everything on the canvas is editable: rename a node, recolour it, delete
+it, attach a rich-text memo to it, drop an arbitrary address on with *Add
+Address / Tx*, or draw an edge between two nodes by hand. The address filter is
+a searchable checkbox roster of every node currently on the canvas --- which
+doubles as the answer to "what is in this picture", a question our view cannot
+be asked. Sharing takes a snapshot and hands over a link; the recipient edits
+their own copy, and a toggle decides whether your private labels travel with it.
+
+Two of those are worth taking as they are, and one is worth refusing:
+
+- **The roster.** Cheap, and it turns the canvas into something that can be
+  audited rather than only looked at. *Inferred:* the highest ratio of value to
+  work in this list.
+- **Persistence.** The real one, and architectural rather than cosmetic: the
+  layout, the folds, the scrub position and the annotations have to round-trip,
+  which means the view stops being a rendering of a query and starts being
+  state. Everything else here is downstream of it.
+- **The hand-drawn edge, as they have it, is not worth copying.** An edge
+  somebody drew is a hypothesis; an edge from a transfer is a record. Their
+  canvas draws them identically, and this whole package exists because that
+  distinction is the one that gets lost. If it is added here, a drawn edge has
+  to *look* asserted and carry who asserted it --- which is the rule
+  `Attribution` already enforces, applied to the picture.
+
+The same reasoning applies to their per-node memo. It is free text with no
+author and no timestamp on the face of it, which is fine for a scratchpad and
+not fine for a record two people share. `chainscope note` carries the author,
+how that author was identified, and what kind of statement it is, so that a
+report can say who concluded what --- see §7.
+
 ---
 
 ## 6. Needs nobody has hit yet
@@ -193,11 +230,34 @@ address, and through what --- is composable from the taint and graph code that
 already exists, and would need saying loudly that it is a heuristic, because a
 number between 0 and 100 invites being read as a measurement.
 
-**Reporting.** A one-click PDF or DOCX with the graph, the timeline, and the
-address table. Case-level narrative, which does not exist at all: rationale
-attaches to a claim and nothing attaches to the investigation. And per-analyst
-identity on every claim, so a shared case shows who said what and where two
-people disagreed --- see §4, which names the same gap from the provenance side.
+**Reporting.** *Shipped.* `chainscope note` is the case narrative that did not
+exist at all --- rationale attached to a claim and nothing attached to the
+investigation. It is append-only, four kinds, and each note carries its author
+*and how that author was identified*, because a name resolved from an OS account
+is not authorship and a shared case has to be able to say which is which.
+`Attribution.analyst` carries the same for claims; schema 4 puts it in the
+uniqueness key, since without it two people asserting the same label collapsed
+into one row and the record then said one person concluded what two had.
+
+`chainscope report` assembles the four into one file, with two deliberate
+orderings: **open questions come before the findings**, because a report
+ordered the usual way reads as finished no matter how much of it is not; and
+where two sources of comparable strength disagree, both are printed with the
+name against each and neither is picked --- that is a judgement for a person,
+and it belongs in the narrative as a `decision`, where it carries a name.
+
+Notes live in `case.db`, not the store, and that separation is the design rather
+than a detail: the store is rebuildable and `clear()` exists, and a narrative a
+routine rebuild can destroy is one nobody will commit anything important to.
+
+**Still open, and now visible because of the above:** hand-made attributions
+have the same not-rebuildable property as notes and still live in the disposable
+store. *Observed* while writing the separation argument --- `chainscope tag`
+writes judgement into a file the tool documents as safe to delete.
+
+Not done: DOCX. The HTML carries a print stylesheet, so browser print-to-PDF
+gives the artefact people attach to an e-mail; a server-side PDF or DOCX
+renderer is a large dependency for a job the browser already does.
 
 **Exchange correspondence.** Which KYC request went to whom, when, and whether
 it came back; freeze requests; the clock on a legal process while the money

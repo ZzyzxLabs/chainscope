@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ...attribution.ingest import ImportError_, ingest_file, plan_import
+from ...case.log import whoami
 from ...core.attribution import Attribution, Category, Confidence, Method
 from ...core.chainid import ChainId, resolve
 from ...render.base import Renderer
@@ -81,6 +82,11 @@ def add_parser(sub: Any, name: str) -> None:
         "'manual' when tagging one address and 'list' when importing a file",
     )
     p.add_argument("--chain", "-c", help="CAIP-2 id or EVM chain number")
+    p.add_argument(
+        "--analyst",
+        help="who is making this claim. Defaults to $CHAINSCOPE_ANALYST, then "
+        "git's user.email. Distinct from --source, which is where you learnt it",
+    )
     p.add_argument("--store", type=Path, default=Path(".chainscope/store.db"))
     p.add_argument(
         "--apply",
@@ -144,6 +150,7 @@ def _tag_one(args: argparse.Namespace, render: Renderer) -> int:
             address=args.target,
             chain=_chain(args.chain),
             rationale=args.why,
+            analyst=_analyst(args),
         )
     except ValueError as exc:
         # Includes the two refusals that matter: no source, and a low-confidence
@@ -162,7 +169,33 @@ def _tag_one(args: argparse.Namespace, render: Renderer) -> int:
         f"({attribution.category.value}, {attribution.confidence.name.lower()}, "
         f"source: {attribution.source})"
     )
+    if attribution.analyst:
+        print(f"  asserted by {attribution.analyst}")
+    else:
+        print(
+            "  no analyst recorded. Set CHAINSCOPE_ANALYST or git user.email so "
+            "a\n  shared case can say who made this claim.",
+            file=sys.stderr,
+        )
     return 0
+
+
+def _analyst(args: argparse.Namespace) -> str:
+    """Who is asserting this, when a person is.
+
+    Only for the single-address path. A bulk import is a list somebody
+    compiled, not a judgement each row was made with, and stamping every row of
+    a thirty-thousand-line CSV with the name of whoever ran the import would
+    make the field mean nothing on the rows where it matters.
+
+    The OS account is not used. A machine login is not authorship, and a claim
+    signed with one is worse than a claim signed with nothing --- it looks
+    attributed.
+    """
+    if args.analyst:
+        return str(args.analyst).strip()
+    who = whoami()
+    return who.name if who.is_chosen else ""
 
 
 def _confidence(raw: str) -> Confidence:

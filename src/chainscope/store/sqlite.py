@@ -97,21 +97,6 @@ CREATE INDEX IF NOT EXISTS ix_tr_block     ON transfers(chain, block);
 CREATE INDEX IF NOT EXISTS ix_tr_amount    ON transfers(chain, amount_raw);
 CREATE INDEX IF NOT EXISTS ix_tr_asset     ON transfers(chain, asset);
 
-CREATE TABLE IF NOT EXISTS attributions (
-    id          INTEGER PRIMARY KEY,
-    address     TEXT NOT NULL,
-    chain       TEXT,
-    label       TEXT NOT NULL,
-    category    TEXT NOT NULL,
-    confidence  INTEGER NOT NULL,
-    method      TEXT NOT NULL,
-    source      TEXT NOT NULL,
-    rationale   TEXT NOT NULL DEFAULT '',
-    observed_at INTEGER,
-    UNIQUE (address, source, label)
-);
-CREATE INDEX IF NOT EXISTS ix_attr_address ON attributions(address);
-
 CREATE TABLE IF NOT EXISTS expanded (
     address    TEXT NOT NULL,
     chain      TEXT NOT NULL,
@@ -120,6 +105,43 @@ CREATE TABLE IF NOT EXISTS expanded (
     PRIMARY KEY (address, chain)
 );
 """
+
+#: The attributions table, held apart from the rest as individual statements.
+#:
+#: Migration rebuilds this table, and `executescript` cannot be used to do it:
+#: Python's sqlite3 issues an implicit COMMIT before running a script, so a
+#: migration that used one would be committed halfway through and could not be
+#: rolled back. These run through `execute()` inside the migration's
+#: transaction instead.
+_ATTRIBUTIONS = (
+    """
+    CREATE TABLE IF NOT EXISTS attributions (
+        id          INTEGER PRIMARY KEY,
+        address     TEXT NOT NULL,
+        chain       TEXT,
+        label       TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        confidence  INTEGER NOT NULL,
+        method      TEXT NOT NULL,
+        source      TEXT NOT NULL,
+        rationale   TEXT NOT NULL DEFAULT '',
+        observed_at INTEGER,
+        -- Who wrote it down, as against `source`, which is where they got it.
+        analyst     TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    # `analyst` belongs in the key for the same reason `asset` and `kind` belong
+    # in the transfer key: without it a row is dropped silently. Two analysts
+    # reading the same explorer page and both tagging an address produce
+    # identical (address, source, label), so INSERT OR IGNORE kept the first and
+    # discarded the second -- and the case record then said one person asserted
+    # something two people had. In a shared case that is the fact worth keeping.
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_attr_identity
+        ON attributions(address, source, label, analyst)
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_attr_address ON attributions(address)",
+)
 
 
 #: Digits used to pad amounts. Total ETH supply is ~1.2e26 wei, so 40 leaves
@@ -188,7 +210,14 @@ class SqliteStore(Store):
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
+        # Version first, then the attributions table. The order matters on an
+        # older store: its `attributions` already exists, so the CREATE below is
+        # a no-op and the unique index would be built against a table with no
+        # `analyst` column. Migration has to have run by then.
         self._check_schema()
+        for statement in _ATTRIBUTIONS:
+            self._conn.execute(statement)
+        self._conn.commit()
 
     def _check_schema(self) -> None:
         row = self._conn.execute(
@@ -201,13 +230,78 @@ class SqliteStore(Store):
             self._conn.commit()
             return
         found = int(row["value"])
-        if found != SCHEMA_VERSION:
-            # Loudly, not optimistically: a partially-understood store gets
-            # trusted, and its wrongness is invisible.
-            raise StoreError(
-                f"store at {self.path} uses schema {found}, this build reads "
-                f"{SCHEMA_VERSION}. Migrate, or rebuild from the cache."
-            )
+        if found == SCHEMA_VERSION:
+            return
+        if found < SCHEMA_VERSION:
+            self.migrate(found)
+            return
+        # Forward is not migration, it is guessing. A store written by a newer
+        # build may hold columns this one drops on the next write.
+        raise StoreError(
+            f"store at {self.path} uses schema {found}, this build reads "
+            f"{SCHEMA_VERSION}. It was written by a newer chainscope; upgrade, "
+            f"or rebuild from the cache."
+        )
+
+    def migrate(self, from_version: int) -> None:
+        """Upgrade an older store in place.
+
+        Only additive steps are automatic. Every migration here adds a column or
+        widens a uniqueness key, neither of which can lose a row --- widening a
+        unique key can only ever admit more, so it cannot fail against existing
+        data. A step that could drop or reinterpret rows does not belong in a
+        function that runs without being asked; that is what the rebuild
+        guarantee in :mod:`chainscope.store.base` is for.
+
+        Each step runs in one transaction. A half-applied store is
+        indistinguishable from a complete one and would be trusted.
+        """
+        version = from_version
+        with self._lock:
+            try:
+                if version == 3:
+                    self._migrate_3_to_4()
+                    version = 4
+                if version != SCHEMA_VERSION:
+                    raise StoreError(
+                        f"no automatic migration from schema {from_version} to "
+                        f"{SCHEMA_VERSION}. Rebuild from the cache."
+                    )
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)",
+                    (str(SCHEMA_VERSION),),
+                )
+                self._conn.commit()
+            except StoreError:
+                self._conn.rollback()
+                raise
+            except sqlite3.Error as exc:
+                self._conn.rollback()
+                raise StoreError(
+                    f"migrating {self.path} from schema {from_version} failed and "
+                    f"was rolled back: {exc}"
+                ) from exc
+
+    def _migrate_3_to_4(self) -> None:
+        """Add `analyst` to attributions and put it in the uniqueness key.
+
+        The key was a table-level `UNIQUE (address, source, label)`, which
+        SQLite cannot alter, so the table is rebuilt. Existing rows get an empty
+        analyst --- that is the truthful value, since schema 3 recorded no
+        authorship and inventing one now would attribute somebody's claims to
+        whoever happens to run the upgrade.
+        """
+        self._conn.execute("ALTER TABLE attributions RENAME TO attributions_v3")
+        for statement in _ATTRIBUTIONS:
+            self._conn.execute(statement)
+        self._conn.execute(
+            "INSERT OR IGNORE INTO attributions "
+            "(address, chain, label, category, confidence, method, source, "
+            " rationale, observed_at, analyst) "
+            "SELECT address, chain, label, category, confidence, method, source, "
+            "       rationale, observed_at, '' FROM attributions_v3"
+        )
+        self._conn.execute("DROP TABLE attributions_v3")
 
     # ---------------------------------------------------------------- writing
 
@@ -256,6 +350,7 @@ class SqliteStore(Store):
                 a.source,
                 a.rationale,
                 _ts(a.observed_at),
+                a.analyst,
             )
             for a in attributions
         ]
@@ -266,7 +361,7 @@ class SqliteStore(Store):
             self._conn.executemany(
                 "INSERT OR IGNORE INTO attributions "
                 "(address, chain, label, category, confidence, method, source, "
-                " rationale, observed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                " rationale, observed_at, analyst) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 rows,
             )
             self._conn.commit()
@@ -448,6 +543,7 @@ class SqliteStore(Store):
                 source=r["source"],
                 rationale=r["rationale"],
                 observed_at=_dt(r["observed_at"]),
+                analyst=r["analyst"],
             )
             for r in rows
         ]

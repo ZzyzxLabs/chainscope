@@ -163,6 +163,21 @@ class Attribution:
     evidence_ref: str | None = None
     """Key into a case bundle's evidence store, if one backs this claim."""
 
+    analyst: str = ""
+    """Who recorded this, when a person did.
+
+    Distinct from :attr:`source`, and the distinction is the whole reason this
+    field exists. *Source* is where the knowledge came from --- "etherscan
+    public tag". *Analyst* is who decided to write it down. A case two people
+    worked has to be able to say which of them asserted what, and where they
+    disagreed; with only a source, two analysts reading the same page produce
+    one indistinguishable claim.
+
+    Empty means nobody was recorded, which is correct for anything a list
+    import or a heuristic produced. It is left empty rather than filled with
+    the machine's OS account, because a name nobody chose is not authorship.
+    """
+
     def __post_init__(self) -> None:
         if not self.label.strip():
             raise ValueError("attribution needs a non-empty label")

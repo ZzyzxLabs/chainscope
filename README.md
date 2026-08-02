@@ -181,9 +181,21 @@ authorship, and historical token decimals.
   expanded.
 - `dashboard` for a case overview that states the unattributed share out loud.
 
+**Writing the case down**
+
+- `note` records the reasoning — observations, decisions, open questions, and
+  corrections — append-only, each carrying its author *and how that author was
+  identified*, because a name resolved from an OS account is not authorship.
+- `report` assembles narrative, claims, coverage and provenance into one file.
+  **Open questions print before the findings**, and where two sources of equal
+  strength disagree both are shown with a name against each and neither is
+  picked. HTML with a print stylesheet, or Markdown.
+- `attest` binds the figures to the cached responses behind them; `--verify`
+  reports drift. A manifest, not a signature — and it says so.
+
 **Interfaces**
 
-CLI (8 commands) · MCP agent (10 tools, including writes) · MV3 browser
+CLI (11 commands) · MCP agent (10 tools, including writes) · MV3 browser
 extension · third-party analyzers via entry points · Docker, Nix flake, and
 uvx.
 
@@ -209,7 +221,9 @@ v0.1 is being built. Implemented so far:
 - [x] `attribution` — OFAC, explorer nametags, local labels, conflict resolution
 - [x] `analysis` — consolidation, cross-chain matching, peel chains, clustering
 - [x] `cli` and renderers — terminal, Markdown, JSON
-- [x] `case` — replayable bundles
+- [x] `case` — replayable bundles, and an append-only case log with per-analyst
+      authorship (`note`, `report`)
+- [x] `watch` — `evaluate()` over a block range, with a runner ([§4.10](ARCHITECTURE.md))
 - [x] `store` — entity store with typed filtering, rebuildable from the cache
       ([§4.8](ARCHITECTURE.md))
 - [x] `providers.etherscan` — explorer-class `ADDRESS_HISTORY` and
@@ -222,7 +236,6 @@ are the decisions that are expensive to reverse once anyone depends on them.
 - [ ] recorded cassettes — the provider abstractions have not yet met a real
       API response, so their shapes are unvalidated
 - [ ] fetchers for attribution sources — today they read local files you supply
-- [ ] `watch` — `evaluate()` over a block range ([§4.10](ARCHITECTURE.md))
 - [ ] plugin protocol versioning and stability tiers ([§4.11](ARCHITECTURE.md))
 - [ ] `analyze --bundle` — one-command replay; today it is `Bundle.replay_cache()`
 - [ ] graph export, local read API
