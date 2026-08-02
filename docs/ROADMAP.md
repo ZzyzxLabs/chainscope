@@ -207,6 +207,26 @@ weaker than -1.5 and no further gain below that, so it is now -1.0.
 Meiklejohn et al.'s sharper version — an address that receives once and never
 appears again — needs to know the future, which nothing does mid-trace.
 
+### Contract address derivation
+
+The only harness here with *real* ground truth rather than constructed
+scenarios. The UNC4736 / Radiant Capital compromise of October 2024 is publicly
+documented, deployer and contracts named, so the derivation is either byte-exact
+or wrong and the published addresses say which.
+
+| | |
+|---|---|
+| `create_address(operator, 0)` | matches the published rehearsal contract |
+| `create_address(operator, 3)` | matches the contract that executed |
+| `recover_nonce` in both directions | exact |
+
+`CREATE` is `keccak(rlp([deployer, nonce]))[12:]` — no chain input, which is why
+one key produces matching addresses on every EVM network. That cuts both ways
+and the module says so: **matching addresses across chains prove nothing**,
+because every address exists everywhere by construction. The shared *deployer*
+is the evidence, and recovering it also enumerates what else that key built —
+including rehearsal contracts nobody has looked at.
+
 Still unmeasured: peel-chain traversal end-to-end, and cross-chain matching.
 Neither should be trusted at a stated confidence until it has ground truth.
 
