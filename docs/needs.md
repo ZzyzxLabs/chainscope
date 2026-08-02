@@ -71,9 +71,19 @@ remembering to check. The skill-currency test does the same for documentation
 --- it caught five capabilities the skill did not mention, and a `dashboard`
 section that had never existed.
 
-**Still open.** *Inferred:* the same check should extend to the browser
-extension and the MCP tool list. Nothing currently fails when a capability
-exists and no surface exposes it.
+**Closed.** The same check now covers both surfaces it was missing, and both
+were stale when it was written.
+
+`describe_tools()` named seven MCP tools while the server registered ten, so
+`chainscope doctor` told an operator three capabilities did not exist. A
+contract test parses the source for `@server.tool` and checks both directions:
+an unlisted tool is invisible, and a listed one that was removed promises a
+capability that is gone.
+
+The extension is checked against the server it talks to --- the paths its
+JavaScript actually calls, asserted to be routes `local.py` serves. Two halves
+shipped together and never introduced is exactly how the flow page went a
+release with JavaScript that had never parsed.
 
 ---
 
@@ -140,10 +150,25 @@ type it is stored in.
 **What follows.** Shipped: the origin marker is the server's and cannot be
 replaced; caller text is appended and marked *reported*.
 
-**Still open.** *Inferred:* multi-person cases need per-analyst identity, not
-just per-agent. Two people tagging into one store currently differ only if they
-configured different agent names. Signed attributions would make a shared case
-file auditable; that is a real design question and not a small one.
+**Closed, except the signing.** `Attribution.analyst` records who asserted a
+claim, distinct from `source` --- where the knowledge came from. Schema 4 puts it
+in the uniqueness key, because without it two people asserting the same label
+collapsed into one row and the record then said one person concluded what two
+had.
+
+Every surface carries it: `tag`, `note`, `report`, `request`, the MCP agent
+(`agent:<name>`, with an identity source of `agent`), and the browser server
+(taken at startup, because a request that picks its own authorship is worse
+than one carrying none).
+
+An OS account records **nothing** rather than signing with a machine login ---
+that is not authorship, and a claim signed with one is worse than a claim signed
+with nothing because it looks attributed.
+
+*Still open:* signing. Everything above is a claim about authorship that the
+case file itself cannot verify, which is the same gap `attest` names about
+provenance --- a manifest, not a signature. That remains a real design question
+and not a small one.
 
 ---
 
