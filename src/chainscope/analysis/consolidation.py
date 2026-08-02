@@ -45,7 +45,7 @@ from ..core.models import Transaction
 from ..core.result import Finding, Result, Severity
 from ..core.units import Amount
 from ..providers.base import Capability, Provider
-from .base import Analyzer, Context
+from .base import Analyzer, Context, history_of
 
 __all__ = ["Cluster", "ConsolidationAnalyzer"]
 
@@ -113,9 +113,8 @@ class ConsolidationAnalyzer(Analyzer):
         warnings: list[str] = []
         findings: list[Finding] = []
 
-        history = ctx.router.dispatch(
-            ctx.chain,
-            Capability.ADDRESS_HISTORY,
+        history, source_notes = history_of(
+            ctx,
             lambda p: p.address_history(
                 ctx.chain,
                 seed,
@@ -124,6 +123,7 @@ class ConsolidationAnalyzer(Analyzer):
                 limit=per_node,
             ),
         )
+        warnings.extend(source_notes)
 
         outgoing = [
             t
@@ -155,12 +155,33 @@ class ConsolidationAnalyzer(Analyzer):
         # own downstream traffic.
         hubs: dict[str, list[str]] = defaultdict(list)
         unreachable = 0
+        # Collected across every onward fetch and reported once. One line per
+        # destination would bury the finding under provider bookkeeping.
+        onward_notes: list[str] = []
 
         def fetch_onward(dest: str) -> list[Transaction]:
             def call(p: Provider) -> list[Transaction]:
                 return p.address_history(ctx.chain, dest, limit=per_node)
 
-            return ctx.router.dispatch(ctx.chain, Capability.ADDRESS_HISTORY, call)
+            # Onward hops are corroborated too: a short answer here understates
+            # a destination's reach, and the count is what the finding rests on.
+            rows, notes = history_of(ctx, call)
+            onward_notes.extend(notes)
+            return rows
+
+        def onward_summary() -> None:
+            if not onward_notes:
+                return
+            single = sum(1 for n in onward_notes if "not corroborated" in n)
+            if single:
+                warnings.append(
+                    f"{single} of {len(destinations)} onward lookups came from one "
+                    f"source. A destination whose history came back short reads as "
+                    f"a narrower hub than it is."
+                )
+            for note in onward_notes:
+                if "not corroborated" not in note:
+                    warnings.append(note)
 
         for dest in destinations:
             try:
@@ -175,6 +196,7 @@ class ConsolidationAnalyzer(Analyzer):
             }:
                 hubs[nxt].append(dest)
 
+        onward_summary()
         if unreachable:
             warnings.append(
                 f"{unreachable} destination(s) could not be enumerated; "

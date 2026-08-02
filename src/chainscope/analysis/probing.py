@@ -64,7 +64,7 @@ from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..core.result import Finding, Result, Severity
 from ..providers.base import Capability
-from .base import Analyzer, Context
+from .base import Analyzer, Context, history_of
 
 __all__ = [
     "MIN_ESCALATION_GROWTH",
@@ -355,15 +355,13 @@ class ProbingAnalyzer(Analyzer):
 
         seed = address.lower()
         per_node = ctx.limit("per_node", 1000)
-        history = ctx.router.dispatch(
-            ctx.chain,
-            Capability.ADDRESS_HISTORY,
+        history, completeness = history_of(
+            ctx,
             lambda p: p.address_history(
                 ctx.chain, seed, start_block=start_block, end_block=end_block, limit=per_node
             ),
         )
-
-        warnings: list[str] = []
+        warnings: list[str] = list(completeness)
         if len(history) >= per_node:
             # A probe is a *sequence*, so a window that clips its start turns an
             # escalation into a shorter run and can drop it below the floor

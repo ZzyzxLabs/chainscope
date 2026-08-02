@@ -75,7 +75,7 @@ from typing import Any, Union
 from ..core.chainid import ChainId
 from ..core.result import Finding, Result, Severity
 from ..providers.base import Capability
-from .base import Analyzer, Context
+from .base import Analyzer, Context, history_of
 
 
 def _history(
@@ -521,9 +521,8 @@ class TaintAnalyzer(Analyzer):
                 continue
             seen.add(address)
             try:
-                history = ctx.router.dispatch(
-                    ctx.chain,
-                    Capability.ADDRESS_HISTORY,
+                history, source_notes = history_of(
+                    ctx,
                     partial(
                         _history,
                         chain=ctx.chain,
@@ -533,6 +532,11 @@ class TaintAnalyzer(Analyzer):
                         cap=per_node,
                     ),
                 )
+                # FIFO depends on arrival order, so a source that came back
+                # short does not merely lose a row --- it changes which lot paid
+                # for what, everywhere downstream of this address.
+                for note in source_notes:
+                    warnings.append(f"{address}: {note}")
             except Exception as exc:
                 # Named, not swallowed. An address whose history could not be
                 # fetched is a hole in the trace, and treating it as a dead end

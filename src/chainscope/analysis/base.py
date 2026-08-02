@@ -13,6 +13,7 @@ carries the parameters that produced it.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -56,6 +57,43 @@ class Context:
     def evidence(self) -> Evidence:
         keys = self.audit.query_keys() if self.audit else ()
         return Evidence(query_keys=keys)
+
+
+def history_of(
+    ctx: Context,
+    call: Callable[[Any], Iterable[Any]],
+    *,
+    capability: Any = None,
+) -> tuple[list[Any], list[str]]:
+    """An address history, and what is known about how complete it is.
+
+    Returns ``(rows, warnings)``. The warnings are the point: an enumeration
+    that came from one provider says so, and one where two providers disagreed
+    says *that*, in the result rather than in a log nobody reads.
+
+    Before this, seven of the nine analyzers went through `Router.dispatch` and
+    got a bare list --- no record of which source answered and no way to tell a
+    checked answer from an unchecked one. `Router.corroborate` existed and one
+    analyzer called it. A capability that only the person who wrote it knows
+    about is not a capability the tool has.
+    """
+    from ..providers.base import Capability
+
+    found = ctx.router.enumerate(
+        ctx.chain,
+        capability or Capability.ADDRESS_HISTORY,
+        call,
+        key=lambda tx: getattr(getattr(tx, "ref", None), "hash", None) or repr(tx),
+    )
+
+    notes: list[str] = []
+    if found.disagreed or not found.corroborated:
+        notes.append(found.summary())
+    for failure in found.failures:
+        # A provider that could not answer is different from one that answered
+        # with nothing, and only the second is evidence about the address.
+        notes.append(f"a source could not be reached: {failure}")
+    return found.rows, notes
 
 
 class Analyzer(ABC):

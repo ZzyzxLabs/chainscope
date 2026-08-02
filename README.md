@@ -169,6 +169,10 @@ authorship, and historical token decimals.
   columns it already has, tag from the browser extension, or let an agent do it
   — every path records where the claim came from and cannot be told to lie
   about that.
+- **Corroborate by default.** Anything whose answer is a *set* is asked of two
+  independent providers, and the result says whether they agreed. Where only
+  one source exists, it says that too — a single-source answer is never
+  mistaken for a checked one. `--single-source` opts out.
 - **Query** with `chainscope sql`, a Dune-shaped surface over DuckDB with exact
   128-bit arithmetic. `--schema` documents the traps, not just the columns.
 - **Store** is one SQLite file. A case is a file you can copy.

@@ -62,6 +62,13 @@ def add_parser(sub: Any, name: str) -> None:
     p.add_argument("--list", action="store_true", help="show registered analyzers")
     p.add_argument("--chain", "-c", default="eth")
     p.add_argument(
+        "--single-source",
+        action="store_true",
+        help="ask one provider per enumeration instead of two. Faster and "
+        "cheaper; a short answer then has nothing to disagree with it. The "
+        "result says which it was either way",
+    )
+    p.add_argument(
         "--param",
         "-p",
         action="append",
@@ -134,7 +141,7 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
         limits["max_depth"] = args.max_depth
 
     chain = resolve(args.chain)
-    router, skipped = router_for(chain)
+    router, skipped = router_for(chain, corroborate=not args.single_source)
     ctx = Context(chain=chain, router=router, limits=limits)
     if not instance.applicable(ctx):
         # Say which providers were considered and what each one needs. The

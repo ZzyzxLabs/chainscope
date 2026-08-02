@@ -43,7 +43,7 @@ from ..core.chainid import ChainId
 from ..core.models import Transaction
 from ..core.result import Finding, Result, Severity
 from ..providers.base import Capability, Provider
-from .base import Analyzer, Context
+from .base import Analyzer, Context, history_of
 
 __all__ = [
     "RELAY_RESIDUE_BPS",
@@ -310,7 +310,8 @@ class CommonFunderAnalyzer(Analyzer):
                 cap=per_node,
             )
             try:
-                history = ctx.router.dispatch(ctx.chain, Capability.ADDRESS_HISTORY, fetch)
+                history, completeness = history_of(ctx, fetch)
+                warnings.extend(completeness)
             except Exception as exc:
                 # Named, not swallowed. An address whose history could not be
                 # fetched has no funder here, and a cluster that silently omits

@@ -126,7 +126,18 @@ def router_for(
     settings: Settings | None = None,
     *,
     preferred: tuple[str, ...] = (),
+    corroborate: bool = True,
 ) -> tuple[Router, dict[str, str]]:
-    """A router carrying every provider that can serve ``chain``."""
+    """A router carrying every provider that can serve ``chain``.
+
+    ``corroborate`` decides whether enumerations ask a second source. On by
+    default: an answer that is a *set* can come back short with no error, and
+    that has already cost this project a missing withdrawal address. Off is a
+    deliberate trade of accuracy for one fewer request, and the result still
+    says which it was.
+    """
     providers, skipped = build_providers(chain, settings)
-    return Router(providers, preferred=preferred), skipped
+    return (
+        Router(providers, preferred=preferred, corroborate_enumerations=corroborate),
+        skipped,
+    )

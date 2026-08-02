@@ -94,10 +94,27 @@ class Router:
         providers: Sequence[Provider] = (),
         *,
         preferred: Sequence[str] = (),
+        corroborate_enumerations: bool = True,
     ) -> None:
         self._providers: list[Provider] = list(providers)
         self.preferred = list(preferred)
         """Provider names to try first, in order, regardless of cost tier."""
+
+        self.corroborate_enumerations = corroborate_enumerations
+        """Whether :meth:`enumerate` asks a second source by default.
+
+        On, because the failure this project was built around is a query whose
+        answer is a *set* coming back silently short --- an archive endpoint
+        returning twelve of thirteen logs with HTTP 200, and one withdrawal
+        address going missing from a real case. A second independent source is
+        what turns that from an invisible wrong answer into a visible
+        disagreement.
+
+        It costs a second request per enumerating call. That is the trade being
+        made deliberately: latency and rate limit against a class of error
+        nothing downstream can detect. `--single-source` opts out, and the
+        result still says which it was.
+        """
 
     def add(self, provider: Provider) -> None:
         self._providers.append(provider)
@@ -156,6 +173,37 @@ class Router:
             f"all {len(options)} providers failed for "
             f"{capability.name} on {chain}:\n  " + "\n  ".join(failures)
         )
+
+    def enumerate(
+        self,
+        chain: ChainId,
+        capability: Capability,
+        call: Callable[[Provider], Iterable[T]],
+        *,
+        key: Callable[[T], Hashable],
+    ) -> Corroboration[T]:
+        """Ask for something whose answer is a *set*, and say how sure that is.
+
+        The point is not that this always corroborates --- it cannot, when only
+        one provider serves the chain. The point is that **the answer always
+        carries a statement about its own completeness**, so a single-source
+        result is never mistaken for a checked one.
+
+        That was the gap. `corroborate` existed and exactly one of nine
+        analyzers called it; the other seven went through `dispatch` and
+        returned a bare list that said nothing about where it came from or
+        whether anyone had checked it. An investigator who did not know the
+        feature existed got the weaker answer and no sign of it.
+        """
+        options = self.candidates(chain, capability)
+        if self.corroborate_enumerations and len(options) > 1:
+            return self.corroborate(chain, capability, call, key=key)
+
+        # One source, either because that is all there is or because the caller
+        # asked for one. Returned in the same shape, so callers have a single
+        # path and `summary()` says which case this was.
+        rows = list(self.dispatch(chain, capability, call))
+        return Corroboration(rows=rows, sources=(options[0].name,) if options else ())
 
     def corroborate(
         self,

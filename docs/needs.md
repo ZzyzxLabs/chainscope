@@ -34,10 +34,25 @@ a footnote. Shipped: `Router.corroborate` (two independent sources, reports
 what only one saw), block identity verification, `ResultTruncated` on every
 enumerating provider, `is_cacheable` predicates.
 
-**Still open.** Corroboration is opt-in per call site. An investigator who does
-not know it exists gets a single-source answer that does not say so. *Inferred:*
-the default for enumeration should be corroborated, with single-source as the
-explicit choice.
+**Closed.** Corroboration was opt-in per call site, and **one of nine analyzers
+called it**. The other seven went through `dispatch` and returned a bare list:
+no record of which source answered, and no way for a reader to tell a checked
+answer from an unchecked one. An investigator who did not know the feature
+existed got the weaker answer with no sign of it --- which is the same silence
+the feature was built against, one layer up.
+
+`Router.enumerate` is now what an analyzer calls for anything whose answer is a
+*set*, and corroboration is the default. What is guaranteed is not that two
+sources are always asked --- one provider may be all a chain has --- but that
+**the answer always carries a statement about its own completeness**, and that
+statement reaches `Result.warnings` rather than a log nobody reads.
+
+A corroborated result says nothing, deliberately: a warning that fires every
+run is one people stop reading.
+
+`--single-source` is the explicit opt-out, and it costs a second request per
+enumeration to leave it off. That trade is stated rather than hidden --- latency
+and rate limit against a class of error nothing downstream can detect.
 
 ---
 
