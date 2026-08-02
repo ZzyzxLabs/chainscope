@@ -143,8 +143,21 @@ def resolve_at(
 
     A provider that fails is not evidence of any particular decimals value, so
     the failure propagates as :class:`DecimalsUnknown` rather than defaulting.
+
+    **A cache for a different token is refused.** It was used as given, so
+    passing USDC's readings while asking about WETH returned 6 --- and one WETH
+    then rendered as a trillion WETH. This module exists because an amount with
+    the wrong decimals is off by orders of magnitude and still looks like a
+    number; accepting somebody else's cache is the fastest way to produce one.
     """
-    known = cache or TokenDecimals(token=token.lower())
+    wanted = token.strip().lower()
+    if cache is not None and cache.token.strip().lower() != wanted:
+        raise ValueError(
+            f"cache holds readings for {cache.token}, not {token}. Decimals are "
+            f"per token --- using another's renders every amount off by orders of "
+            f"magnitude."
+        )
+    known = cache or TokenDecimals(token=wanted)
     try:
         return known.at(block), known
     except DecimalsUnknown:

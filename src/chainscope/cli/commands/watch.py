@@ -120,7 +120,15 @@ def _state(path: Path) -> dict[str, int]:
         # A corrupt state file must not be silently reset: that would re-scan
         # from zero or skip a range, and neither is visible in the output.
         raise ValueError(f"{path} is not readable JSON; delete it to start over") from None
-    return {k: int(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        # Valid JSON of the wrong shape --- a list, a string --- was returning an
+        # empty state, which is the silent reset the branch above refuses. Same
+        # failure, different spelling.
+        raise ValueError(
+            f"{path} holds {type(data).__name__}, not an object of "
+            f"watch-name to block. Delete it to start over."
+        )
+    return {k: int(v) for k, v in data.items()}
 
 
 def run(args: argparse.Namespace, render: Renderer) -> int:
@@ -156,13 +164,28 @@ def _once(args: argparse.Namespace, watches: list[Any]) -> int:
     events: list[Any] = []
     try:
         # Asked of the data rather than of StoreStats, which does not carry it.
-        # `until` has to be a real block the store has seen: defaulting to the
-        # chain tip would advance every watch past blocks that were never
-        # ingested, and the gap would look watched.
-        row = store._conn.execute("SELECT MAX(block) FROM transfers").fetchone()
-        newest = int(row[0]) if row and row[0] is not None else 0
-        until = args.until if args.until is not None else newest
+        # `until` has to be a real block **that chain** has been ingested to.
+        #
+        # It was `MAX(block)` across the whole store, which is the same mistake
+        # the comment below guards against, one axis over. In a store holding
+        # two chains the highest block wins: an Ethereum watch was advanced to
+        # BSC's height, so every Ethereum block between them was marked watched
+        # and never was --- and once the mark is past, nothing revisits them.
+        # Measured: Ethereum at 20,000,000 and BSC at 45,000,000 in one store
+        # moved the Ethereum watch to 45,000,000.
+        newest_by_chain: dict[str, int] = {}
+
+        def newest_for(chain: Any) -> int:
+            key = str(chain)
+            if key not in newest_by_chain:
+                row = store._conn.execute(
+                    "SELECT MAX(block) FROM transfers WHERE chain = ?", (key,)
+                ).fetchone()
+                newest_by_chain[key] = int(row[0]) if row and row[0] is not None else 0
+            return newest_by_chain[key]
+
         for watch in watches:
+            until = args.until if args.until is not None else newest_for(watch.chain)
             since = args.since if args.since is not None else state.get(watch.name, 0)
             if since >= until:
                 continue

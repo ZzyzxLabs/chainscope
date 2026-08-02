@@ -177,3 +177,114 @@ class TestPrefetchWalksPastAGap:
         )
         assert len(calls) > 1, "stopped at the first empty window"
         assert Decimal("3000")  # the stored rate is real
+
+
+class TestAWatchIsScopedToItsOwnChain:
+    """`until` came from `MAX(block)` across the whole store.
+
+    In a store holding two chains the highest block wins, so an Ethereum watch
+    was advanced to BSC's height --- every Ethereum block between them marked
+    watched and never looked at, and once the mark is past, nothing revisits
+    them. The comment above that line guards against exactly this failure, one
+    axis over: it made `until` a real block *the store* had seen rather than one
+    *that chain* had.
+    """
+
+    def _store(self, tmp_path):
+        from chainscope.core.chainid import ChainId
+
+        eth, bsc = ChainId.parse("eip155:1"), ChainId.parse("eip155:56")
+        store = SqliteStore(tmp_path / "store.db")
+        here = lambda c: Address(c, "0x" + "a" * 40, "0x" + "a" * 40)  # noqa: E731
+        store.put_transfers(
+            [
+                Transfer(
+                    chain=eth,
+                    tx=TxRef(eth, "0x1"),
+                    sender=here(eth),
+                    recipient=here(eth),
+                    amount=Amount(1, 18, "ETH"),
+                    kind=TransferKind.NATIVE,
+                    block=20_000_000,
+                ),
+                Transfer(
+                    chain=bsc,
+                    tx=TxRef(bsc, "0x2"),
+                    sender=here(bsc),
+                    recipient=here(bsc),
+                    amount=Amount(1, 18, "BNB"),
+                    kind=TransferKind.NATIVE,
+                    block=45_000_000,
+                ),
+            ]
+        )
+        store.close()
+        return tmp_path / "store.db", eth, bsc
+
+    def test_the_mark_lands_on_a_block_that_chain_has_reached(self, tmp_path) -> None:
+        import argparse
+        import json
+
+        from chainscope.cli.commands.watch import _once
+        from chainscope.watch.base import AmountOver, Watch
+
+        path, eth, _ = self._store(tmp_path)
+        state = tmp_path / "state.json"
+        args = argparse.Namespace(
+            store=path, state=state, since=None, until=None, shape="text", dry_run=False
+        )
+        _once(
+            args,
+            [
+                Watch(
+                    name="eth-watch",
+                    subject="0x" + "a" * 40,
+                    chain=eth,
+                    predicate=AmountOver(0),
+                )
+            ],
+        )
+        assert json.loads(state.read_text())["eth-watch"] == 20_000_000
+
+
+class TestADecimalsCacheBelongsToOneToken:
+    def test_another_tokens_cache_is_refused(self) -> None:
+        """USDC's readings answered a question about WETH.
+
+        Six decimals instead of eighteen renders one WETH as a trillion WETH ---
+        and this module exists because a wrong-decimals amount is off by orders
+        of magnitude and still looks like a number.
+        """
+        import pytest
+
+        from chainscope.analysis.decimals import TokenDecimals, resolve_at
+
+        usdc = TokenDecimals(token="0x" + "c" * 40)
+        usdc.observe(0, 6)
+        with pytest.raises(ValueError, match="not 0xee"):
+            resolve_at("0x" + "e" * 40, 1000, lambda t, b: 18, cache=usdc)
+
+    def test_the_matching_cache_is_still_reused(self) -> None:
+        from chainscope.analysis.decimals import TokenDecimals, resolve_at
+
+        usdc = TokenDecimals(token="0x" + "c" * 40)
+        usdc.observe(0, 6)
+        value, _ = resolve_at("0x" + "C" * 40, 1000, lambda t, b: 6, cache=usdc)
+        assert value == 6
+
+
+class TestAStateFileOfTheWrongShape:
+    def test_valid_json_that_is_not_an_object_is_refused(self, tmp_path) -> None:
+        """A silent reset re-scans from zero or skips a range.
+
+        Neither is visible in the output, which is why the corrupt-JSON branch
+        already refuses. This was the same failure spelled differently.
+        """
+        import pytest
+
+        from chainscope.cli.commands.watch import _state
+
+        path = tmp_path / "state.json"
+        path.write_text("[]")
+        with pytest.raises(ValueError, match="not an object"):
+            _state(path)
