@@ -82,6 +82,22 @@ jobs:
           name: dist
           path: dist/
 
+  loopback:
+    name: local server (loopback only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev,all]"
+      # These bind a socket on 127.0.0.1, so they carry the `network` marker
+      # and are deselected by default. They reach no remote host --- the marker
+      # is about binding, not about the internet --- and the security model
+      # they cover is the reason the extension is safe to run at all.
+      - run: pytest tests/unit/test_local_server.py -q --network
+
   cassettes:
     name: recorded fixtures carry no credentials
     runs-on: ubuntu-latest

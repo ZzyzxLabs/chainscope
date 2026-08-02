@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>chainscope</title>
+<style>
+  body { font:13px/1.55 ui-sans-serif,-apple-system,system-ui,sans-serif;
+         width: 320px; margin:0; padding:14px; color:#16161a; }
+  @media (prefers-color-scheme: dark){ body{background:#131316;color:#e8e8ea;} }
+  h1 { font-size:13px; margin:0 0 10px; }
+  label { display:block; font-size:11px; color:#6b7280; margin:9px 0 3px; }
+  input, select, textarea { width:100%; padding:6px 8px; border:1px solid #d4d4d8;
+    border-radius:5px; background:transparent; color:inherit; font:12px inherit; }
+  input[type=text]#address { font-family:ui-monospace,Menlo,monospace; font-size:11px; }
+  button { width:100%; margin-top:12px; padding:8px; border:1px solid #d4d4d8;
+    border-radius:5px; background:transparent; color:inherit; cursor:pointer; }
+  #why-row { display:none; }
+  #status { margin-top:10px; font-size:11px; min-height:16px; color:#6b7280; }
+  .hint { font-size:10px; color:#6b7280; margin-top:3px; }
+</style>
+<h1>Record a label</h1>
+
+<label for="address">Address</label>
+<input type="text" id="address" placeholder="0x…">
+
+<label for="label">What is it</label>
+<input type="text" id="label" placeholder="eXch deposit address">
+
+<label for="category">Category</label>
+<select id="category"></select>
+
+<label for="confidence">Confidence</label>
+<select id="confidence"></select>
+
+<div id="why-row">
+  <label for="why">Why — required below medium</label>
+  <textarea id="why" rows="2" placeholder="the actual evidence, not that it seems likely"></textarea>
+</div>
+
+<button id="save">Record</button>
+<div id="status"></div>
+<script src="popup.js"></script>

@@ -1,0 +1,27 @@
+/* Deliberately quiet. An annotation that competes with the page for attention
+   gets turned off, and an extension that is off protects nobody. */
+.chainscope-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 1px 6px 1px 5px;
+  border: 1px solid var(--cs-colour, #546e7a);
+  border-left-width: 3px;
+  border-radius: 3px;
+  font: 500 11px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  color: var(--cs-colour, #546e7a);
+  background: color-mix(in srgb, var(--cs-colour, #546e7a) 8%, transparent);
+  vertical-align: middle;
+  white-space: nowrap;
+  cursor: help;
+}
+.chainscope-name { font-weight: 600; }
+/* Never hidden, however small. A label without its confidence reads as fact. */
+.chainscope-confidence {
+  font-size: 9px;
+  letter-spacing: .04em;
+  opacity: .75;
+  border-left: 1px solid currentColor;
+  padding-left: 4px;
+}

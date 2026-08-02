@@ -63,6 +63,7 @@ Issues = "https://github.com/ZzyzxLabs/chainscope/issues"
 [project.scripts]
 chainscope = "chainscope.cli.main:main"
 chainscope-mcp = "chainscope.agent.server:main"
+chainscope-serve = "chainscope.server.local:main"
 
 # ---------------------------------------------------------------- plugin points
 # Third-party packages register here. Declaring the same entry-point group is
