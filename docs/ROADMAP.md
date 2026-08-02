@@ -180,9 +180,35 @@ classification work. A false merge asserts two strangers are one person, and
 clustering is transitive, so the error joins their whole neighbourhoods. A miss
 only leaves an address unclustered.
 
-Not yet measured: change-address heuristics, peel-chain detection, and
-cross-chain matching. Each needs its own ground truth, and none should be
-trusted at a stated confidence until it has one.
+### Change detection
+
+Deciding which output is change is the step every peel-chain trace rests on,
+and it is a guess. Scored against constructed scenarios drawn from what wallets
+actually do:
+
+| | |
+|---|---:|
+| Cases the heuristics are designed for | **6 / 6** |
+| Including two known counter-examples | 6 / 8 |
+
+The two misses are documented rather than papered over: change that lands on a
+round number, and a payment larger than the change. Both invert every
+value-shaped signal at once, and no weighting fixes them without breaking the
+common case.
+
+**The measurement changed the code.** `recipient_is_fresh` was weighted -3.0 —
+the second-strongest signal in the table — on the reasoning that payments go to
+new addresses. That is backwards: every HD wallet derives change to a fresh
+address, so freshness is a property of change *by construction*, and payees are
+frequently fresh too. At -3.0 the analyzer chose the payee whenever change was
+the smaller output, scoring 5/8. A sweep over the weight found 6/8 at anything
+weaker than -1.5 and no further gain below that, so it is now -1.0.
+
+Meiklejohn et al.'s sharper version — an address that receives once and never
+appears again — needs to know the future, which nothing does mid-trace.
+
+Still unmeasured: peel-chain traversal end-to-end, and cross-chain matching.
+Neither should be trusted at a stated confidence until it has ground truth.
 
 ## Open questions
 

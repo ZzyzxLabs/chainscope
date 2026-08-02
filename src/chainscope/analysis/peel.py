@@ -15,16 +15,19 @@ analyzer stops rather than guessing when they disagree.
 
 **Change-detection heuristics, strongest first:**
 
-1. *Address reuse.* An output paying back into the input set is change. Close to
-   conclusive when present, and absent from most modern wallets.
-2. *Fresh recipient.* Payments go to addresses with no prior history; change
-   returns to the spender's own wallet.
-3. *Round numbers.* Humans pay round amounts. An output of exactly 2.0 BTC
+1. *Address reuse* (+5). An output paying back into the input set is change.
+   Close to conclusive when present, and absent from most modern wallets.
+2. *Round numbers* (-2). Humans pay round amounts. An output of exactly 2.0 BTC
    alongside one of 8.33478 BTC identifies which is which.
-4. *Script type match.* Wallets generate change matching their own script type;
-   a payment to a different type is likely an external party.
-5. *Largest output.* Weak on its own --- a peel chain's change is larger by
+3. *Script type match* (+2). Wallets generate change matching their own script
+   type; a payment to a different type is likely an external party.
+4. *Largest output* (+2). Weak on its own --- a peel chain's change is larger by
    construction, but so is a large payment with small change.
+5. *Fresh recipient* (-1). The weakest, and it reads backwards at first: every
+   HD wallet derives change to a fresh address, so freshness is a property of
+   change by construction, and payees are frequently fresh too. It was weighted
+   -3 until ``tests/validation`` showed that choosing the *payee* whenever
+   change was the smaller output cost more than the signal was worth.
 
 **When this fails:** see ``docs/methods/change-detection.md``. CoinJoin defeats
 it outright, consolidation transactions have no change at all, and a wallet that
@@ -123,9 +126,25 @@ def detect_change(
             ),
             ScoreFactor(
                 "recipient_is_fresh",
-                -3.0,
+                # Weak on purpose, and it used to be -3.0 --- the second
+                # strongest weight in this table, which was backwards. Every HD
+                # wallet derives change to a fresh address, so freshness is a
+                # property of change *by construction*. Payees are frequently
+                # fresh too, so it barely separates them in either direction.
+                #
+                # The literature's version is sharper: Meiklejohn et al.'s
+                # one-time change address is one that receives once and never
+                # appears again. That requires knowing the future, which nothing
+                # has at this point in a trace.
+                #
+                # Measured over the scenarios in tests/validation: at -3.0 this
+                # scored 5/8 and chose the *payee* whenever change was the
+                # smaller output; at -1.0 it scores 6/8, and nothing weaker than
+                # -1.5 changes the outcome at all. That is the honest summary of
+                # what this signal is worth.
+                -1.0,
                 0 <= out.recipient_tx_count <= 1,
-                note="a brand-new address is usually the payee, not change",
+                note="a fresh address is weak evidence of a payee; change is usually fresh too",
             ),
             ScoreFactor(
                 "round_number",
