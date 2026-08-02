@@ -66,6 +66,7 @@ chainscope = "chainscope.cli.main:main"
 
 [project.entry-points."chainscope.providers"]
 jsonrpc = "chainscope.providers.jsonrpc:JsonRpcProvider"
+etherscan = "chainscope.providers.etherscan:EtherscanProvider"
 
 [project.entry-points."chainscope.chains"]
 evm = "chainscope.chains.evm:EvmAdapter"
@@ -78,6 +79,9 @@ consolidation = "chainscope.analysis.consolidation:ConsolidationAnalyzer"
 cross_chain = "chainscope.analysis.xchain:CrossChainMatcher"
 peel_chain = "chainscope.analysis.peel:PeelChainAnalyzer"
 co_spend_cluster = "chainscope.analysis.cluster:CoSpendClusterAnalyzer"
+
+[project.entry-points."chainscope.stores"]
+sqlite = "chainscope.store.sqlite:SqliteStore"
 
 [project.entry-points."chainscope.pricing"]
 binance = "chainscope.pricing.binance:BinanceKlines"

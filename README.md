@@ -6,10 +6,10 @@ wired in.**
 
 [繁體中文](README.zh-TW.md)
 
-> ⚠️ **Alpha, and not yet end-to-end.** The spine is built and tested, but no
-> provider can enumerate address history yet, so the bundled analyzers cannot
-> run against a live chain from a clean install. That gap is stated here rather
-> than discovered an hour in — see [Status](#status).
+> ⚠️ **Alpha.** APIs will change during `0.x`. The first end-to-end path works
+> (Etherscan → consolidation analysis), but there are still no recorded
+> cassettes, so the provider abstractions have not yet met a real API response.
+> See [Status](#status) for what is and is not built.
 
 ---
 
@@ -163,14 +163,13 @@ v0.1 is being built. Implemented so far:
 - [x] `case` — replayable bundles
 - [x] `store` — entity store with typed filtering, rebuildable from the cache
       ([§4.8](ARCHITECTURE.md))
+- [x] `providers.etherscan` — explorer-class `ADDRESS_HISTORY` and
+      `ASSET_TRANSFERS`, one key across 60+ EVM chains. This is what makes the
+      bundled analyzers runnable end-to-end
 
 Designed, not yet built. The reasoning is written down first on purpose: these
 are the decisions that are expensive to reverse once anyone depends on them.
 
-- [ ] **explorer-class provider** — `ADDRESS_HISTORY` has no implementation, so
-      anything that lists an address's transactions is unreachable and the
-      bundled analyzers cannot run end-to-end. This is the next thing being
-      built; until it lands they are reference implementations, not tools
 - [ ] recorded cassettes — the provider abstractions have not yet met a real
       API response, so their shapes are unvalidated
 - [ ] fetchers for attribution sources — today they read local files you supply

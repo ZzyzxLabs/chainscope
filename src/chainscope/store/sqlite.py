@@ -24,6 +24,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -110,6 +111,25 @@ def _pad(raw: int) -> str:
     return str(raw).zfill(AMOUNT_WIDTH)
 
 
+@dataclass
+class _Bucket:
+    """Running totals for one address pair. Python ints, so arbitrary precision."""
+
+    sender: str | None
+    recipient: str | None
+    total: int = 0
+    count: int = 0
+    first: int | None = None
+    last: int | None = None
+
+    def add(self, amount: int, timestamp: int | None) -> None:
+        self.total += amount
+        self.count += 1
+        if timestamp is not None:
+            self.first = timestamp if self.first is None else min(self.first, timestamp)
+            self.last = timestamp if self.last is None else max(self.last, timestamp)
+
+
 def _ts(dt: datetime | None) -> int | None:
     return int(dt.timestamp()) if dt else None
 
@@ -161,12 +181,19 @@ class SqliteStore(Store):
     def put_transfers(self, transfers: Iterable[Transfer], *, source: str = "") -> int:
         rows = [
             (
-                str(t.chain), t.tx.hash, t.index,
+                str(t.chain),
+                t.tx.hash,
+                t.index,
                 t.sender.key if t.sender else None,
                 t.recipient.key if t.recipient else None,
-                _pad(t.amount.raw), t.amount.decimals, t.amount.symbol,
+                _pad(t.amount.raw),
+                t.amount.decimals,
+                t.amount.symbol,
                 t.asset.key if t.asset else None,
-                t.kind.value, t.block, _ts(t.timestamp), source,
+                t.kind.value,
+                t.block,
+                _ts(t.timestamp),
+                source,
             )
             for t in transfers
         ]
@@ -187,9 +214,15 @@ class SqliteStore(Store):
     def put_attributions(self, attributions: Iterable[Attribution]) -> int:
         rows = [
             (
-                a.address.lower(), str(a.chain) if a.chain else None, a.label,
-                a.category.value, int(a.confidence), a.method.value, a.source,
-                a.rationale, _ts(a.observed_at),
+                a.address.lower(),
+                str(a.chain) if a.chain else None,
+                a.label,
+                a.category.value,
+                int(a.confidence),
+                a.method.value,
+                a.source,
+                a.rationale,
+                _ts(a.observed_at),
             )
             for a in attributions
         ]
@@ -210,8 +243,12 @@ class SqliteStore(Store):
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO expanded VALUES (?,?,?,?)",
-                (address.lower(), str(chain), depth,
-                 int(datetime.now(timezone.utc).timestamp())),
+                (
+                    address.lower(),
+                    str(chain),
+                    depth,
+                    int(datetime.now(timezone.utc).timestamp()),
+                ),
             )
             self._conn.commit()
 
@@ -278,8 +315,7 @@ class SqliteStore(Store):
             "time": "timestamp ASC",
         }.get(query.order, "timestamp ASC")
         rows = self._conn.execute(
-            f"SELECT * FROM transfers WHERE {where} ORDER BY {order} "
-            f"LIMIT ? OFFSET ?",
+            f"SELECT * FROM transfers WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
             [*params, query.limit, query.offset],
         )
         for row in rows:
@@ -311,42 +347,34 @@ class SqliteStore(Store):
         The row count is bounded by one address's transfers, so pulling them
         into memory is proportionate.
         """
-        side, other = (
-            ("sender", "recipient") if direction == "out" else ("recipient", "sender")
-        )
+        side, other = ("sender", "recipient") if direction == "out" else ("recipient", "sender")
         rows = self._conn.execute(
             f"SELECT sender, recipient, asset, amount_raw, timestamp "
             f"FROM transfers WHERE chain = ? AND {side} = ?",
             (str(chain), address.lower()),
         ).fetchall()
 
-        buckets: dict[tuple[str | None, str | None], dict[str, object]] = {}
+        buckets: dict[tuple[str | None, str | None], _Bucket] = {}
         for r in rows:
             key = (r[other], r["asset"])
-            b = buckets.setdefault(
-                key,
-                {"total": 0, "n": 0, "first": None, "last": None,
-                 "sender": r["sender"], "recipient": r["recipient"]},
-            )
-            b["total"] = int(b["total"]) + int(r["amount_raw"])
-            b["n"] = int(b["n"]) + 1
-            ts = r["timestamp"]
-            if ts is not None:
-                b["first"] = ts if b["first"] is None else min(int(b["first"]), ts)
-                b["last"] = ts if b["last"] is None else max(int(b["last"]), ts)
+            b = buckets.get(key)
+            if b is None:
+                b = _Bucket(sender=r["sender"], recipient=r["recipient"])
+                buckets[key] = b
+            b.add(int(r["amount_raw"]), r["timestamp"])
 
         out = [
             EdgeSummary(
-                sender=str(b["sender"] or ""),
-                recipient=str(b["recipient"] or ""),
+                sender=b.sender or "",
+                recipient=b.recipient or "",
                 asset=asset,
-                total_raw=int(b["total"]),
-                transfer_count=int(b["n"]),
-                first_seen=_dt(b["first"]),  # type: ignore[arg-type]
-                last_seen=_dt(b["last"]),  # type: ignore[arg-type]
+                total_raw=b.total,
+                transfer_count=b.count,
+                first_seen=_dt(b.first),
+                last_seen=_dt(b.last),
             )
             for (_, asset), b in buckets.items()
-            if int(b["total"]) >= min_total
+            if b.total >= min_total
         ]
         out.sort(key=lambda e: -e.total_raw)
         return out
@@ -413,12 +441,8 @@ class SqliteStore(Store):
                     ") WHERE a IS NOT NULL"
                 ).fetchone()["n"]
             ),
-            attributions=int(
-                c.execute("SELECT COUNT(*) n FROM attributions").fetchone()["n"]
-            ),
-            chains=[
-                r["chain"] for r in c.execute("SELECT DISTINCT chain FROM transfers")
-            ],
+            attributions=int(c.execute("SELECT COUNT(*) n FROM attributions").fetchone()["n"]),
+            chains=[r["chain"] for r in c.execute("SELECT DISTINCT chain FROM transfers")],
             bytes=self.path.stat().st_size if self.path and self.path.exists() else 0,
         )
 

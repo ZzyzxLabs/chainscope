@@ -1,0 +1,358 @@
+"""Etherscan-family explorer provider.
+
+The capability that makes this worth writing is ``ADDRESS_HISTORY``. No JSON-RPC
+method lists an address's transactions --- ``eth_getLogs`` finds events, not
+sends --- so without an explorer-class provider, the question "what did this
+address do" has no answer, and every traversal built on it is unreachable.
+
+One API key covers sixty-odd EVM chains through Etherscan's V2 endpoint, which
+takes ``chainid`` as a parameter. That is why this file is not
+``etherscan.py``/``bscscan.py``/``polygonscan.py``: they are one service now.
+
+**Three response shapes to know about**, because each has caused a wrong
+analysis somewhere:
+
+* ``status: "0"`` with ``"No transactions found"`` means *no data*. It is not
+  an error, and treating it as one loses real empty results.
+* ``status: "0"`` with a rate-limit message means *we do not know*. Returning
+  an empty list here is the failure this whole design exists to prevent: an
+  address silently vanishes from the analysis.
+* A successful response is capped. Etherscan returns at most 10,000 records per
+  query regardless of what you ask for, so a busy address is truncated by the
+  API before pagination is even considered --- and it says so nowhere.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from ..core.chainid import ChainId
+from ..core.models import (
+    Account,
+    Address,
+    Transaction,
+    Transfer,
+    TransferKind,
+    TxRef,
+)
+from ..core.units import Amount
+from ..transport.cache import Volatility
+from ..transport.http import Client, TransportError
+from .base import Capability, CostTier, ProviderError, ReadOnlyProvider
+
+__all__ = ["ETHERSCAN_V2", "EtherscanProvider", "ResultTruncated"]
+
+ETHERSCAN_V2 = "https://api.etherscan.io/v2/api"
+
+#: Hard cap the API applies per query, whatever ``offset`` asks for.
+MAX_RECORDS = 10_000
+
+_NO_DATA = ("no transactions found", "no records found", "no internal transactions found")
+
+
+class ResultTruncated(ProviderError):
+    """The API returned its maximum and there is certainly more.
+
+    A distinct type because callers must handle it differently from a failure:
+    the data is usable, but incomplete, and any total derived from it is a lower
+    bound. Silently returning the rows would produce a confident wrong number.
+    """
+
+
+class EtherscanProvider(ReadOnlyProvider):
+    """Explorer-backed history for EVM chains."""
+
+    name = "etherscan"
+    capabilities = (
+        Capability.ADDRESS_HISTORY
+        | Capability.ASSET_TRANSFERS
+        | Capability.TRANSACTION
+        | Capability.BALANCE
+        | Capability.CONTRACT_SOURCE
+    )
+    cost = CostTier.FREE_KEYED
+
+    def __init__(
+        self,
+        api_key: str,
+        chains: frozenset[ChainId] | None = None,
+        *,
+        client: Client | None = None,
+        base_url: str = ETHERSCAN_V2,
+        native_symbol: str = "ETH",
+    ) -> None:
+        super().__init__(client)
+        if not api_key:
+            raise ValueError(
+                "Etherscan V2 needs an API key. It is free, and one key covers "
+                "every supported EVM chain."
+            )
+        self.api_key = api_key
+        self.base_url = base_url
+        self.native_symbol = native_symbol
+        self.chains = chains or frozenset({ChainId.evm(1)})
+
+    @property
+    def endpoint(self) -> str:
+        return self.base_url
+
+    # ---------------------------------------------------------------- request
+
+    def _get(
+        self,
+        chain: ChainId,
+        module: str,
+        action: str,
+        *,
+        volatility: Volatility = Volatility.SLOW,
+        **params: Any,
+    ) -> Any:
+        chain_id = chain.evm_chain_id
+        if chain_id is None:
+            raise ProviderError(f"{chain} is not an EVM chain")
+        try:
+            body = self.client.get(
+                self.base_url,
+                {
+                    "chainid": chain_id,
+                    "module": module,
+                    "action": action,
+                    "apikey": self.api_key,
+                    **params,
+                },
+                volatility=volatility,
+                provider=self.name,
+            )
+        except TransportError as exc:
+            raise ProviderError(str(exc)) from exc
+
+        if not isinstance(body, dict):
+            raise ProviderError(f"unexpected response shape: {type(body).__name__}")
+
+        # The proxy module speaks JSON-RPC and has no `status` field at all.
+        # Treating its absence as failure would break every nonce lookup.
+        if module == "proxy":
+            if "error" in body:
+                raise ProviderError(f"{action}: {body['error']}")
+            return body.get("result")
+
+        if body.get("status") == "1":
+            return body.get("result", [])
+
+        message = str(body.get("message", "")).lower()
+        detail = str(body.get("result", ""))
+
+        # An empty result is a fact about the chain, not a failure.
+        if any(n in message for n in _NO_DATA):
+            return []
+
+        # Everything else is "we do not know". Raising rather than returning []
+        # is the point: an empty list here makes an address disappear from the
+        # analysis with nothing to indicate it ever existed.
+        raise ProviderError(f"{action}: {body.get('message')} ({detail})".strip())
+
+    def _paged(
+        self, chain: ChainId, module: str, action: str, *, limit: int, **params: Any
+    ) -> list[dict[str, Any]]:
+        rows = self._get(
+            chain,
+            module,
+            action,
+            page=1,
+            offset=min(limit, MAX_RECORDS),
+            sort="asc",
+            **params,
+        )
+        if not isinstance(rows, list):
+            raise ProviderError(f"{action}: expected a list of records")
+        if len(rows) >= MAX_RECORDS:
+            raise ResultTruncated(
+                f"{action} returned the API maximum of {MAX_RECORDS} records. "
+                f"There is more data. Narrow the block range and query again; "
+                f"any total from this set is a lower bound."
+            )
+        return rows
+
+    # ---------------------------------------------------------------- helpers
+
+    def _addr(self, chain: ChainId, raw: str | None) -> Address | None:
+        if not raw:
+            return None
+        return Address(chain, raw, raw.lower())
+
+    @staticmethod
+    def _when(row: dict[str, Any]) -> datetime | None:
+        ts = row.get("timeStamp") or row.get("timestamp")
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc) if ts else None
+
+    # ---------------------------------------------------------------- queries
+
+    def address_history(
+        self,
+        chain: ChainId,
+        address: str,
+        *,
+        start_block: int = 0,
+        end_block: int | str = "latest",
+        limit: int = 1000,
+    ) -> list[Transaction]:
+        """Every ordinary transaction an address sent or received."""
+        rows = self._paged(
+            chain,
+            "account",
+            "txlist",
+            limit=limit,
+            address=address,
+            startblock=start_block,
+            endblock=99_999_999 if end_block == "latest" else end_block,
+        )
+        return [
+            Transaction(
+                ref=TxRef(chain, r["hash"].lower()),
+                sender=self._addr(chain, r.get("from")),
+                recipient=self._addr(chain, r.get("to")),
+                value=Amount(int(r.get("value", 0)), 18, self.native_symbol),
+                timestamp=self._when(r),
+                block=int(r["blockNumber"]) if r.get("blockNumber") else None,
+                # isError is "1" on revert. A reverted transaction moved no
+                # value, and counting it inflates every total downstream.
+                success=r.get("isError", "0") != "1",
+                nonce=int(r["nonce"]) if r.get("nonce") else None,
+                input_data=r.get("input", ""),
+            )
+            for r in rows
+        ]
+
+    def asset_transfers(
+        self,
+        chain: ChainId,
+        address: str,
+        *,
+        direction: str = "out",
+        start_block: int | str = 0,
+        end_block: int | str = "latest",
+        contract: str | None = None,
+        limit: int = 1000,
+    ) -> list[Transfer]:
+        """Native, token, and internal transfers touching an address.
+
+        Internal transfers are included deliberately. They produce no log and no
+        top-level transaction, so a tracer that reads only the other two misses
+        them --- and they are exactly where swap proceeds and withdrawal payouts
+        live.
+        """
+        end = 99_999_999 if end_block == "latest" else end_block
+        start = 0 if start_block == "latest" else int(start_block)
+        out: list[Transfer] = []
+
+        token_params: dict[str, Any] = {}
+        if contract:
+            token_params["contractaddress"] = contract
+
+        for action, kind in (
+            ("txlist", TransferKind.NATIVE),
+            ("txlistinternal", TransferKind.INTERNAL),
+            ("tokentx", TransferKind.TOKEN),
+        ):
+            params = token_params if action == "tokentx" else {}
+            try:
+                rows = self._paged(
+                    chain,
+                    "account",
+                    action,
+                    limit=limit,
+                    address=address,
+                    startblock=start,
+                    endblock=end,
+                    **params,
+                )
+            except ResultTruncated:
+                raise
+            except ProviderError:
+                # One endpoint failing should not lose the other two, but the
+                # gap is real; callers see it as a shorter list. Analyzers that
+                # need completeness use the nonce check instead.
+                continue
+
+            for r in rows:
+                if int(r.get("value", 0)) == 0:
+                    continue
+                if action == "txlist" and r.get("isError", "0") == "1":
+                    continue
+                decimals = int(r.get("tokenDecimal") or 18)
+                symbol = r.get("tokenSymbol") or self.native_symbol
+                out.append(
+                    Transfer(
+                        chain=chain,
+                        tx=TxRef(chain, r["hash"].lower()),
+                        sender=self._addr(chain, r.get("from")),
+                        recipient=self._addr(chain, r.get("to")),
+                        amount=Amount(int(r["value"]), decimals, symbol),
+                        kind=kind,
+                        timestamp=self._when(r),
+                        block=int(r["blockNumber"]) if r.get("blockNumber") else None,
+                        asset=self._addr(chain, r.get("contractAddress")),
+                    )
+                )
+
+        key = address.lower()
+        if direction == "out":
+            out = [t for t in out if t.sender and t.sender.key == key]
+        elif direction == "in":
+            out = [t for t in out if t.recipient and t.recipient.key == key]
+        out.sort(key=lambda t: (t.block or 0, t.index))
+        return out
+
+    def get_account(self, chain: ChainId, address: str) -> Account:
+        """Balance and nonce.
+
+        The nonce matters more than the balance. It equals the number of
+        outbound transactions, which is the only cheap proof that a paginated
+        history was not silently truncated --- and without it,
+        `Account.completeness_check` returns None and analyzers lose their one
+        guard against running on partial data.
+
+        Etherscan does not expose the nonce through the account module, so this
+        goes through the proxy module, which forwards a real RPC call.
+        """
+        balance = self._get(
+            chain,
+            "account",
+            "balance",
+            volatility=Volatility.LIVE,
+            address=address,
+            tag="latest",
+        )
+        nonce_hex = self._get(
+            chain,
+            "proxy",
+            "eth_getTransactionCount",
+            volatility=Volatility.LIVE,
+            address=address,
+            tag="latest",
+        )
+        code = self._get(
+            chain,
+            "proxy",
+            "eth_getCode",
+            volatility=Volatility.SLOW,
+            address=address,
+            tag="latest",
+        )
+        return Account(
+            address=Address(chain, address, address.lower()),
+            balance=Amount(int(balance or 0), 18, self.native_symbol),
+            tx_count=int(str(nonce_hex), 16) if nonce_hex else None,
+            is_contract=bool(code and code not in ("0x", "")),
+        )
+
+    def contract_source(self, chain: ChainId, address: str) -> dict[str, Any]:
+        rows = self._get(
+            chain,
+            "contract",
+            "getsourcecode",
+            volatility=Volatility.SETTLED,
+            address=address,
+        )
+        return rows[0] if isinstance(rows, list) and rows else {}

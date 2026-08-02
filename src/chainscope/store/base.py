@@ -77,10 +77,15 @@ class Query:
         parts = [
             f"{k}={v}"
             for k, v in (
-                ("chain", self.chain), ("from", self.sender), ("to", self.recipient),
-                ("address", self.address), ("asset", self.asset),
-                ("min", self.min_amount), ("max", self.max_amount),
-                ("after", self.after), ("before", self.before),
+                ("chain", self.chain),
+                ("from", self.sender),
+                ("to", self.recipient),
+                ("address", self.address),
+                ("asset", self.asset),
+                ("min", self.min_amount),
+                ("max", self.max_amount),
+                ("after", self.after),
+                ("before", self.before),
             )
             if v is not None
         ]
@@ -168,7 +173,11 @@ class Store(ABC):
 
     @abstractmethod
     def edges(
-        self, address: str, chain: ChainId, *, direction: str = "out",
+        self,
+        address: str,
+        chain: ChainId,
+        *,
+        direction: str = "out",
         min_total: int = 0,
     ) -> list[EdgeSummary]: ...
 
@@ -223,6 +232,4 @@ def rebuild_from_cache(store: Store, records: Iterable[dict[str, Any]]) -> int:
     records rather than reaching into the cache itself, so a bundle, a live
     cache, and a test fixture all replay through the same path.
     """
-    raise NotImplementedError(
-        "rebuild is implemented per chain adapter; see chains/*.replay"
-    )
+    raise NotImplementedError("rebuild is implemented per chain adapter; see chains/*.replay")
