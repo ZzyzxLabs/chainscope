@@ -71,6 +71,7 @@ evm = "chainscope.chains.evm:EvmAdapter"
 bitcoin = "chainscope.chains.bitcoin:BitcoinAdapter"
 
 [project.entry-points."chainscope.analyzers"]
+consolidation = "chainscope.analysis.consolidation:ConsolidationAnalyzer"
 
 [project.entry-points."chainscope.attribution_sources"]
 ofac = "chainscope.attribution.sources.ofac:OfacSource"
