@@ -65,16 +65,82 @@ seems likely.
 Always dry-run a file import first and read the rejected rows — they are
 usually a column-mapping mistake, not bad data.
 
+### Run an analysis
+
+```bash
+chainscope analyze --list                       # what is installed
+chainscope analyze taint -p source=0xTHIEF      # where the stolen value sits now
+chainscope analyze probing -p address=0xOP      # did they test the route first
+chainscope analyze temporal -p address=0xOP     # what hours do they work
+```
+
+Nine analyzers ship. Pick by the question, and **quote the qualifier each one
+carries** --- these numbers are measured, and they are the difference between a
+finding and a coincidence.
+
+| analyzer | answers | when it stops working |
+|---|---|---|
+| `taint` | how much of a balance came from a source | FIFO depends on arrival order, so a clipped window changes *which* funds paid for what |
+| `probing` | did they send a test payment first | needs 5+ strictly increasing steps **and** 8x growth; length alone fires on 38% of ordinary accumulation |
+| `mixer` | which withdrawal matches this deposit | precision 100% / 56.7% / 33.3% / 8.3% at 0 / 1 / 2 / 4 competing withdrawals; refuses past 5 |
+| `common_funder` | which addresses share an origin | an exchange funds its customers: with the service guard off, precision drops to 0.7% |
+| `co_spend_cluster` | which addresses share a wallet (UTXO) | one CoinJoin halves precision |
+| `temporal` | what hours the operator keeps | needs 30+ timestamps; a scripted address has no timezone to report |
+| `peel_chain` | follow a peel chain | halts on contested or missing hops rather than guessing |
+| `cross_chain` | the far side of a swap | **ranks a decoy first when the true payout is absent** |
+| `consolidation` | where counterparties send funds | — |
+
+Three things to carry into any summary:
+
+- **`taint` separates holding from having-touched.** "Stolen value passed
+  through here" and "this address holds stolen value" are different claims.
+  Reporting the second as the first is how a payment processor gets described
+  as a launderer. The result names them separately; keep them separate.
+- **`mixer` never exceeds MEDIUM on timing** --- it is a claim about operator
+  behaviour, not a break of the cryptography. But `address_reuse` (the same
+  address deposited *and* withdrew) is HIGH and ONCHAIN, because nothing is
+  being inferred. Check that one first; it does not decay as the pool gets busy.
+- **`probing` describes a shape.** A trading desk scaling into a position looks
+  identical. Say what was observed, not what it means.
+
+### Cross-check an enumeration
+
+Any query whose answer is a *set* --- all logs in a range, every transfer of an
+address --- can come back silently short. A provider returning 200 OK with
+twelve of thirteen rows looks exactly like one returning all thirteen, and this
+has cost a real investigation a missing address.
+
+`Router.corroborate` asks two independent providers and reports what only one
+of them saw. Blockscout needs no API key, so a second source exists by default
+on six EVM chains. When a result says `corroborated: false`, say so --- it means
+one source answered, which is a weaker claim than it looks.
+
 ### Export a fund-flow graph
 
 ```bash
 chainscope graph 0xSEED --out case.html --depth 2 --max-nodes 150
+
+# -f flow lays it out in columns by hop distance instead of a spring layout,
+# so a laundering chain reads as a chain rather than as a blob. Dashed nodes
+# are frontier: seen, never expanded.
+chainscope graph 0xSEED -f flow --out flow.html
 chainscope graph 0xSEED -f dot | dot -Tpng -o case.png
 ```
 
 The HTML is self-contained: no server, no CDN, opens from a file path. Dashed
 nodes are the frontier — seen but never expanded. If the command reports
 `truncated`, say so when describing the result.
+
+### Render a case overview
+
+```bash
+chainscope dashboard --out case.html
+```
+
+Counts, coverage, largest flows, and what is *not* attributed. Read the
+unlabelled figure aloud when summarising: a case where 80% of addresses carry
+no label is a case where most of the picture is unexamined, and a dashboard
+that looks tidy does not change that.
 
 ### Query with SQL
 
