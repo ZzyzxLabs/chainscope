@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..chains import address_key
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..core.models import Address, Transfer, TransferKind, TxRef
@@ -147,6 +148,19 @@ _ATTRIBUTIONS = (
 #: Digits used to pad amounts. Total ETH supply is ~1.2e26 wei, so 40 leaves
 #: room for any asset that will plausibly exist without wasting index space.
 AMOUNT_WIDTH = 40
+
+
+def _both_spellings(address: str) -> list[str]:
+    """The address as written, and lowercased, without duplicates.
+
+    For an unscoped lookup only. Rows written by an EVM chain are lowercase and
+    rows written by Solana, Sui or Bitcoin are as given, so a question that
+    names no chain has to accept either --- and asking for both is a superset,
+    never a false match: two spellings that differ only in case are the same
+    address on the one ecosystem where they can both be present.
+    """
+    text = address.strip()
+    return [text] if text == text.lower() else [text, text.lower()]
 
 
 def _pad(raw: int) -> str:
@@ -321,12 +335,17 @@ class SqliteStore(Store):
                 str(t.chain),
                 t.tx.hash,
                 t.index,
-                t.sender.key if t.sender else None,
-                t.recipient.key if t.recipient else None,
+                # Normalised here rather than trusting `Address.key`. The
+                # adapters set it correctly; anything hand-built may not, and a
+                # row written with an unnormalised key is a row no query finds
+                # again --- write and read have to agree by construction, not by
+                # everybody upstream remembering.
+                address_key(t.chain, t.sender.raw) if t.sender else None,
+                address_key(t.chain, t.recipient.raw) if t.recipient else None,
                 _pad(t.amount.raw),
                 t.amount.decimals,
                 t.amount.symbol,
-                t.asset.key if t.asset else None,
+                address_key(t.chain, t.asset.raw) if t.asset else None,
                 t.kind.value,
                 t.block,
                 _ts(t.timestamp),
@@ -351,7 +370,7 @@ class SqliteStore(Store):
     def put_attributions(self, attributions: Iterable[Attribution]) -> int:
         rows = [
             (
-                a.address.lower(),
+                address_key(a.chain, a.address),
                 str(a.chain) if a.chain else None,
                 a.label,
                 a.category.value,
@@ -382,7 +401,7 @@ class SqliteStore(Store):
             self._conn.execute(
                 "INSERT OR REPLACE INTO expanded VALUES (?,?,?,?)",
                 (
-                    address.lower(),
+                    address_key(chain, address),
                     str(chain),
                     depth,
                     int(datetime.now(timezone.utc).timestamp()),
@@ -394,7 +413,7 @@ class SqliteStore(Store):
         return bool(
             self._fetch(
                 "SELECT 1 FROM expanded WHERE address = ? AND chain = ?",
-                (address.lower(), str(chain)),
+                (address_key(chain, address), str(chain)),
             )
         )
 
@@ -426,13 +445,14 @@ class SqliteStore(Store):
             params.append(str(q.chain))
         if q.address:
             clauses.append("(sender = ? OR recipient = ?)")
-            params += [q.address.lower(), q.address.lower()]
+            key = address_key(q.chain, q.address)
+            params += [key, key]
         if q.sender:
             clauses.append("sender = ?")
-            params.append(q.sender.lower())
+            params.append(address_key(q.chain, q.sender))
         if q.recipient:
             clauses.append("recipient = ?")
-            params.append(q.recipient.lower())
+            params.append(address_key(q.chain, q.recipient))
         if q.asset:
             clauses.append("asset = ?")
             params.append(q.asset.lower())
@@ -502,7 +522,7 @@ class SqliteStore(Store):
         rows = self._fetch(
             f"SELECT sender, recipient, asset, amount_raw, timestamp, symbol, decimals "
             f"FROM transfers WHERE chain = ? AND {side} = ?",
-            (str(chain), address.lower()),
+            (str(chain), address_key(chain, address)),
         )
 
         buckets: dict[tuple[str | None, str | None], _Bucket] = {}
@@ -537,10 +557,25 @@ class SqliteStore(Store):
         out.sort(key=lambda e: -e.total_raw)
         return out
 
-    def attributions(self, address: str) -> list[Attribution]:
+    def attributions(self, address: str, chain: ChainId | None = None) -> list[Attribution]:
+        """Every claim about an address.
+
+        The table is keyed by address alone, because a claim may be
+        chain-agnostic --- that is how sanctions lists are published --- so the
+        chain cannot be part of the key.
+
+        Given a chain, the lookup is exact for that chain's rules. Without one,
+        the question is "anything known about this address", and both the
+        as-written and lowercased spellings are tried: the table can hold either
+        depending on which chain wrote the row, and an unscoped question should
+        not miss a claim because of the ecosystem it came from.
+        """
+        keys = [address_key(chain, address)] if chain else _both_spellings(address)
+        placeholders = ", ".join("?" for _ in keys)
         rows = self._fetch(
-            "SELECT * FROM attributions WHERE address = ? ORDER BY confidence DESC",
-            (address.lower(),),
+            f"SELECT * FROM attributions WHERE address IN ({placeholders}) "
+            f"ORDER BY confidence DESC",
+            keys,
         )
         return [
             Attribution(
