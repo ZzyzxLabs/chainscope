@@ -42,7 +42,7 @@ from ..analysis.probing import (
     MIN_ESCALATION_STEPS,
     detect_probes,
 )
-from ..analysis.taint import TaintPolicy, trace_taint
+from ..analysis.taint import TaintPolicy, trace_origins, trace_taint
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..store.base import Query
@@ -550,6 +550,69 @@ def build_server(config: ServerConfig) -> MCPServer:
                 "haircut loses value it cannot recover and poison invents value "
                 "never stolen. Only FIFO conserves the amount; the others are "
                 "here for comparison."
+            )
+        return out
+
+    @server.tool(
+        description=(
+            "Ask what funded an address's balance --- FIFO run backwards. This "
+            "is the question you have when you start from a suspect rather "
+            "than from an incident, and it is the half `trace_stolen_funds` "
+            "does not answer. `amount` limits it to the most recent N base "
+            "units, which is how you ask about the last ten ETH rather than "
+            "everything. Origins are immediate senders as far back as the "
+            "store reaches; it does not follow further, because each hop back "
+            "multiplies the addresses involved."
+        )
+    )
+    def trace_origins_of(
+        address: str,
+        amount: str | None = None,
+        asset: str | None = None,
+        chain: str | None = None,
+        limit: int = 5000,
+    ) -> dict[str, Any]:
+        if not address.strip():
+            raise AgentError("address is required")
+        capped = _cap(limit, config.max_rows)
+        store = _store()
+        try:
+            rows = list(store.transfers(Query(chain=_chain(chain), limit=capped)))
+        finally:
+            store.close()
+
+        target: Any = (
+            (address.strip().lower(), asset.lower()) if asset else address.strip().lower()
+        )
+        try:
+            want = int(amount) if amount else None
+        except ValueError as exc:
+            raise AgentError(
+                f"amount is a raw integer string in the asset's smallest unit: {exc}"
+            ) from exc
+
+        origins = trace_origins(rows, target, amount=want)
+        out: dict[str, Any] = {
+            "address": address.strip().lower(),
+            "asset": asset,
+            "transfers_examined": len(rows),
+            # Strings: base units are wei-scale and do not survive JSON as
+            # numbers.
+            "origins": {
+                (o if isinstance(o, str) else o[0]): str(v)
+                for o, v in sorted(origins.items(), key=lambda kv: -kv[1])
+            },
+        }
+        if not origins:
+            out["note"] = (
+                "Nothing in this store funded that balance. That is not the same "
+                "as the address having no history --- it may have been funded "
+                "outside what has been collected."
+            )
+        if len(rows) >= capped:
+            out["truncated"] = (
+                f"only {capped} transfers were read, and FIFO depends on arrival "
+                f"order --- a clipped window changes which lot funded what"
             )
         return out
 

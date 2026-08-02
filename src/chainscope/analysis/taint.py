@@ -380,6 +380,90 @@ def _receive(queue: deque[Lot], amount: int, tainted: int, policy: TaintPolicy) 
     queue.append(Lot(amount, min(tainted, amount)))
 
 
+def trace_origins(
+    transfers: list[Any],
+    target: Key,
+    *,
+    amount: int | None = None,
+) -> dict[Key, int]:
+    """Where the value an address holds came from --- FIFO run backwards.
+
+    The other half of the question, and the reason FIFO was chosen over
+    haircut. Forward tracing asks "where did the theft go"; this asks "what
+    funded this balance", which is what an investigator has when they start
+    from a suspect rather than from an incident.
+
+    It works because **FIFO loses no information**. Each lot in an address's
+    queue remembers which incoming transfer put it there, so the queue can be
+    read in either direction. Haircut cannot: proportional splitting mixes
+    every source into every output and the proportions do not invert --- you
+    can say a balance is 3% tainted and never which 3%.
+
+    Returns each origin and how much of ``target``'s current holding came from
+    it, in base units of that holding's asset. ``amount`` limits the tracing to
+    the most recent ``amount`` units, which is how you ask "where did the last
+    ten ETH come from" rather than "where did everything come from".
+
+    Origins are *immediate* senders, not ultimate ones. Following further is
+    the caller's decision, because each hop back multiplies the addresses under
+    examination and an unbounded walk would return the chain's history.
+    """
+    address, asset = target if isinstance(target, tuple) else (target, "")
+    address = address.lower()
+
+    # Replay forward, tracking provenance per lot. A lot's origin is whoever
+    # sent it; a lot spent onward carries its origin with it, which is what
+    # makes the replay reversible in the first place.
+    queues: dict[tuple[str, str], deque[tuple[int, Key]]] = {}
+
+    ordered = sorted(
+        transfers,
+        key=lambda t: (getattr(t, "block", 0) or 0, getattr(t, "index", 0) or 0),
+    )
+    for transfer in ordered:
+        sender = getattr(transfer, "sender", None)
+        recipient = getattr(transfer, "recipient", None)
+        value = getattr(transfer, "amount", None)
+        if sender is None or recipient is None or value is None or value.raw <= 0:
+            continue
+        asset_obj = getattr(transfer, "asset", None)
+        key = asset_obj.key if asset_obj else ""
+        src = queues.setdefault((sender.key.lower(), key), deque())
+
+        # Draw from the front, carrying each lot's origin forward. A shortfall
+        # is credited to the sender itself: the value existed before the window
+        # and the sender is the furthest back this data reaches.
+        remaining = value.raw
+        carried: list[tuple[int, Key]] = []
+        while remaining > 0 and src:
+            size, origin = src[0]
+            take = min(size, remaining)
+            carried.append((take, origin))
+            remaining -= take
+            if take == size:
+                src.popleft()
+            else:
+                src[0] = (size - take, origin)
+        if remaining > 0:
+            carried.append((remaining, sender.key.lower()))
+
+        dst = queues.setdefault((recipient.key.lower(), key), deque())
+        dst.extend(carried)
+
+    held = queues.get((address, asset), deque())
+    # Most recent first: "where did the last ten ETH come from" reads the back
+    # of the queue, since FIFO spends the front.
+    wanted = amount if amount is not None else sum(size for size, _ in held)
+    origins: dict[Key, int] = {}
+    for size, origin in reversed(held):
+        if wanted <= 0:
+            break
+        take = min(size, wanted)
+        origins[origin] = origins.get(origin, 0) + take
+        wanted -= take
+    return origins
+
+
 class TaintAnalyzer(Analyzer):
     """Trace stolen value forward from a source address."""
 

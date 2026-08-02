@@ -158,8 +158,11 @@ and so the list is not silently empty.
   a paid quota, and running out mid-trace is a partial answer.
 - **Non-EVM breadth.** Sui, Bitcoin, Solana and Tron are modelled; only EVM has
   two independent sources, so corroboration cannot run elsewhere.
-- **Backwards taint.** FIFO is reversible by construction --- trace back from a
-  suspect balance to its origins --- and only the forward direction is built.
+- ~~**Backwards taint.**~~ Shipped: `trace_origins` and the agent's
+  `trace_origins_of`. This was the justification for choosing FIFO over
+  haircut, so leaving it unbuilt meant the choice was argued and not used.
+  Haircut cannot do it at all: proportional splitting mixes every source into
+  every output, so a balance can be called 3% tainted and never *which* 3%.
 
 ---
 
