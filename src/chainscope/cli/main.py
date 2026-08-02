@@ -30,6 +30,7 @@ from .commands import (
     sanctions,
     sql,
     tag,
+    value,
     watch,
 )
 
@@ -48,6 +49,7 @@ _COMMANDS = {
     "dashboard": dashboard,
     "sanctions": sanctions,
     "sql": sql,
+    "value": value,
     "watch": watch,
     "doctor": doctor,
     "bundle": bundle,

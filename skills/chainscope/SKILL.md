@@ -118,6 +118,27 @@ Three things to carry into any summary:
 - **`probing` describes a shape.** A trading desk scaling into a position looks
   identical. Say what was observed, not what it means.
 
+### Value something at the time it moved
+
+```bash
+chainscope value 12.4 --symbol ETH --at 2022-04-06        # one amount
+chainscope value 0xSEED --quote USDT                      # an address's flows
+```
+
+**At the time, never now.** A figure at today's rate is a different claim from
+one at the rate when the money moved, and only the second is defensible. Every
+valuation prints the rate, the moment, and the source; quote all three.
+
+Three refusals to carry into any summary:
+
+- **No rate for that minute means no figure** --- not the nearest one. If the
+  output says a transfer could not be valued, say so; do not fill it in.
+- **An undated transfer is not valued at all.** A provider omitting a timestamp
+  is not evidence the transfer happened today.
+- **The total is a floor when anything was refused**, and the command says so.
+  It is also *a sum of valuations, not a valuation of a sum* --- each transfer
+  converted at its own moment. Never restate it as "worth X today".
+
 ### Cross-check an enumeration
 
 Any query whose answer is a *set* --- all logs in a range, every transfer of an

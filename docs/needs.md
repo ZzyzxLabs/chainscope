@@ -95,11 +95,36 @@ exists and no surface exposes it.
 per-chain native symbols, `asset` in the uniqueness key, per-asset ranking and
 edge widths, decimals carried end to end.
 
-**Still open.** Cross-asset comparison needs prices, and prices need a source
-with its own provenance and staleness. *Inferred:* this is the next real
-capability, and it should refuse rather than interpolate when no rate exists for
-a timestamp --- the cross-chain matcher already ranks a decoy first when the
-true payout is absent, and a price source that guesses would make that worse.
+**Now observed, and shipped.** Re-reading the 55-challenge reference set for
+techniques this package *lacks* rather than ones it has: **14 of them ask for a
+fiat figure**, across three of the ten groups. What had been an inferred
+priority is an observed one.
+
+The machinery was already here. `chainscope.pricing` has had a
+minute-resolution rate source with a local cache since early on, and exactly
+**one** caller --- buried inside cross-chain matching. No CLI, no agent tool, no
+way for an investigator to ask. §2 again, in a module that had been finished
+for months.
+
+`chainscope value` is the surface, and it keeps the refusal this note asked for:
+**no rate for that minute means no figure**, not the nearest one. The nearest
+rate is usually fine and occasionally catastrophic, and nothing downstream can
+tell the two apart. An undated transfer is not valued at "now" --- a provider
+omitting a timestamp is not evidence the transfer happened today.
+
+Two more that fell out of building it. Refusals are *returned and counted*, not
+dropped: a total over the transfers that happened to price, with the rest
+silently absent, is the shape of a confidently wrong figure, so the output calls
+it a floor. And a total is stated as **a sum of valuations, not a valuation of a
+sum** --- ten transfers across a year each converted at their own moment add up
+to something real, the same total at any single rate does not, and the number
+looks identical either way.
+
+**Still open.** *Inferred:* the rate source is a spot rate, and
+`pricing/base.py` already says plainly that a spot rate is not what a service
+gave --- spread and fee sit between them. For valuation-at-time that is the right
+number; for "what did they actually receive" it is not, and nothing yet
+distinguishes the two questions at the point somebody asks.
 
 ---
 
@@ -223,6 +248,25 @@ author and no timestamp on the face of it, which is fine for a scratchpad and
 not fine for a record two people share. `chainscope note` carries the author,
 how that author was identified, and what kind of statement it is, so that a
 report can say who concluded what --- see §7.
+
+---
+
+## 5b. What re-reading the challenge set showed
+
+**Observed.** Classified all 55 challenges by the technique each demands, then
+--- more usefully --- searched for techniques this package does *not* implement.
+That second direction is the one worth running: a coverage map built from your
+own feature list mostly proves you can pattern-match your own vocabulary.
+
+Two hits. **Fiat valuation, in 14 challenges across three groups** --- addressed
+above. And one challenge wanting file forensics (steganography, packet capture),
+which is deliberately out of scope: this is a chain-analysis package and a
+half-hearted file-carving module would be worse than none.
+
+One capability is demanded by **zero** challenges: `temporal`. It was built
+against a real need from another source, and the reference set does not exercise
+it. Worth stating rather than quietly leaving in the coverage column --- it is
+exactly the *observed / inferred* distinction this note exists to keep.
 
 ---
 

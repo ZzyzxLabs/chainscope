@@ -173,6 +173,9 @@ authorship, and historical token decimals.
   independent providers, and the result says whether they agreed. Where only
   one source exists, it says that too — a single-source answer is never
   mistaken for a checked one. `--single-source` opts out.
+- **Value** what moved at the rate when it moved — `chainscope value`. No rate
+  for that minute means no figure, never the nearest one; an undated transfer is
+  not valued at "now"; and a total with anything refused is reported as a floor.
 - **Query** with `chainscope sql`, a Dune-shaped surface over DuckDB with exact
   128-bit arithmetic. `--schema` documents the traps, not just the columns.
 - **Store** is one SQLite file. A case is a file you can copy.
@@ -211,7 +214,7 @@ authorship, and historical token decimals.
 
 **Interfaces**
 
-CLI (12 commands) · MCP agent (10 tools, including writes) · MV3 browser
+CLI (16 commands) · MCP agent (10 tools, including writes) · MV3 browser
 extension · third-party analyzers via entry points · Docker, Nix flake, and
 uvx.
 
