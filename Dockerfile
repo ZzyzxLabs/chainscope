@@ -46,8 +46,17 @@ COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir --no-index --find-links=/wheels chainscope[all] \
     && rm -rf /wheels
 
-# A non-root user with a stable uid, so a bind-mounted case directory has
-# predictable ownership on the host.
+# A non-root default with a stable uid. 1000 is the common first-user id, so it
+# matches a single-user Linux desktop and a Mac.
+#
+# It will not match a CI runner or a shared machine, and a bind mount owned by
+# uid 1001 is not writable by uid 1000 --- the container fails with "Permission
+# denied: .chainscope", which reads like a bug in the tool. Pass your own:
+#
+#     docker run --user "$(id -u):$(id -g)" -v "$PWD/case:/case" chainscope …
+#
+# compose does this automatically. Nothing here needs a home directory or a
+# named user, so any uid works.
 RUN useradd --create-home --uid 1000 analyst
 USER analyst
 WORKDIR /case

@@ -15,6 +15,12 @@ name: chainscope
 x-common: &common
   build: .
   image: chainscope:local
+  # Run as the invoking user, so files written into ./case belong to you rather
+  # than to whichever uid the image happens to default to. Without this, a bind
+  # mount on any machine whose first user is not uid 1000 --- a CI runner, a
+  # shared box --- fails with "Permission denied: .chainscope", which reads
+  # like a bug in the tool rather than a mismatch in ownership.
+  user: "${UID:-1000}:${GID:-1000}"
   volumes:
     - ./case:/case
   environment:

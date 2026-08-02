@@ -122,7 +122,11 @@ jobs:
       - name: the end-to-end path works in the container
         run: |
           mkdir -p "$RUNNER_TEMP/case"
-          docker run --rm -v "$RUNNER_TEMP/case:/case" chainscope:ci \
+          # As the invoking user. The image defaults to uid 1000 and a runner
+          # is 1001, so without this the bind mount is unwritable -- which is
+          # exactly what a user on any shared machine would hit.
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$RUNNER_TEMP/case:/case" chainscope:ci \
             tag 0x28C6c06298d514Db089934071355E5743bf21d60 \
             -l "Binance 14" -t cex -C high -s "ci smoke test"
           test -f "$RUNNER_TEMP/case/.chainscope/store.db"

@@ -29,8 +29,14 @@ chainscope doctor
 
 ```bash
 docker build -t chainscope .
-docker run --rm -v "$PWD/case:/case" chainscope doctor
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/case:/case" chainscope doctor
 ```
+
+`--user` is not optional decoration. The image defaults to uid 1000, and a bind
+mount owned by any other uid is not writable by it — the container fails with
+`Permission denied: .chainscope`, which reads like a bug in the tool rather
+than a mismatch in ownership. Passing your own uid also means the files in
+`case/` belong to you afterwards. compose does this automatically.
 
 Runs as uid 1000, not root. A forensics tool reads untrusted data all day —
 label files from strangers, JSON from explorers, HTML it renders — and mounts
