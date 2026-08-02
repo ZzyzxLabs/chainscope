@@ -19,6 +19,7 @@ from chainscope.analysis.mixer import (
     MixerAnalyzer,
     parse_withdrawal,
 )
+from chainscope.core.chainid import ETHEREUM
 
 RECIPIENT = "0x96dc12a1c0f3ad73b9de2e16f88785bac0b6d497"
 
@@ -114,3 +115,108 @@ class TestTheAnalyzerContract:
     def test_an_unknown_pool_is_passed_through_as_an_address(self):
         """So a pool this package does not list is still usable."""
         assert TORNADO_ETH_POOLS.get("0xabc", "0xabc") == "0xabc"
+
+
+class TestDepositsAreResolvedThroughTheProvider:
+    """The analyzer looked deposit hashes up in a map keyed by *withdrawal*
+    transaction. A transaction is one or the other, so the lookup never hit,
+    the deposit list was always empty, and every run reported zero matches
+    while explaining that the hashes could not be placed in a block.
+
+    It shipped as a working feature and had never produced a single pairing.
+    The tests it had covered the log parser and the constants, which were both
+    fine --- nothing exercised the analyzer end to end.
+    """
+
+    def _ctx(self, provider):
+        from chainscope.analysis.base import Context
+        from chainscope.providers.router import Router
+
+        return Context(chain=ETHEREUM, router=Router([provider]))
+
+    def _provider(self, **over):
+        from chainscope.core.models import Address, Transaction, TxRef
+        from chainscope.core.units import Amount
+        from chainscope.providers.base import Capability, CostTier, Provider
+
+        settings = {"block": 20005969, "success": True, "sender": "0xdepositor", **over}
+
+        class Fake(Provider):
+            name = "fake"
+            ecosystems = frozenset({"eip155"})
+            capabilities = Capability.LOGS | Capability.TRANSACTION
+            cost = CostTier.FREE_PUBLIC
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.chains = frozenset({ETHEREUM})
+
+            def get_logs(self, chain, **kw):
+                return [log(block=20005985)]
+
+            def get_transaction(self, chain, tx_hash):
+                sender = settings["sender"]
+                return Transaction(
+                    ref=TxRef(chain, tx_hash),
+                    sender=Address(chain, sender, sender) if sender else None,
+                    recipient=None,
+                    value=Amount(10**19, 18, "ETH"),
+                    timestamp=None,
+                    block=settings["block"],
+                    success=settings["success"],
+                )
+
+        return Fake()
+
+    DEPOSIT = "0x" + "d" * 64
+
+    def test_a_deposit_produces_a_match(self):
+        result = MixerAnalyzer().run(
+            self._ctx(self._provider()), pool="10", deposits=self.DEPOSIT
+        )
+        assert len(result.findings) == 1
+        assert RECIPIENT in result.findings[0].title
+
+    def test_a_reverted_deposit_is_refused_not_paired(self):
+        """It put nothing into the pool, so pairing a withdrawal with it would
+        attribute somebody else's money."""
+        result = MixerAnalyzer().run(
+            self._ctx(self._provider(success=False)), pool="10", deposits=self.DEPOSIT
+        )
+        assert not result.findings
+        assert any("reverted" in w for w in result.warnings)
+
+    def test_an_unmined_deposit_is_refused(self):
+        result = MixerAnalyzer().run(
+            self._ctx(self._provider(block=None)), pool="10", deposits=self.DEPOSIT
+        )
+        assert not result.findings
+        assert any("not yet in a block" in w for w in result.warnings)
+
+    def test_resolving_nothing_says_so_rather_than_returning_empty(self):
+        """Zero findings and zero explanation is the state this bug produced
+        for its whole life."""
+        result = MixerAnalyzer().run(
+            self._ctx(self._provider(block=None)), pool="10", deposits=self.DEPOSIT
+        )
+        assert any("nothing was correlated" in w for w in result.warnings)
+
+    def test_it_needs_transaction_capability_not_just_logs(self):
+        """Deposits cannot be resolved from logs, so declaring otherwise makes
+        the router pick this and produce nothing."""
+        from chainscope.analysis.base import Context
+        from chainscope.providers.base import Capability, CostTier, Provider
+        from chainscope.providers.router import Router
+
+        class LogsOnly(Provider):
+            name = "logs-only"
+            ecosystems = frozenset({"eip155"})
+            capabilities = Capability.LOGS
+            cost = CostTier.FREE_PUBLIC
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.chains = frozenset({ETHEREUM})
+
+        ctx = Context(chain=ETHEREUM, router=Router([LogsOnly()]))
+        assert not MixerAnalyzer().applicable(ctx)

@@ -77,6 +77,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any
 
 from ..core.attribution import Attribution, Category, Confidence, Method
@@ -380,6 +381,11 @@ def parse_withdrawal(log: dict[str, Any], chain_hint: str = "") -> MixerEvent | 
     )
 
 
+def _transaction(provider: Any, *, chain: ChainId, tx_hash: str) -> Any:
+    """Named rather than a lambda closing over the loop variable."""
+    return provider.get_transaction(chain, tx_hash)
+
+
 class MixerAnalyzer(Analyzer):
     """Correlate deposits and withdrawals for one mixer pool."""
 
@@ -388,7 +394,12 @@ class MixerAnalyzer(Analyzer):
     description = "Pair mixer deposits with withdrawals by timing, with the anonymity set"
 
     def applicable(self, ctx: Context) -> bool:
-        return bool(ctx.router.candidates(ctx.chain, Capability.LOGS))
+        # Both: logs enumerate the withdrawals, and TRANSACTION resolves each
+        # deposit hash to its block and sender.
+        return bool(
+            ctx.router.candidates(ctx.chain, Capability.LOGS)
+            and ctx.router.candidates(ctx.chain, Capability.TRANSACTION)
+        )
 
     def run(
         self,
@@ -462,22 +473,55 @@ class MixerAnalyzer(Analyzer):
                 started=started,
             )
 
-        wanted = {h.strip().lower() for h in deposits.split(",") if h.strip()}
-        by_tx = {w.tx.lower(): w for w in withdrawals}
-        deposit_events = [
-            MixerEvent(tx=h, block=by_tx[h].block, address=h)
-            for h in sorted(wanted)
-            if h in by_tx
-        ]
-        missing = wanted - set(by_tx)
-        if missing:
-            # Deposit blocks have to come from somewhere. Rather than fetch each
-            # transaction, unknown hashes are reported as unresolvable -- which
-            # is honest, and better than a correlation built on a guessed block.
-            warnings.append(
-                f"{len(missing)} deposit hashes could not be placed in a block "
-                f"from the withdrawal logs alone and were skipped: they need "
-                f"`chainscope tx` to resolve first"
+        # Each deposit hash is resolved through the provider, because a
+        # deposit's block is not in the withdrawal logs and never could be.
+        #
+        # This previously looked deposit hashes up in a map keyed by
+        # *withdrawal* transaction. A transaction is one or the other, so the
+        # lookup never hit, `deposit_events` was always empty, and the analyzer
+        # reported zero matches every time while explaining that the hashes
+        # could not be placed in a block. It shipped as a working feature and
+        # had never produced a single pairing.
+        wanted = sorted({h.strip().lower() for h in deposits.split(",") if h.strip()})
+        deposit_events: list[MixerEvent] = []
+        for tx_hash in wanted:
+            try:
+                tx = ctx.router.dispatch(
+                    ctx.chain,
+                    Capability.TRANSACTION,
+                    partial(_transaction, chain=ctx.chain, tx_hash=tx_hash),
+                )
+            except Exception as exc:
+                warnings.append(f"could not resolve deposit {tx_hash}: {exc}")
+                continue
+            if tx.block is None:
+                warnings.append(f"deposit {tx_hash} is not yet in a block")
+                continue
+            if not tx.success:
+                # A reverted deposit put nothing into the pool, so pairing a
+                # withdrawal with it would attribute somebody else's money.
+                warnings.append(f"deposit {tx_hash} reverted and moved nothing")
+                continue
+            deposit_events.append(
+                MixerEvent(
+                    tx=tx_hash,
+                    block=tx.block,
+                    # The depositor is the sender: the Deposit event carries a
+                    # commitment, not an address.
+                    address=tx.sender.key if tx.sender else tx_hash,
+                )
+            )
+
+        if not deposit_events:
+            return self._result(
+                ctx,
+                warnings=(
+                    *warnings,
+                    f"none of the {len(wanted)} deposit hashes could be resolved, "
+                    f"so nothing was correlated",
+                ),
+                params={"pool": address},
+                started=started,
             )
 
         result = correlate_withdrawals(deposit_events, withdrawals, window_blocks=window_blocks)
