@@ -192,10 +192,14 @@ authorship, and historical token decimals.
   picked. HTML with a print stylesheet, or Markdown.
 - `attest` binds the figures to the cached responses behind them; `--verify`
   reports drift. A manifest, not a signature — and it says so.
+- `request` is the clock on what was asked of an exchange — KYC, freeze,
+  records, preservation. Overdue is computed from the deadline rather than
+  stored, and **silence is not recorded as refusal**: only the second is a
+  decision somebody made, and only the second can be escalated against.
 
 **Interfaces**
 
-CLI (11 commands) · MCP agent (10 tools, including writes) · MV3 browser
+CLI (12 commands) · MCP agent (10 tools, including writes) · MV3 browser
 extension · third-party analyzers via entry points · Docker, Nix flake, and
 uvx.
 

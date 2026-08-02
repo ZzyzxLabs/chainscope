@@ -259,12 +259,32 @@ Not done: DOCX. The HTML carries a print stylesheet, so browser print-to-PDF
 gives the artefact people attach to an e-mail; a server-side PDF or DOCX
 renderer is a large dependency for a job the browser already does.
 
-**Exchange correspondence.** Which KYC request went to whom, when, and whether
-it came back; freeze requests; the clock on a legal process while the money
-keeps moving. This is case management rather than chain analysis, and probably
-another table rather than another analyzer --- but a tool that traces funds and
-cannot record what was asked of the exchange holding them stops one step short
-of the point.
+**Exchange correspondence.** *Shipped* as `chainscope request` --- and it was
+another table rather than another analyzer, as guessed. It sits in `case.db`
+beside the narrative, for the same reason: neither is rebuildable from a cache.
+
+Three refusals do the work. **Overdue is derived, never stored** --- a status
+column containing "expired" is correct only if somebody remembered to run a
+sweep, and computed from the deadline it is true the moment it becomes true.
+**Silence is not refusal** --- a request nobody answered and one somebody
+declined lead to different next moves, and only the second is a decision that
+can be escalated against. **An answer needs its content** --- closing a request
+without saying what came back is indistinguishable from not having read the
+reply.
+
+Status is a sequence of events rather than a column, because *when* a freeze was
+confirmed is regularly the fact in dispute. A closed request cannot be reopened
+by appending past the close; chasing it means a new request, so the first
+exchange stays legible.
+
+Outstanding requests appear in the report under **Not yet known**, beside the
+open questions, rather than in an appendix --- waiting on an exchange is the
+commonest reason a case is unfinished, and a report that files it separately
+reads as more complete than it is.
+
+Not done: no delivery. Nothing here chases a deadline or sends a reminder; the
+clock is reported and the exit code is non-zero while anything is outstanding,
+so `cron` or a person decides what happens next --- the same line `watch` draws.
 
 ---
 

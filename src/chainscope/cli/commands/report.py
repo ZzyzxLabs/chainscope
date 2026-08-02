@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ...case.correspondence import Ledger, Request
 from ...case.log import CaseLog, Note, NoteKind
 from ...core.attribution import Attribution, ResolvedEntity, merge
 from ...render.base import Renderer
@@ -81,12 +82,13 @@ def add_parser(sub: Any, name: str) -> None:
 
 def run(args: argparse.Namespace, render: Renderer) -> int:
     case = _gather(args)
-    if case["notes"] == [] and not case["entities"]:
+    if not (case["notes"] or case["entities"] or case["outstanding"] or case["answered"]):
         print(
-            f"nothing to report: no notes in {args.case} and no attributions in "
-            f'{args.store}.\n  chainscope note observation "..."    '
-            f"# start the narrative\n  chainscope tag <address> ...          "
-            f"# record what something is",
+            f"nothing to report: no notes or correspondence in {args.case} and no "
+            f'attributions in {args.store}.\n  chainscope note observation "..."'
+            f"          # start the narrative\n  chainscope tag <address> ..."
+            f"                # record what something is\n  chainscope request "
+            f'send "..." -k freeze    # start the clock on an exchange',
             file=sys.stderr,
         )
         return 2
@@ -102,6 +104,10 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
     )
     if case["open"]:
         print(f"  {len(case['open'])} open question(s) --- reported first, before the findings")
+    if case["outstanding"]:
+        overdue = len(case["overdue"])
+        tail = f", {overdue} past a deadline" if overdue else ""
+        print(f"  {len(case['outstanding'])} request(s) still outstanding{tail}")
     if case["disputed"]:
         print(f"  {len(case['disputed'])} address(es) where sources of equal strength disagree")
     if case["unnamed"]:
@@ -128,6 +134,14 @@ def _gather(args: argparse.Namespace) -> dict[str, Any]:
         replaced = log.superseded()
     finally:
         log.close()
+
+    now = datetime.now(timezone.utc)
+    ledger = Ledger(args.case)
+    try:
+        outstanding = ledger.requests(open_only=True)
+        answered = [r for r in ledger.requests() if not r.is_open]
+    finally:
+        ledger.close()
 
     entities: list[ResolvedEntity] = []
     frontier = 0
@@ -156,8 +170,12 @@ def _gather(args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         "contributors": _contributors(analysts, entities),
+        "outstanding": sorted(outstanding, key=lambda r: -r.age_days(now)),
+        "answered": answered,
+        "overdue": [r for r in outstanding if r.overdue_at(now)],
+        "now": now,
         "title": args.title or Path.cwd().name,
-        "generated": datetime.now(timezone.utc),
+        "generated": now,
         "notes": notes,
         "open": open_questions,
         "replaced": replaced,
@@ -272,13 +290,17 @@ def _markdown(case: dict[str, Any]) -> str:
     out.append(f"*Generated {case['generated'].strftime('%Y-%m-%d %H:%M')} UTC.*")
     out.append("")
 
-    if case["open"]:
+    if case["open"] or case["outstanding"]:
         out += ["## Not yet known", "", _unknown_preamble(), ""]
         for note in case["open"]:
             out.append(
                 f"- **[{note.id}]** {note.body} — *{note.analyst}, "
                 f"{note.at.strftime('%Y-%m-%d')}*"
             )
+        if case["outstanding"]:
+            out += ["", "**Waiting on somebody else**", ""]
+            for req in case["outstanding"]:
+                out.append(f"- {_request_line(req, case['now'])}")
         out.append("")
 
     out += ["## Who worked on this", ""]
@@ -332,6 +354,19 @@ def _markdown(case: dict[str, Any]) -> str:
     else:
         out += ["*No attributions recorded.*", ""]
 
+    if case["outstanding"] or case["answered"]:
+        out += ["## Correspondence", "", _correspondence_preamble(), ""]
+        out.append("| # | Sent to | Asked for | Age | Status |")
+        out.append("| --- | --- | --- | --- | --- |")
+        for req in case["outstanding"] + case["answered"]:
+            status = req.status.value if req.status else "no reply"
+            late = " ⚠" if req.overdue_at(case["now"]) else ""
+            out.append(
+                f"| {req.id} | {req.counterparty} | {req.kind.value} "
+                f"| {req.age_days(case['now'])}d | {status}{late} |"
+            )
+        out.append("")
+
     out += ["## What this covers, and what it does not", "", _coverage(case), ""]
     out += ["## Provenance", "", _provenance(case), ""]
 
@@ -363,6 +398,28 @@ def _contribution(person: dict[str, Any]) -> str:
         # in particular on the machine it is read on.
         text += "  **(OS account, unverified)**"
     return text
+
+
+def _request_line(request: Request, now: datetime) -> str:
+    status = request.status.value if request.status else "no reply yet"
+    line = (
+        f"**{request.kind.value}** to {request.counterparty} — sent "
+        f"{request.sent_at:%Y-%m-%d}, {request.age_days(now)}d ago, {status}"
+    )
+    if request.subject:
+        line += f" (`{request.subject}`)"
+    if request.due_at and request.overdue_at(now):
+        line += f" — **{(now - request.due_at).days}d past its deadline**"
+    return line
+
+
+def _correspondence_preamble() -> str:
+    return (
+        "What was asked of whom, and whether it came back. A request nobody has "
+        "answered is not a request that was refused: only the second is a "
+        "decision somebody made, and only the second can be escalated against. "
+        "Age stops at the reply, so an open request is always the older one."
+    )
 
 
 def _unknown_preamble() -> str:
@@ -498,15 +555,22 @@ def _html(case: dict[str, Any]) -> str:
         f"<p class=meta>Generated {case['generated'].strftime('%Y-%m-%d %H:%M')} UTC</p>",
     ]
 
-    if case["open"]:
+    if case["open"] or case["outstanding"]:
         parts.append("<h2>Not yet known</h2>")
-        parts.append(f"<p class=lede>{_e(_unknown_preamble())}</p><ul class=open>")
-        for note in case["open"]:
-            parts.append(
-                f"<li>{_e(note.body)} <span class=who>— {_e(note.analyst)}, "
-                f"{note.at.strftime('%Y-%m-%d')} (note {note.id})</span></li>"
-            )
-        parts.append("</ul>")
+        parts.append(f"<p class=lede>{_e(_unknown_preamble())}</p>")
+        if case["open"]:
+            parts.append("<ul class=open>")
+            for note in case["open"]:
+                parts.append(
+                    f"<li>{_e(note.body)} <span class=who>— {_e(note.analyst)}, "
+                    f"{note.at.strftime('%Y-%m-%d')} (note {note.id})</span></li>"
+                )
+            parts.append("</ul>")
+        if case["outstanding"]:
+            parts.append("<h3>Waiting on somebody else</h3><ul class=open>")
+            for req in case["outstanding"]:
+                parts.append(f"<li>{_inline(_request_line(req, case['now']))}</li>")
+            parts.append("</ul>")
 
     parts.append("<h2>Who worked on this</h2>")
     if case["contributors"]:
@@ -570,6 +634,22 @@ def _html(case: dict[str, Any]) -> str:
             parts.append(f"</ul><p class=lede>{_e(_dispute_preamble())}</p>")
     else:
         parts.append("<p class=none>No attributions recorded.</p>")
+
+    if case["outstanding"] or case["answered"]:
+        parts.append("<h2>Correspondence</h2>")
+        parts.append(f"<p class=lede>{_e(_correspondence_preamble())}</p>")
+        parts.append(
+            "<div class=scroll><table><thead><tr><th>#<th>Sent to<th>Asked for"
+            "<th>Age<th>Status</tr></thead><tbody>"
+        )
+        for req in case["outstanding"] + case["answered"]:
+            status = req.status.value if req.status else "no reply"
+            late = " <span class=warn>⚠</span>" if req.overdue_at(case["now"]) else ""
+            parts.append(
+                f"<tr><td>{req.id}<td>{_e(req.counterparty)}<td>{_e(req.kind.value)}"
+                f"<td>{req.age_days(case['now'])}d<td>{_e(status)}{late}</tr>"
+            )
+        parts.append("</tbody></table></div>")
 
     parts.append("<h2>What this covers, and what it does not</h2>")
     parts.append(_bullets(_coverage(case)))

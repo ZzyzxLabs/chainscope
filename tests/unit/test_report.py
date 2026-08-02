@@ -282,3 +282,69 @@ class TestBoundary:
         text = args.out.read_text()
         assert "seen and never followed" in text
         assert "not the end of the money" in text
+
+
+class TestCorrespondenceInReport:
+    def _sent(self, tmp_path: Path, **kw: object) -> int:
+        from chainscope.case.correspondence import Ledger, Request, RequestKind
+
+        fields: dict[str, object] = {
+            "counterparty": "Binance",
+            "kind": RequestKind.FREEZE,
+            "sent_at": datetime(2026, 7, 1, tzinfo=timezone.utc),
+            "analyst": "alice@lab",
+            "identified_by": "env",
+        }
+        fields.update(kw)
+        ledger = Ledger(tmp_path / "case.db")
+        try:
+            return ledger.send(Request(**fields))  # type: ignore[arg-type]
+        finally:
+            ledger.close()
+
+    def test_an_outstanding_request_is_something_not_yet_known(self, tmp_path: Path) -> None:
+        # It belongs beside the open questions, not in an appendix: waiting on
+        # an exchange is the commonest reason a case is unfinished.
+        self._sent(tmp_path)
+        args = args_for(tmp_path)
+        assert report.run(args, TerminalRenderer()) == 0
+        text = args.out.read_text()
+        assert text.index("Waiting on somebody else") < text.index("## Narrative")
+
+    def test_correspondence_alone_is_enough_to_report(self, tmp_path: Path) -> None:
+        # No notes and no claims, but a freeze request was sent. That is a case.
+        self._sent(tmp_path)
+        args = args_for(tmp_path)
+        assert report.run(args, TerminalRenderer()) == 0
+        assert "Correspondence" in args.out.read_text()
+
+    def test_an_overdue_request_is_marked(self, tmp_path: Path) -> None:
+        self._sent(tmp_path, due_at=datetime(2026, 7, 8, tzinfo=timezone.utc))
+        args = args_for(tmp_path)
+        report.run(args, TerminalRenderer())
+        assert "past its deadline" in args.out.read_text()
+
+    def test_an_answered_request_is_kept_but_not_listed_as_unknown(
+        self, tmp_path: Path
+    ) -> None:
+        from chainscope.case.correspondence import Ledger, RequestEvent, Status
+
+        rid = self._sent(tmp_path)
+        ledger = Ledger(tmp_path / "case.db")
+        ledger.record(
+            rid,
+            RequestEvent(
+                at=datetime(2026, 7, 4, tzinfo=timezone.utc),
+                status=Status.ANSWERED,
+                analyst="alice@lab",
+                identified_by="env",
+                body="12.4 ETH held",
+            ),
+        )
+        ledger.close()
+
+        args = args_for(tmp_path)
+        report.run(args, TerminalRenderer())
+        text = args.out.read_text()
+        assert "Not yet known" not in text
+        assert "answered" in text
