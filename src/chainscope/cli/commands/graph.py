@@ -21,6 +21,7 @@ from typing import Any
 
 from ...core.chainid import ChainId
 from ...render.base import Renderer
+from ...render.flow import to_flow_html
 from ...render.graph import (
     Edge,
     Graph,
@@ -44,7 +45,14 @@ _WRITERS = {
     "gexf": to_gexf,
 }
 
-_SUFFIX = {"html": ".html", "d3": ".json", "cytoscape": ".json", "dot": ".dot", "gexf": ".gexf"}
+_SUFFIX = {
+    "html": ".html",
+    "flow": ".html",
+    "d3": ".json",
+    "cytoscape": ".json",
+    "dot": ".dot",
+    "gexf": ".gexf",
+}
 
 
 def _err(message: str) -> None:
@@ -59,7 +67,7 @@ def add_parser(sub: Any, name: str) -> None:
         "--format",
         "-f",
         default="html",
-        choices=["html", *sorted(_WRITERS)],
+        choices=["html", "flow", *sorted(_WRITERS)],
         help="output format",
     )
     p.add_argument("--out", "-o", type=Path, help="write here instead of stdout")
@@ -164,7 +172,12 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
     finally:
         store.close()
 
-    if args.format == "html":
+    if args.format == "flow":
+        # Columns by hop distance rather than a spring layout: a laundering
+        # chain and a five-way split are the same picture in a force-directed
+        # graph, and telling them apart is the point.
+        content = to_flow_html(graph, title=args.title or f"{args.address[:12]}… — flow")
+    elif args.format == "html":
         content = to_html(graph, title=args.title or f"{args.address[:12]}… — chainscope")
     else:
         content = _WRITERS[args.format](graph)
