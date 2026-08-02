@@ -251,18 +251,36 @@ class TestCli:
 
         `doctor` reports on the environment, so a test that does not control
         the environment passes or fails depending on whose machine it runs on
-        --- and this one did: with a key in .env it exited 0, and on CI with
-        none it would have exited 1. Both are pinned here explicitly.
+        --- and this one did.
+
+        BSC rather than Ethereum, and the reason is the interesting part: since
+        Blockscout arrived, a keyless install *can* answer ADDRESS_HISTORY on
+        Ethereum, so the old assertion stopped describing a real failure. BSC
+        has no public Blockscout instance at all --- field notes record
+        `bsc.blockscout.com` returning 404 --- so it is where the question is
+        genuinely unanswerable without a credential.
         """
         monkeypatch.delenv("ETHERSCAN_API_KEY", raising=False)
         # An empty directory, so the walk-up .env search finds nothing.
         monkeypatch.chdir(tmp_path)
 
-        assert main(["doctor"]) == 1
+        assert main(["doctor", "--chain", "bsc"]) == 1
         out = capsys.readouterr().out
-        assert "ADDRESS_HISTORY" in out
         assert "unreachable  ADDRESS_HISTORY" in out
         assert "ETHERSCAN_API_KEY" in out
+
+    def test_doctor_passes_where_a_keyless_source_covers_it(
+        self, capsys, monkeypatch, tmp_path
+    ):
+        """The other half, and the point of adding an unkeyed provider: a fresh
+        install with no credentials at all can answer the central question on
+        Ethereum. Without this assertion the one above could be satisfied by
+        `doctor` simply always failing."""
+        monkeypatch.delenv("ETHERSCAN_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        assert main(["doctor", "--chain", "eth"]) == 0
+        assert "unreachable  ADDRESS_HISTORY" not in capsys.readouterr().out
 
     def test_doctor_passes_once_the_key_is_present(self, capsys, monkeypatch, tmp_path):
         monkeypatch.setenv("ETHERSCAN_API_KEY", "a-key-long-enough-to-register")
@@ -274,13 +292,13 @@ class TestCli:
 
     def test_doctor_is_chain_aware(self, capsys, monkeypatch, tmp_path):
         """Sui offers ADDRESS_HISTORY without a key, and that says nothing
-        about whether the question is answerable on Ethereum. Reporting the
+        about whether the question is answerable on BSC. Reporting the
         capability as reachable for every chain was exactly the "wrong but
         plausible" answer this command exists to prevent."""
         monkeypatch.delenv("ETHERSCAN_API_KEY", raising=False)
         monkeypatch.chdir(tmp_path)
 
-        assert main(["doctor", "--chain", "eth"]) == 1
+        assert main(["doctor", "--chain", "bsc"]) == 1
         assert "unreachable  ADDRESS_HISTORY" in capsys.readouterr().out
 
         assert main(["doctor", "--chain", "sui:mainnet"]) == 0

@@ -131,15 +131,18 @@ jobs:
         run: |
           uid=$(docker run --rm --entrypoint id chainscope:ci -u)
           test "$uid" != "0" || { echo "container runs as root"; exit 1; }
-      # `doctor` exits non-zero when ADDRESS_HISTORY is unreachable, which is
-      # the state of a fresh container with no key -- so the expected outcome
-      # here is a *failure*, and a zero exit would mean the check is inert.
+      # Both halves. BSC has no keyless source -- there is no public Blockscout
+      # instance for it -- so `doctor` must fail there; Ethereum does, since
+      # Blockscout needs no credential, so it must pass. Asserting only the
+      # first would be satisfied by a doctor that always fails.
       - name: doctor reports the missing key rather than passing silently
         run: |
-          if docker run --rm chainscope:ci doctor; then
-            echo "doctor exited 0 with no ETHERSCAN_API_KEY set"; exit 1
+          if docker run --rm chainscope:ci doctor --chain bsc; then
+            echo "doctor exited 0 on BSC with no ETHERSCAN_API_KEY set"; exit 1
           fi
-          docker run --rm chainscope:ci doctor 2>&1 | grep -q ADDRESS_HISTORY
+          docker run --rm chainscope:ci doctor --chain bsc 2>&1 | grep -q ADDRESS_HISTORY
+      - name: and passes where an unkeyed source covers it
+        run: docker run --rm chainscope:ci doctor --chain eth
       - name: the end-to-end path works in the container
         run: |
           mkdir -p "$RUNNER_TEMP/case"

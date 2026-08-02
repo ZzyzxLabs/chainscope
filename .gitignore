@@ -15,3 +15,6 @@ build/
 
 # The compose bind-mount target. A case lives here; it is not the project's.
 /case/
+
+# Case data and HTTP cache from local runs. Never source.
+.chainscope/

@@ -23,11 +23,31 @@ from ..core.chainid import ChainId
 from ..core.models import Account, Block, Transaction, Transfer
 from ..transport.http import Client
 
-__all__ = ["Capability", "CostTier", "Provider", "ProviderError"]
+__all__ = ["Capability", "CostTier", "Provider", "ProviderError", "ResultTruncated"]
 
 
 class ProviderError(RuntimeError):
     """A provider could not answer. The router will try the next one."""
+
+
+class ResultTruncated(ProviderError):
+    """The source returned its maximum and there is certainly more.
+
+    A distinct type because callers must handle it differently from a plain
+    failure: the data is usable but incomplete, and any total derived from it is
+    a lower bound. Returning the rows silently produces a confident wrong number.
+
+    A :class:`ProviderError` subclass on purpose, so the router treats it as
+    "try the next source" rather than as fatal. Rebasing it on RuntimeError
+    stopped ``dispatch`` falling back and stopped ``corroborate`` degrading to
+    one source --- one capped page would have aborted the whole query.
+
+    It lives here rather than in one provider because *every* enumerating
+    provider owes the caller this distinction. One that slices to the limit and
+    says nothing is the exact failure :meth:`Router.corroborate` exists to
+    catch, and a corroboration source that truncates silently poisons the
+    mechanism built to detect truncation.
+    """
 
 
 class Capability(Flag):

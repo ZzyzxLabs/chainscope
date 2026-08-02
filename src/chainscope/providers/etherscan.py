@@ -39,7 +39,14 @@ from ..core.models import (
 from ..core.units import Amount
 from ..transport.cache import Volatility
 from ..transport.http import Client, TransportError
-from .base import Capability, CostTier, Provider, ProviderError, ReadOnlyProvider
+from .base import (
+    Capability,
+    CostTier,
+    Provider,
+    ProviderError,
+    ReadOnlyProvider,
+    ResultTruncated,
+)
 
 __all__ = ["ETHERSCAN_V2", "EtherscanProvider", "ResultTruncated", "is_cacheable"]
 
@@ -82,15 +89,6 @@ def is_cacheable(body: Any) -> bool:
     if body.get("status") == "1":
         return True
     return any(n in str(body.get("message", "")).lower() for n in _NO_DATA)
-
-
-class ResultTruncated(ProviderError):
-    """The API returned its maximum and there is certainly more.
-
-    A distinct type because callers must handle it differently from a failure:
-    the data is usable, but incomplete, and any total derived from it is a lower
-    bound. Silently returning the rows would produce a confident wrong number.
-    """
 
 
 class EtherscanProvider(ReadOnlyProvider):

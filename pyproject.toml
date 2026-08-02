@@ -76,6 +76,7 @@ chainscope-serve = "chainscope.server.local:main"
 [project.entry-points."chainscope.providers"]
 jsonrpc = "chainscope.providers.jsonrpc:JsonRpcProvider"
 etherscan = "chainscope.providers.etherscan:EtherscanProvider"
+blockscout = "chainscope.providers.blockscout:BlockscoutProvider"
 sui = "chainscope.providers.sui:SuiProvider"
 
 [project.entry-points."chainscope.chains"]
