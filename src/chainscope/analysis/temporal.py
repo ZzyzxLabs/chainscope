@@ -70,6 +70,14 @@ MIN_SAMPLES = 30
 #: (around the clock, so no timezone to report) and 1 is a single instant.
 MIN_CONCENTRATION = 0.25
 
+#: Widest half-band, in hours, still worth reporting.
+#:
+#: Six either side is a twelve-hour window --- half the clock --- and that is
+#: already generous. Beyond it the claim excludes so little that stating it
+#: misleads by emphasis: a reader takes in "operating hours consistent with"
+#: and not the width that follows.
+MAX_USEFUL_BAND = 6
+
 #: Coefficient of variation below which inter-transaction gaps look scheduled
 #: rather than human. Human activity is bursty; a cron job is not.
 AUTOMATION_CV = 0.35
@@ -160,9 +168,20 @@ class ActivityProfile:
 
     @property
     def offset_range(self) -> tuple[int, int] | None:
-        """The band itself, which is what should be quoted rather than a point."""
+        """The band itself, which is what should be quoted rather than a point.
+
+        ``None`` once the band stops excluding anything. A cold-start run on a
+        sparse address printed "operating hours consistent with UTC-14 to
+        UTC+6" --- twenty hours wide, covering nearly every inhabited
+        longitude, presented as a finding with a bullet point beside it.
+
+        Technically honest and practically a lie of emphasis: a reader skims
+        the label, not the width. Past :data:`MAX_USEFUL_BAND` hours either
+        side, the honest output is nothing rather than a range that rules out
+        almost no one.
+        """
         offset, band = self.likely_utc_offset, self.offset_uncertainty
-        if offset is None or band is None:
+        if offset is None or band is None or band > MAX_USEFUL_BAND:
             return None
         return (offset - band, offset + band)
 
@@ -207,10 +226,24 @@ class ActivityProfile:
                 f"run from more than one place."
             )
         start, end = self.quiet_window_utc or (0, 0)
-        low, high = self.offset_range or (0, 0)
-        return (
+        observed = (
             f"Quiet between {start:02d}:00 and {end:02d}:00 UTC across "
             f"{self.samples} actions, peak at {self.peak_hour_utc:02d}:00 UTC. "
+        )
+        band = self.offset_range
+        if band is None:
+            # The observation stands; the inference does not. Printing a
+            # degenerate "UTC+0 to UTC+0" was worse than saying nothing --- it
+            # read as a precise answer produced by a calculation that had
+            # already given up.
+            return observed + (
+                "That window is too wide to place anyone: the plausible band "
+                "spans more of the clock than it excludes, so no offset is "
+                "reported. The activity is real; the location is not inferable "
+                "from it."
+            )
+        low, high = band
+        return observed + (
             f"If that gap is sleep, the operator sits somewhere in "
             f"UTC{low:+d} to UTC{high:+d} --- a band, not a point, because the "
             f"estimate assumes a 03:00 local sleep centre and real hours are "
@@ -372,7 +405,13 @@ def temporal_attribution(
     if offset is None:
         return None
 
-    low, high = profile.offset_range or (offset, offset)
+    band = profile.offset_range
+    if band is None:
+        # A point estimate whose band was too wide to report. Quoting the point
+        # alone would be the over-precision this module exists to avoid, and it
+        # is what a reader would carry away.
+        return None
+    low, high = band
     # Confidence rises with both sample size and how sharply the activity
     # clusters. Neither alone is enough: a thousand evenly spread timestamps say
     # nothing, and forty tightly clustered ones are still forty.
