@@ -93,6 +93,9 @@ class JsonRpcProvider(ReadOnlyProvider):
                 volatility=volatility,
                 headers=self.headers,
                 provider=self.name,
+                # Cache by chain, not by endpoint: the answer belongs to the
+                # chain, and two endpoints for different chains can share a host.
+                scope=str(self._chain()),
             )
         except TransportError as exc:
             raise ProviderError(str(exc)) from exc

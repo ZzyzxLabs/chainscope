@@ -45,7 +45,10 @@ chainscope 誠實地實作可複製的那些部分,給那些沒有六位數授�
 **真正新的地方:一個案子是一個你可以寄給別人的檔案。**
 
 ```bash
-chainscope case open theft.chainscope --replay    # 不需要 API key,不需要連網
+chainscope bundle theft.chainscope        # 裡面有什麼、能不能離線重播
+```
+```python
+cache = Bundle.open("theft.chainscope").replay_cache()    # 離線,不需要 API key
 ```
 
 一個 bundle 同時帶著分析結果**與產生它的每一筆原始回應**。審閱的人離線重跑,得到 byte-identical 的輸出 —— 於是爭論從「我不相信你」變成**「你那個 log 查詢漏掉了 block 20011451」**。同一套機制也讓測試維持離線,並讓一份調查在「當初回答它的那個資料源倒閉之後」仍然完整。商業平台在結構上做不到這件事:它們的資料不被允許離開平台。
@@ -125,6 +128,7 @@ v0.1 建置中。已完成:
 - [ ] explorer 等級的 provider —— `ADDRESS_HISTORY` 目前**沒有任何實作**,所以「列出某地址的交易」現在做不到
 - [ ] `watch` —— 對區塊範圍求值的 `evaluate()`([§4.10](ARCHITECTURE.md))
 - [ ] 插件協定版本化與穩定度分級([§4.11](ARCHITECTURE.md))
+- [ ] `analyze --bundle` —— 一行指令重播;目前只能用 `Bundle.replay_cache()`
 - [ ] 圖匯出、本機唯讀 API
 
 ## 擴充

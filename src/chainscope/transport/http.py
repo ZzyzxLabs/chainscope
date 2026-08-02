@@ -65,6 +65,36 @@ def assert_read_only(method: str) -> None:
         )
 
 
+#: Request fields that name an operation. ``method`` is JSON-RPC; ``action`` is
+#: the explorer convention, and Etherscan-family APIs really do expose
+#: ``?module=proxy&action=eth_sendRawTransaction``.
+_METHOD_FIELDS: tuple[str, ...] = ("method", "action")
+
+
+def assert_payload_read_only(payload: Any) -> None:
+    """Raise if any operation named anywhere in a request body could mutate state.
+
+    :func:`assert_read_only` guards one method name, which covers
+    :meth:`Client.rpc` and nothing else. Two paths go around it: a hand-built
+    :meth:`Client.post`, and a JSON-RPC *batch*, where the method names live
+    inside a list and there is no single ``method`` argument to check.
+
+    Both are ordinary things for a provider author to write, so the guarantee
+    has to be enforced where every request converges rather than at the one
+    convenient entry point. "Read-only by construction" is only true if it holds
+    for code written by someone who never read this docstring.
+    """
+    if isinstance(payload, (list, tuple)):
+        for item in payload:
+            assert_payload_read_only(item)
+        return
+    if isinstance(payload, dict):
+        for field_ in _METHOD_FIELDS:
+            value = payload.get(field_)
+            if isinstance(value, str):
+                assert_read_only(value)
+
+
 @dataclass
 class CircuitBreaker:
     """Skip a host that keeps failing, then let it prove itself again.
@@ -183,11 +213,33 @@ class Client:
         volatility: Volatility = Volatility.SETTLED,
         headers: dict[str, str] | None = None,
         provider: str | None = None,
+        scope: str | None = None,
     ) -> Any:
-        """JSON-RPC call. Rejects anything that could mutate state."""
+        """JSON-RPC call. Rejects anything that could mutate state.
+
+        ``scope`` names what the answer is *about* --- in practice the
+        :class:`~chainscope.core.chainid.ChainId`. It is the cache key, and
+        getting it right matters in both directions.
+
+        Keying on the endpoint host is wrong: ``rpc.example.com/eth`` and
+        ``rpc.example.com/bsc`` share a host, so the same ``eth_getCode`` on the
+        same address would collide and the second chain would silently receive
+        the first chain's answer. Multi-chain work — the same attacker contract
+        deployed at one address on four networks — walks straight into it.
+
+        Keying on the full URL fixes the collision and introduces a smaller
+        problem: the cache stops being portable. A bundle recorded against one
+        node cannot replay against another, and rotating a key embedded in a URL
+        throws the cache away.
+
+        Chain identity is the honest key, because it is what actually decides
+        the answer: any correct BSC node returns the same code for the same
+        address at the same block. Callers that cannot name a scope fall back to
+        the full URL, which is merely unportable rather than wrong.
+        """
         assert_read_only(method)
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}
-        key = cache_key("RPC", url_host(url), method, params)
+        key = cache_key("RPC", scope or url, method, params)
         if (hit := self._from_cache(key, volatility, url, provider)) is not _MISS:
             return hit
 
@@ -230,6 +282,13 @@ class Client:
         provider: str | None,
         **kw: Any,
     ) -> Any:
+        # The single choke point every outbound request passes through, and
+        # therefore the only place the read-only guarantee can be complete.
+        # Checking in rpc() alone leaves post() and JSON-RPC batches open.
+        for candidate in (kw.get("json"), kw.get("params")):
+            if candidate is not None:
+                assert_payload_read_only(candidate)
+
         host = url_host(url)
         if self.breaker.is_open(host):
             raise TransportError(f"{host}: circuit open (too many recent failures)")

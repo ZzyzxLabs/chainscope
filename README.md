@@ -56,7 +56,10 @@ answers, its output is ultimately *trust us*. Yours can be checked.
 **The part that is genuinely new: a case is a file you can send someone.**
 
 ```bash
-chainscope case open theft.chainscope --replay    # no API keys, no network
+chainscope bundle theft.chainscope        # what is inside, and whether it replays
+```
+```python
+cache = Bundle.open("theft.chainscope").replay_cache()    # offline, no API keys
 ```
 
 A bundle carries the results *and every raw provider response that produced
@@ -143,6 +146,7 @@ are the decisions that are expensive to reverse once anyone depends on them.
       anything that lists an address's transactions is currently unreachable
 - [ ] `watch` — `evaluate()` over a block range ([§4.10](ARCHITECTURE.md))
 - [ ] plugin protocol versioning and stability tiers ([§4.11](ARCHITECTURE.md))
+- [ ] `analyze --bundle` — one-command replay; today it is `Bundle.replay_cache()`
 - [ ] graph export, local read API
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and roadmap.
