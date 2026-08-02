@@ -75,7 +75,8 @@ v0.1 建置中。已完成:
 - [x] `chains` —— EVM 與 Bitcoin 轉接器
 - [x] `attribution` —— OFAC、瀏覽器標籤、本地標註、衝突解析
 - [x] `analysis` —— 歸集、跨鏈配對、剝離鏈、共同輸入聚類
-- [ ] `cli` 與 renderers
+- [x] `cli` 與 renderers —— 終端機、Markdown、JSON
+- [x] `case` —— 可離線重播的案件包
 
 ## 擴充
 

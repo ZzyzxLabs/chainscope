@@ -28,8 +28,17 @@ Everything else is tractable:
 
 - Rebuilding a proprietary attribution database, or implying we have one
 - Any write path to a chain — see §4.2
-- Real-time monitoring and alerting (a different system with different
-  latency/durability tradeoffs; would distort this design)
+- **Running a hosted service.** chainscope is something you run, not something
+  you log into. That is a positioning decision rather than modesty: hosting puts
+  the RPC quota, the uptime, and the abuse handling on us, and each of those
+  costs bends the design toward whatever keeps the service cheap. Self-hosting
+  puts them on the party that benefits, and keeps case data on their machine —
+  frequently a hard requirement for the people this is for. See §4.11
+- **A scheduler, a daemon, or a message bus.** Alerting *is* supported, but as a
+  pure function the caller invokes — see §4.10
+- Indexing whole chains. Ingestion follows the investigation — see §4.9
+- Anything where latency is the value. Sub-second freshness and reproducible
+  history are opposing design targets; this project has chosen the second
 - Producing regulatory filings — compliance liability should not sit in a tool
 
 ---
@@ -104,13 +113,15 @@ friendlier label.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ Interface   CLI · Python API · (later) HTTP / MCP        │
+│ Interface   CLI · Python API · local read API · (MCP)    │
 ├──────────────────────────────────────────────────────────┤
-│ Render      Markdown · JSON · terminal · graph           │
+│ Render      Markdown · JSON · terminal · graph export    │
 ├──────────────────────────────────────────────────────────┤
-│ Analysis    pluggable Analyzers                          │
+│ Analysis    pluggable Analyzers · Watches                │
 ├──────────────────────────────────────────────────────────┤
 │ Attribution Resolver over many Sources, with conflicts   │
+├──────────────────────────────────────────────────────────┤
+│ Store       normalised entities · graph · rebuildable    │
 ├──────────────────────────────────────────────────────────┤
 │ Chains      Adapters: native format → domain model       │
 ├──────────────────────────────────────────────────────────┤
@@ -121,6 +132,11 @@ friendlier label.
 ```
 
 Each layer depends only on the one below and on `core`.
+
+`Store` is optional. An analyzer may read straight from `Router` and hold its
+working set in memory, which is the right shape for a one-off question. It
+becomes necessary the moment a question spans more than one analyzer run — see
+§4.8.
 
 ---
 
@@ -248,6 +264,158 @@ drives contributors away), and evidence preservation.
 Commercial platforms generally cannot offer this, because their underlying data
 cannot leave the platform.
 
+### 4.8 The cache and the store answer different questions
+
+These are easy to conflate and expensive to conflate.
+
+The **cache** is keyed by query. It answers *"what did this exact request return
+when I made it"*. That is what reproducibility needs, and it is why §4.3 keys on
+a hash of the normalised query.
+
+What it cannot answer is *"every address that has ever sent to X"*. No amount of
+cached responses gives you that, because the cache has no idea what is inside
+them. Yet that is the question every graph traversal, every consolidation
+search, and every alert is made of.
+
+So there is a second store, with a different shape:
+
+| | Cache | Store |
+|---|---|---|
+| Keyed by | hash of the query | entity identity |
+| Holds | raw provider responses | normalised `Transfer`, `Address`, `Attribution`, `Cluster` |
+| Written by | transport | chain adapters and the attribution resolver |
+| Mutability | append-only, immutable | derived, may be rebuilt or discarded |
+| Answers | "what did the provider say" | "what is connected to what" |
+
+**The rule that makes this safe: the store must be fully rebuildable from the
+cache.** The store is a derived index, never a source of truth. Delete it and
+`chainscope rebuild` reconstructs it from recorded responses, offline.
+
+That constraint pays for itself three times:
+
+- A schema change is a rebuild, not a re-crawl. Without it, every change to
+  `Transfer` costs everyone their data and a fresh pass over the providers.
+- A corrupted or half-written store cannot silently poison an analysis, because
+  it can be regenerated and compared.
+- It extends §4.7 from a single conclusion to a whole database. Ship a bundle
+  and the recipient rebuilds a byte-identical store. As far as we know nothing
+  else in this space offers that, and it follows directly from keeping the two
+  layers separate.
+
+It also sets the direction of a rule that is otherwise easy to get backwards:
+**the store may be derived from the cache; the cache may never be derived from
+the store.** A response that was reconstructed from parsed entities is not
+evidence of what the provider said.
+
+Backends are a `Store` protocol with SQLite as the default, because a default
+that needs a running server is a default nobody uses. Postgres, DuckDB, and
+graph databases are plugins (§4.4). Recursive CTEs over SQLite handle the graph
+sizes an address-scoped investigation produces (§4.9); a user who outgrows that
+swaps the backend without touching an analyzer.
+
+### 4.9 Ingestion is demand-driven, not full-chain
+
+The graph grows along the path of the investigation. You name a starting address
+and a block range; chainscope fetches what that requires, and expands only where
+an analyzer or a user actually walks.
+
+This is the decision that determines whether the tool runs on a laptop. The
+alternative — index the chain, then query it — is how open-source forensics
+projects end up requiring a Spark cluster and a week of backfill before they can
+answer anything, at which point the audience narrows to institutions that could
+have afforded a commercial license anyway.
+
+The tradeoff is real and worth stating plainly: full-chain indexes can answer
+questions demand-driven ingestion cannot, notably unbounded reverse lookups
+("every address that ever touched this contract") without an explorer-class
+provider to ask. We accept that. Investigations start from a known subject, and
+a tool that answers the first thirty addresses well beats one that cannot be
+installed.
+
+Consequences that follow, and must be honoured:
+
+- Every traversal is bounded by `Context.limits`, and hitting a bound is a
+  `Result.warnings` entry. A graph that stopped because of `max_depth` and a
+  graph that stopped because the funds stopped moving look identical otherwise,
+  and that ambiguity has produced confident, wrong reports.
+- Coverage is a property of a case, not of the tool. A bundle records which
+  addresses were expanded and which were seen but never followed, so a reader
+  can tell the frontier from the conclusion.
+
+### 4.10 Watches are pure functions; the clock lives outside
+
+Monitoring is a legitimate thing to want and a poor thing to own. A scheduler
+means a process, which means uptime, restarts, at-least-once delivery, and a
+persistent notion of "now" — and every one of those makes the analysis layer
+harder to test and impossible to replay.
+
+So the core provides only the evaluation:
+
+```python
+@dataclass(frozen=True)
+class Watch:
+    name: str
+    subject: str            # address, cluster, or saved query
+    predicate: Predicate    # "outflow > 10 ETH", "counterparty is sanctioned"
+    chain: ChainId
+
+def evaluate(watch: Watch, ctx: Context, since: int, until: int) -> list[Event]
+```
+
+`evaluate` is a pure function of a block range. Who calls it is not our concern:
+cron, a systemd timer, a CI workflow, a user's own daemon, a `while true` loop.
+Freshness becomes the operator's dial, not an architectural constant.
+
+Three properties fall out, and the third is the one that matters:
+
+1. No process to run, no uptime to promise, no clock in the test suite.
+2. Delivery is the caller's problem, so we do not have to be wrong about it.
+3. **Alerts are replayable.** Evaluation over a fixed block range is
+   deterministic, so *"why did this fire?"* is answered by rerunning it against
+   the bundle — with the raw responses that triggered it. An alerting system
+   that cannot reconstruct its own past decisions is not usable as evidence, and
+   most cannot.
+
+An `Event` is a `Finding` with the block range that produced it. Notification
+channels — webhook, email, Telegram — are plugins, never core.
+
+### 4.11 The self-host contract
+
+The goal is that someone can stand up their own instance, point it at their own
+providers and their own database, extend it for their own domain, and keep
+running it without us. That is a different obligation from "the library works",
+and it rests on three things that are boring in exactly the way load-bearing
+things are.
+
+**Schema stability.** Someone will accumulate a large store and then upgrade.
+The store therefore carries a schema version, migrations are shipped with the
+release that needs them, and a migration that cannot run must fail loudly rather
+than half-apply. §4.8's rebuild guarantee is the escape hatch of last resort,
+not the upgrade path.
+
+**Versioned plugin protocols.** `Provider`, `ChainAdapter`, `Analyzer`,
+`AttributionSource`, `Store`, and `Renderer` are the surfaces third parties
+build against. Each carries an independent protocol version, and the loader
+refuses a plugin built against an incompatible one instead of failing later with
+an `AttributeError` from inside someone else's code. Stability tiers are
+declared per interface and honoured:
+
+| Tier | Promise |
+|---|---|
+| stable | Breaking change only on a major version, with a migration note |
+| provisional | May change on a minor version; changes are in the changelog |
+| experimental | May change or vanish at any time; not for downstreams |
+
+**A default that works with nothing configured.** If every capability is a
+plugin and nothing ships, a new user's first hour produces no output. There is
+one happy path — SQLite store, free public providers, the bundled analyzers,
+terminal output — that runs from a clean install with no API key. Plugins exist
+to *replace* the defaults, never to *assemble* them.
+
+The stated benchmark from §4.4 extends accordingly: adding a chain, provider,
+store backend, or attribution source should be one file and one cassette, and
+the person doing it should never need to fork this repository.
+
 ---
 
 ## 5. Package layout
@@ -258,10 +426,13 @@ chainscope/
 ├── transport/     cache, throttle, audit, http with circuit breaker
 ├── providers/     base protocol, router, concrete providers
 ├── chains/        adapters per ecosystem (evm, bitcoin, solana, tron)
+├── store/         Store protocol, sqlite backend, rebuild from cache
 ├── attribution/   sources + conflict-resolving resolver
 ├── analysis/      consolidation, xchain, peel, cluster, flow, sweep
+├── watch/         Watch, predicates, evaluate(); no scheduler
 ├── pricing/       historical rate sources with local cache
-├── render/        terminal, markdown, json, graph
+├── case/          bundles: manifest, recorded queries, results
+├── render/        terminal, markdown, json, graph export
 └── cli/           thin dispatch; one module per command group
 ```
 

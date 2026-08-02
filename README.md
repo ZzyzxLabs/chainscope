@@ -76,7 +76,8 @@ v0.1 is being built. Implemented so far:
 - [x] `chains` — EVM and Bitcoin adapters
 - [x] `attribution` — OFAC, explorer nametags, local labels, conflict resolution
 - [x] `analysis` — consolidation, cross-chain matching, peel chains, clustering
-- [ ] `cli` and renderers
+- [x] `cli` and renderers — terminal, Markdown, JSON
+- [x] `case` — replayable bundles
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and roadmap.
 
