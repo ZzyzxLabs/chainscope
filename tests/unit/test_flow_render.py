@@ -170,3 +170,40 @@ class TestAssetScales:
 
     def test_an_empty_graph_renders(self):
         assert "<svg" in to_flow_html(Graph(seeds=[]))
+
+
+class TestTheEdgePanel:
+    """MetaSleuth has an Edge Panel: click a flow, see what it is made of. The
+    most common question while reading a graph, and this had no answer --- edges
+    were aggregates with nothing behind them."""
+
+    def test_edges_have_a_click_target(self):
+        """A hairline is unclickable, and "I cannot hit the thing I want to
+        inspect" is the most common way a graph view gets abandoned."""
+        html = to_flow_html(chain_graph())
+        assert 'stroke", "transparent"' in html
+        assert 'stroke-width", "12"' in html
+
+    def test_the_panel_says_an_aggregate_is_not_one_payment(self):
+        """A reader taking it for a single transfer is wrong about size and
+        timing at once."""
+        assert "not one payment" in to_flow_html(chain_graph())
+
+    def test_it_admits_the_transfers_are_not_in_the_file(self):
+        """A real case has more transfers than a page can hold, and claiming
+        otherwise would be the same overreach as everything else here."""
+        html = to_flow_html(chain_graph())
+        assert "not in this file" in html
+
+    def test_it_ends_in_something_runnable(self):
+        """A dead end would be a worse answer than the aggregate."""
+        html = to_flow_html(chain_graph())
+        assert "chainscope sql" in html
+        assert "FROM transfers WHERE" in html
+
+    def test_the_query_distinguishes_native_from_a_token(self):
+        """`asset IS NULL` and `asset = '0x...'` are different rows, and one
+        query for both would return the wrong transfers."""
+        html = to_flow_html(chain_graph())
+        assert "asset IS NULL" in html
+        assert "asset = '" in html

@@ -232,6 +232,9 @@ main{display:flex;height:calc(100vh - 58px)}
 svg{display:block}
 aside{width:320px;border-left:1px solid var(--line);padding:14px 16px;overflow:auto;
 background:var(--panel)}
+code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;
+background:var(--bg);border:1px solid var(--line);border-radius:4px;
+padding:4px 6px;display:block;white-space:pre-wrap;word-break:break-all}
 aside h2{font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.05em;
 color:var(--muted)}
 dt{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;
@@ -256,7 +259,8 @@ border:1px solid var(--line)}
   <div class="warn" id="warn" hidden></div>
 </header>
 <main><div id="wrap"><svg id="svg"></svg></div>
-<aside><h2>selection</h2><div id="panel" class="muted">Click an address.</div></aside></main>
+<aside><h2>selection</h2><div id="panel" class="muted">Click an address for its
+routes, or a flow for what it is made of.</div></aside></main>
 <script>
 const DATA = __DATA__, PALETTE = __PALETTE__;
 const NS = "http://www.w3.org/2000/svg";
@@ -423,6 +427,17 @@ function draw(){
     p.setAttribute("stroke", onRoute ? "#f59e0b" : "var(--edge)");
     p.setAttribute("stroke-opacity", dim ? 0.08 : (onRoute ? 0.95 : 0.55));
     p.setAttribute("fill","none");
+    // A wide transparent stroke underneath: a hairline edge is unclickable,
+    // and "I cannot hit the thing I want to inspect" is the most common way a
+    // graph view is abandoned.
+    const hit = document.createElementNS(NS,"path");
+    hit.setAttribute("d", p.getAttribute("d"));
+    hit.setAttribute("stroke", "transparent");
+    hit.setAttribute("stroke-width", "12");
+    hit.setAttribute("fill", "none");
+    hit.style.cursor = "pointer";
+    hit.addEventListener("click", ev => { ev.stopPropagation(); showEdge(e); });
+    g.appendChild(hit);
     const t = document.createElementNS(NS,"title");
     t.textContent = e.symbol + " " + fmt(e.raw, e.decimals) +
     "  (" + e.transfers + " transfer" + (e.transfers===1?"":"s") + ")";
@@ -470,6 +485,34 @@ function draw(){
       });
     g.appendChild(grp);
   });
+}
+
+function showEdge(e) {
+  const panel = document.getElementById("panel");
+  panel.className = "";
+  const out = ["<dl>"];
+  out.push("<dt>flow</dt><dd>" + esc(shortId(e.source)) + " \u2192 " +
+    esc(shortId(e.target)) + "</dd>");
+  out.push("<dt>total</dt><dd>" + esc(fmt(e.raw, e.decimals) + " " + (e.symbol || "")) +
+    "</dd>");
+  // An aggregate over n transfers, said plainly. A reader who takes this for a
+  // single payment draws the wrong conclusion about size and timing at once.
+  out.push("<dt>transfers</dt><dd>" + e.transfers +
+    (e.transfers === 1 ? "" : " (this is their sum, not one payment)") + "</dd>");
+  if (e.first) out.push("<dt>first</dt><dd>" + esc(stamp(e.first)) + "</dd>");
+  if (e.last && e.last !== e.first)
+    out.push("<dt>last</dt><dd>" + esc(stamp(e.last)) + "</dd>");
+  if (e.asset) out.push("<dt>asset</dt><dd>" + esc(e.asset) + "</dd>");
+  out.push("</dl>");
+  // The individual transfers are not in this file --- a real case has more
+  // than a page can hold. The query that gets them is, so the panel ends in
+  // something runnable rather than a dead end.
+  const where = "sender = '" + e.source + "' AND recipient = '" + e.target + "'" +
+    (e.asset ? " AND asset = '" + e.asset + "'" : " AND asset IS NULL");
+  out.push('<dt>the individual transfers</dt><dd class="muted">not in this file. Run:</dd>');
+  out.push("<dd><code>chainscope sql \"SELECT tx_hash, amount_raw, block, timestamp " +
+    "FROM transfers WHERE " + esc(where) + " ORDER BY block\"</code></dd>");
+  panel.innerHTML = out.join("");
 }
 
 const CONF = ["speculative","low","medium","high","certain"];
