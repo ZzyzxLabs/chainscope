@@ -330,8 +330,14 @@ def to_html(graph: Graph, *, title: str = "chainscope") -> str:
             "the graph is not the whole case</span>"
         )
 
-    script = _JS.replace("__DATA__", _json_for_script(payload)).replace(
-        "__PALETTE__", _json_for_script(_PALETTE)
+    # Palette first, then the data. `str.replace` does not re-scan what it
+    # inserted, so whichever goes last cannot be affected by the other --- but
+    # the data used to go first, and a node label of `__PALETTE__` was then
+    # still present when the palette substitution ran, replacing an address's
+    # label with the palette JSON. Labels come from imported CSVs, so the value
+    # is not ours.
+    script = _JS.replace("__PALETTE__", _json_for_script(_PALETTE)).replace(
+        "__DATA__", _json_for_script(payload)
     )
 
     return f"""<!doctype html>

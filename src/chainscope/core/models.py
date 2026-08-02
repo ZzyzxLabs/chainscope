@@ -45,6 +45,18 @@ class Address:
     def __post_init__(self) -> None:
         if not self.raw.strip():
             raise ValueError("address cannot be empty")
+        if not self.key.strip():
+            # `key` is what `__eq__` and `__hash__` use, so an empty one makes
+            # every address carrying it the same address. Measured: two
+            # different addresses with empty keys compared equal, hashed equal,
+            # and collapsed to one entry in a set --- which is a clustering
+            # result, silently.
+            raise ValueError(
+                f"address {self.raw!r} has no comparison key. `key` is what "
+                f"equality and hashing use, so an empty one merges every "
+                f"address that has it. Build addresses through the chain "
+                f"adapter, which sets it."
+            )
 
     def __str__(self) -> str:
         return self.raw

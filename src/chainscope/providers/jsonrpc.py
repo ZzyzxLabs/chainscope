@@ -210,6 +210,22 @@ class JsonRpcProvider(ReadOnlyProvider):
         timestamp: datetime | None = None
         if block_no:
             timestamp = self.get_block(chain, block_no).timestamp
+        # A mined transaction with no receipt has an unknowable outcome, and
+        # defaulting to True says it succeeded. `success` is a `bool`, so there
+        # is no "unknown" to record --- and `None` would be falsy, turning
+        # unknown into failed, which is the worse error of the two. So: refuse,
+        # and let the router try another provider.
+        #
+        # A *pending* transaction has no receipt yet and no block either. That
+        # is not an unknown outcome, it is an outcome that has not happened, and
+        # the caller sees it as `block=None`.
+        if block_no and not receipt:
+            raise ProviderError(
+                f"transaction {tx_hash} is in block {block_no} and its receipt "
+                f"could not be read, so whether it succeeded is unknown. "
+                f"Reporting it as successful would count a possible revert as a "
+                f"movement."
+            )
         gas_used = _hexint(receipt.get("gasUsed"))
         gas_price = _hexint(raw.get("effectiveGasPrice") or raw.get("gasPrice"))
         return Transaction(

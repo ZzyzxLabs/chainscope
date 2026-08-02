@@ -516,9 +516,25 @@ class EtherscanProvider(ReadOnlyProvider):
         )
         receipt = receipt if isinstance(receipt, dict) else {}
 
+        # A mined transaction with no receipt has an unknowable outcome, and
+        # defaulting to True says it succeeded. `success` is a `bool`, so there
+        # is no "unknown" to record --- and `None` would be falsy, turning
+        # unknown into failed, which is the worse error of the two. So: refuse,
+        # and let the router try another provider.
+        #
+        # A *pending* transaction has no receipt yet and no block either. That
+        # is not an unknown outcome, it is an outcome that has not happened, and
+        # the caller sees it as `block=None`.
+        block = _hex(raw.get("blockNumber"))
+        if block and not receipt:
+            raise ProviderError(
+                f"transaction {tx_hash} is in block {block} and its receipt "
+                f"could not be read, so whether it succeeded is unknown. "
+                f"Reporting it as successful would count a possible revert as a "
+                f"movement."
+            )
         gas_used = _hex(receipt.get("gasUsed"))
         gas_price = _hex(raw.get("gasPrice"))
-        block = _hex(raw.get("blockNumber"))
         return Transaction(
             ref=TxRef(chain, str(raw["hash"]).lower()),
             sender=self._addr(chain, raw.get("from")),

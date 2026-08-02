@@ -206,10 +206,15 @@ def to_flow_html(
         "frontier": len(graph.frontier()),
         "columns": max(depth.values(), default=0) + 1,
     }
+    # Every placeholder that is not the data goes first. `str.replace` does
+    # not re-scan what it inserted, so the data substituting last cannot be
+    # affected by any of them --- and it used to go first, so a node label of
+    # `__PALETTE__` was still present when the palette substitution ran and was
+    # replaced by the palette JSON. Labels come from imported CSVs.
     return (
         _PAGE.replace("__TITLE__", _escape(title))
-        .replace("__DATA__", _json_for_script(payload))
         .replace("__PALETTE__", _json_for_script(_PALETTE))
+        .replace("__DATA__", _json_for_script(payload))
     )
 
 

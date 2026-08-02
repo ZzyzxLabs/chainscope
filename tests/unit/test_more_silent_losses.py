@@ -899,3 +899,106 @@ class TestArgumentErrorsShareAnExitCode:
 
         assert main(["analyze", "temporal", "-p", "notakeyvalue"]) == 2
         assert main(["analyze", "nosuchanalyzer"]) == 2
+
+
+class TestAnUnknowableOutcomeIsRefused:
+    """A mined transaction with no receipt has an unknowable outcome.
+
+    `success` is a `bool`, so there is no "unknown" to record --- and `None`
+    would be falsy, turning unknown into failed, which is the worse error. So
+    the provider refuses and the router can try another.
+
+    Written into the Etherscan `get_transaction` earlier the same day by copying
+    the pattern from `jsonrpc.py` without checking it. Both are fixed.
+    """
+
+    def _provider(self, receipt):
+        from chainscope.providers.etherscan import EtherscanProvider
+
+        class Fake:
+            def get(self, url, params, **kw):
+                if params["action"] == "eth_getTransactionByHash":
+                    return {
+                        "status": "1",
+                        "result": {
+                            "hash": "0x" + "1" * 64,
+                            "from": "0x" + "a" * 40,
+                            "to": "0x" + "b" * 40,
+                            "value": "0x1",
+                            "blockNumber": "0x1312d00",
+                            "gasPrice": "0x1",
+                        },
+                    }
+                return {"status": "1", "result": receipt}
+
+        return EtherscanProvider(api_key="x", client=Fake())
+
+    def test_a_mined_transaction_without_a_receipt_is_refused(self) -> None:
+        from chainscope.providers.base import ProviderError
+
+        with pytest.raises(ProviderError, match="whether it succeeded is unknown"):
+            self._provider(None).get_transaction(ETHEREUM, "0x" + "1" * 64)
+
+    def test_a_receipt_still_gives_the_outcome(self) -> None:
+        found = self._provider({"gasUsed": "0x5208", "status": "0x1"}).get_transaction(
+            ETHEREUM, "0x" + "1" * 64
+        )
+        assert found.success is True
+
+
+class TestAnAddressNeedsAComparisonKey:
+    def test_an_empty_key_is_refused(self) -> None:
+        """`key` is what equality and hashing use.
+
+        Measured: two different addresses with empty keys compared equal,
+        hashed equal, and collapsed to one entry in a set --- which is a
+        clustering result, produced silently.
+        """
+        from chainscope.core.models import Address
+
+        with pytest.raises(ValueError, match="no comparison key"):
+            Address(ETHEREUM, "0x" + "a" * 40, "")
+
+    def test_an_ordinary_address_is_unaffected(self) -> None:
+        from chainscope.core.models import Address
+
+        assert Address(ETHEREUM, "0xAbC", "0xabc").key == "0xabc"
+
+
+class TestDataCannotAbsorbTheNextPlaceholder:
+    """A node label of `__PALETTE__` was replaced by the palette JSON.
+
+    The data was substituted first, so the placeholder inside it was still
+    there when the palette substitution ran. Labels come from imported CSVs, so
+    the value is not ours to trust.
+    """
+
+    def _payload(self):
+        return {"nodes": [{"label": "__PALETTE__"}]}
+
+    def test_the_label_survives_verbatim(self) -> None:
+        from chainscope.render.html import _JS, _PALETTE, _json_for_script
+
+        script = _JS.replace("__PALETTE__", _json_for_script(_PALETTE)).replace(
+            "__DATA__", _json_for_script(self._payload())
+        )
+        assert "__PALETTE__" in script
+
+    def test_the_renderers_substitute_in_that_order(self) -> None:
+        # Asserted on the source, because the ordering *is* the fix and a
+        # behavioural test would pass with either order on ordinary data.
+        import inspect
+
+        from chainscope.render.flow import to_flow_html
+        from chainscope.render.html import to_html
+
+        for name, fn in (("flow", to_flow_html), ("html", to_html)):
+            # Only the rendering function --- the templates themselves contain
+            # both placeholders, so scanning the module would compare the wrong
+            # occurrences.
+            source = inspect.getsource(fn)
+            assert source.index('"__PALETTE__"') < source.index('"__DATA__"'), (
+                f"{name} substitutes the data before the palette, so a label "
+                f"containing a placeholder is still there when the next "
+                f"replacement runs"
+            )
