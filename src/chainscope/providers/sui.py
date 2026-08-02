@@ -48,7 +48,14 @@ from ..core.models import Account, Address, Transaction, Transfer, TransferKind,
 from ..core.units import Amount
 from ..transport.cache import Volatility
 from ..transport.http import Client, TransportError
-from .base import Capability, CostTier, Provider, ProviderError, ReadOnlyProvider
+from .base import (
+    Capability,
+    CostTier,
+    Provider,
+    ProviderError,
+    ReadOnlyProvider,
+    ResultTruncated,
+)
 
 __all__ = ["SUI_MAINNET_RPC", "SuiProvider"]
 
@@ -65,6 +72,20 @@ NETWORK_RPC = {
 #: Page size the public fullnodes accept. Asking for more is refused rather
 #: than silently reduced.
 MAX_PAGE = 50
+
+#: How many times `limit` a *bounded* history query may fetch while paging back
+#: to the requested window.
+#:
+#: Sui's transaction query filters by address and not by checkpoint, so reaching
+#: an older window means walking newest-first through everything after it. Ten
+#: is a budget rather than an estimate: it is exceeded loudly, and the loud
+#: failure is the point --- silently returning the rows that fitted would report
+#: an unreachable window as an empty one.
+_RANGE_PAGE_BUDGET = 10
+
+#: Hard ceiling on that walk, so one very busy address cannot spend an entire
+#: run paging.
+_MAX_RANGE_ROWS = 5_000
 
 
 def is_cacheable(body: Any) -> bool:
@@ -164,6 +185,14 @@ class SuiProvider(ReadOnlyProvider):
         not evidence of the end --- the node may return fewer for its own
         reasons --- and treating it as such is how a history silently ends
         early.
+
+        **The first page is not settled data.** It contains the tip, and an
+        address's history is a changing aggregate: cached for thirty days, as
+        `_rpc`'s default did, a second look at the same address a week later
+        returns the same answer and silently misses everything since. Later
+        pages are reached through a cursor into older checkpoints, which do not
+        change, so those keep the long TTL --- the deep history of a busy
+        address is exactly what is worth caching hard.
         """
         key = "FromAddress" if direction == "out" else "ToAddress"
         owner = normalize_address(address)
@@ -188,6 +217,9 @@ class SuiProvider(ReadOnlyProvider):
                     min(MAX_PAGE, limit - len(out)),
                     True,  # descending: most recent first
                 ],
+                # Page one holds the tip and goes stale; anything behind a
+                # cursor is older checkpoints, which do not.
+                volatility=Volatility.SLOW if cursor is None else Volatility.SETTLED,
             )
             if not isinstance(page, dict):
                 raise ProviderError("queryTransactionBlocks: unexpected response shape")
@@ -392,21 +424,35 @@ class SuiProvider(ReadOnlyProvider):
         ``value`` is the net native movement for the subject address, corrected
         for gas.
 
-        ``start_block``/``end_block`` are accepted for interface compatibility
-        and filtered client-side against the checkpoint number. Sui's
-        transaction query filters by address, not by range, so narrowing here
-        saves no requests --- it only avoids returning rows the caller did not
-        ask for.
+        ``start_block``/``end_block`` are filtered client-side against the
+        checkpoint number, because Sui's transaction query filters by address
+        and not by range.
+
+        **That is not free, and it used to be treated as though it were.** The
+        query returns newest-first, so fetching `limit` rows and *then* applying
+        the range means an address with more than `limit` transactions newer
+        than the window returns **nothing** for it --- and nothing reads as "no
+        activity in that period", which is the failure this package exists to
+        prevent. A window nobody could reach is not a window that was empty.
+
+        So a bounded window paginates until it has passed the range rather than
+        until it has `limit` rows, and raises :class:`ResultTruncated` if the
+        page budget runs out first. Refusing is the only honest answer there:
+        the alternative is a short list that looks complete.
         """
         owner = normalize_address(address)
-        transfers = self.asset_transfers(chain, address, direction="all", limit=limit)
+        low = start_block
+        high = None if end_block == "latest" else int(end_block)
+        bounded = low > 0 or high is not None
+        # A bounded window needs enough rows to *reach* the range, not `limit`
+        # rows from the tip. The multiplier is a budget, not a guess at the
+        # answer --- exceeding it raises rather than truncating quietly.
+        fetch = min(limit * _RANGE_PAGE_BUDGET, _MAX_RANGE_ROWS) if bounded else limit
+        transfers = self.asset_transfers(chain, address, direction="all", limit=fetch)
 
         grouped: dict[str, list[Transfer]] = {}
         for t in transfers:
             grouped.setdefault(t.tx.hash, []).append(t)
-
-        low = start_block
-        high = None if end_block == "latest" else int(end_block)
 
         out: list[Transaction] = []
         for digest, group in grouped.items():
@@ -430,6 +476,21 @@ class SuiProvider(ReadOnlyProvider):
                 )
             )
         out.sort(key=lambda t: t.block or 0)
+
+        if bounded and len(transfers) >= fetch:
+            # The budget ran out before the walk passed the window, so anything
+            # older than the oldest row fetched was never looked at. Returning
+            # `out` here would be a list that looks like the answer.
+            reached = min((t.block for t in transfers if t.block is not None), default=None)
+            if reached is None or reached > low:
+                raise ResultTruncated(
+                    f"paged back to checkpoint {reached} of the requested "
+                    f"{low}-{high if high is not None else 'latest'} after "
+                    f"{fetch} rows, and stopped at the budget. Sui filters by "
+                    f"address, not by range, so an older window costs a walk "
+                    f"through everything newer --- narrow the window, or raise "
+                    f"the limit."
+                )
         return out
 
     def get_transaction(self, chain: ChainId, tx_hash: str) -> Transaction:
