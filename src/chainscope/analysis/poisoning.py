@@ -60,6 +60,7 @@ from ..chains import address_key
 from ..core.result import Finding, Result, Severity
 from ..providers.base import Capability
 from .base import Analyzer, Context, history_of
+from .impersonation import trusted_assets
 
 __all__ = [
     "DEFAULT_EDGES",
@@ -219,27 +220,6 @@ def chance_of_collision(count: int, edges: int = DEFAULT_EDGES) -> float:
     return float(1 - math.exp(-expected))
 
 
-def _trustworthy(transfers: list[Any], chain: Any) -> set[str]:
-    """Contracts whose transfer logs may be taken at face value.
-
-    An asset the impersonation check clears, plus the native asset --- which
-    has no contract and cannot lie, because its transfers are recorded by the
-    chain rather than emitted by anybody's code.
-
-    Everything else is excluded, including tokens the registry simply has no
-    opinion about. That is deliberately strict and it is the right direction:
-    the consequence of trusting a forged log here is naming the wrong address
-    as the real one, and somebody then paying it.
-    """
-    from .impersonation import Verdict, inspect_assets
-
-    trusted = {""}  # the native asset: no contract, nothing to forge
-    for asset in inspect_assets(transfers, chain):
-        if asset.verdict == Verdict.GENUINE:
-            trusted.add(asset.contract)
-    return trusted
-
-
 def _sightings(transfers: list[Any], subject: str, trusted: set[str]) -> dict[str, Sighting]:
     """Fold a transfer list into one record per counterparty."""
     me = subject.strip().lower()
@@ -319,7 +299,7 @@ def find_lookalikes(
     nothing is the ordinary case and saying so for each of thirty-seven would
     bury the nine that matter.
     """
-    seen = _sightings(transfers, subject, _trustworthy(transfers, chain))
+    seen = _sightings(transfers, subject, trusted_assets(transfers, chain))
     buckets: dict[tuple[str, str], list[Sighting]] = defaultdict(list)
     for address, sighting in seen.items():
         body = address[2:] if address.startswith("0x") else address

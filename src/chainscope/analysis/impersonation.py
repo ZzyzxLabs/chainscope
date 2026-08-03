@@ -68,6 +68,7 @@ __all__ = [
     "Verdict",
     "canonical_for",
     "inspect_assets",
+    "trusted_assets",
 ]
 
 
@@ -504,3 +505,29 @@ class ImpersonationAnalyzer(Analyzer):
             started_at=started,
             finished_at=datetime.now(timezone.utc),
         )
+
+
+def trusted_assets(transfers: list[Any], chain: ChainId | None = None) -> set[str]:
+    """Contracts whose transfer logs may be taken at face value.
+
+    Assets this module clears, plus the native asset --- which has no contract
+    and cannot lie, because its transfers are recorded by the chain rather than
+    emitted by anybody's code.
+
+    Everything else is excluded, including tokens the registry has no opinion
+    about. That is strict, and it is the right direction: a token contract emits
+    its own ``Transfer`` events, so a forged token can log a movement that never
+    happened. Anything reasoning about *where money went* has to know which
+    hops are movements and which are assertions by their author.
+
+    Two callers depend on this, for the same reason and with different
+    consequences: :mod:`chainscope.analysis.poisoning`, which would otherwise
+    name the attacker's address as the genuine one, and
+    :mod:`chainscope.analysis.route`, which would otherwise draw a route out of
+    transfers the attacker invented.
+    """
+    trusted = {""}
+    for asset in inspect_assets(transfers, chain):
+        if asset.verdict == Verdict.GENUINE:
+            trusted.add(asset.contract)
+    return trusted

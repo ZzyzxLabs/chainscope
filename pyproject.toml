@@ -98,6 +98,7 @@ mixer = "chainscope.analysis.mixer:MixerAnalyzer"
 taint = "chainscope.analysis.taint:TaintAnalyzer"
 impersonation = "chainscope.analysis.impersonation:ImpersonationAnalyzer"
 poisoning = "chainscope.analysis.poisoning:PoisoningAnalyzer"
+route = "chainscope.analysis.route:RouteAnalyzer"
 
 [project.entry-points."chainscope.stores"]
 sqlite = "chainscope.store.sqlite:SqliteStore"

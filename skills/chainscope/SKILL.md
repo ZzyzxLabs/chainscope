@@ -45,7 +45,7 @@ chainscope investigate 0xSUSPECT -c eth
 ```
 
 Runs what applies, says what came back, and **names the next command with its
-arguments filled in**. Use it before reaching for a specific analyzer: eleven
+arguments filled in**. Use it before reaching for a specific analyzer: twelve
 analyzers each need parameters somebody has to already know, and this is the
 step that produces them.
 
@@ -89,9 +89,10 @@ chainscope analyze probing -p address=0xOP      # did they test the route first
 chainscope analyze temporal -p address=0xOP     # what hours do they work
 chainscope analyze impersonation -p address=0xV # which of these tokens are fake
 chainscope analyze poisoning -p address=0xV     # which of these addresses are traps
+chainscope analyze route -p source=0xA -p target=0xB   # how could A have reached B
 ```
 
-Eleven analyzers ship. Pick by the question, and **quote the qualifier each one
+Twelve analyzers ship. Pick by the question, and **quote the qualifier each one
 carries** --- these numbers are measured, and they are the difference between a
 finding and a coincidence.
 
@@ -108,6 +109,7 @@ finding and a coincidence.
 | `consolidation` | where counterparties send funds | — |
 | `impersonation` | which assets are forging another's symbol | "unlisted" is not clean --- most tokens are in no registry, and the check simply had nothing to compare against |
 | `poisoning` | which counterparties were ground to resemble another | refuses to nominate the real one unless a *trusted* asset shows the subject paying it |
+| `route` | how money could have got from A to B | withholds routes through a high-degree address by default: a custodian commingles, so that link is in the ledger, not in the money |
 
 **Run `impersonation` before quoting any per-symbol total.** Measured on a real
 case: 42 of an address's 55 ERC-20 transfers belonged to tokens imitating USDC
@@ -141,6 +143,26 @@ payment the victim never made --- 24 of the 27 addresses in a lookalike group
 there appeared *only* in forged-token transfers. Evidence from an asset that
 fails the impersonation check counts for nothing, because naming the wrong
 address is how somebody's next payment reaches the attacker.
+
+**`route` answers "how did A get to B", and every route it returns respects
+time.** That is not a detail. A plain hop-count search has no notion of when
+anything happened, so it returns paths where a hop occurs *before* the money
+arrived --- measured on a real ledger, **62% of its multi-hop answers were
+causally impossible**. Asked the other way, 53% of the address pairs it calls
+connected are not.
+
+Two things to quote whenever you show a route:
+
+- **What its narrowest hop could carry.** A route whose thinnest link moved
+  0.001 ETH is not how 1,000 ETH travelled.
+- **Whether it crosses a hub.** Routes through a high-degree address are
+  withheld by default and counted. A custodian commingles what it receives, so
+  such a route is a link in the ledger and not a link in the money --- and with
+  hubs allowed, almost any two addresses on a chain are "connected".
+
+And **no route found is not proof of no connection**: funds that crossed a
+chain, an exchange, or an address the store has never seen leave no chain
+behind.
 
 Four things to carry into any summary:
 

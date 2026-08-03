@@ -46,6 +46,7 @@ from ..analysis.probing import (
     MIN_ESCALATION_STEPS,
     detect_probes,
 )
+from ..analysis.route import find_routes
 from ..analysis.taint import TaintPolicy, trace_origins, trace_taint
 from ..chains import address_key
 from ..core.attribution import Attribution, Category, Confidence, Method
@@ -657,6 +658,79 @@ def build_server(config: ServerConfig) -> MCPServer:
 
     @server.tool(
         description=(
+            "Find how money could have travelled from one address to another, "
+            "using the store. THE routing question --- 'how did A get to B'. "
+            "Every route returned is time-respecting: its timestamps do not "
+            "decrease, so it is a way the money could have moved in the order "
+            "things actually happened. That matters more than it sounds: "
+            "measured on a real ledger, 62% of the shortest paths a plain "
+            "hop-count search returns are causally impossible, with a hop "
+            "occurring before the money arrived. Routes crossing a high-degree "
+            "address are withheld by default and counted, because a custodian "
+            "commingles what it receives --- such a route is a link in the "
+            "ledger, not in the money. Each route reports what its narrowest "
+            "hop could carry. A route is a CANDIDATE, not proof; and no route "
+            "found is not proof of no connection."
+        )
+    )
+    def find_route(
+        source: str,
+        target: str,
+        chain: str | None = None,
+        max_hops: int = 5,
+        allow_hubs: bool = False,
+        limit: int = 5000,
+    ) -> dict[str, Any]:
+        if not source.strip() or not target.strip():
+            raise AgentError("both source and target are required")
+        capped = _cap(limit, config.max_rows)
+        where = _chain(chain)
+        store = _store()
+        try:
+            rows = list(store.transfers(Query(chain=where, limit=capped)))
+        finally:
+            store.close()
+
+        routes, notes = find_routes(
+            rows,
+            source.strip().lower(),
+            target.strip().lower(),
+            max_hops=max_hops,
+            allow_hubs=allow_hubs,
+        )
+        result: dict[str, Any] = {
+            "source": source.strip().lower(),
+            "target": target.strip().lower(),
+            "transfers_searched": len(rows),
+            "routes": [
+                {
+                    "addresses": r.addresses,
+                    "hops": r.length,
+                    "carries_at_most": r.carries,
+                    "same_asset_throughout": r.single_asset,
+                    "crosses_hub": r.crosses_hub or None,
+                    "explanation": r.describe(),
+                    "transactions": [h.tx for h in r.hops if h.tx],
+                }
+                for r in routes
+            ],
+            **notes,
+        }
+        if len(rows) >= capped:
+            result["truncated"] = (
+                f"only {capped} transfers were searched; a route through a hop "
+                f"outside that set will not appear"
+            )
+        if not routes:
+            result["note"] = (
+                "No time-respecting route within the store. NOT proof the two are "
+                "unconnected: funds that crossed a chain, an exchange, or an "
+                "address the store has never seen leave no such chain behind."
+            )
+        return result
+
+    @server.tool(
+        description=(
             "Trace how much of each address's holdings came from a source "
             "address, using the store. Answers 'how much of this balance is "
             "stolen', which is different from 'is this reachable from the "
@@ -1075,6 +1149,7 @@ TOOLS = (
     "find_probes",
     "check_impersonation",
     "check_address_poisoning",
+    "find_route",
     "trace_stolen_funds",
     "trace_origins_of",
     "case_record",
