@@ -498,6 +498,7 @@ contributors faster than missing features do.
 |---|---|---|
 | License | Apache-2.0 | Patent grant; enterprises can adopt it. MIT lacks this |
 | Language | English code and docs; translated READMEs | Contributor reach |
+| Implementation | Python | Measured, not assumed --- see [docs/why-python.md](docs/why-python.md). The network is 2,451x slower than the local write path, and 74% of that path is already SQLite's C code |
 | Datasets | Distributed separately from code | Different licenses; see `docs/data-sources.md` |
 | Versioning | SemVer; plugin protocols versioned independently | Plugin compatibility |
 
