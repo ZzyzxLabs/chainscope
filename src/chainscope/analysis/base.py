@@ -13,7 +13,8 @@ carries the parameters that produced it.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -54,8 +55,30 @@ class Context:
     def limit(self, name: str, default: int) -> int:
         return int(self.limits.get(name, default))
 
+    _mark: int = 0
+    """Where this analyzer's evidence window opens. See `scope`."""
+
+    @contextmanager
+    def scope(self) -> Iterator[Context]:
+        """Bound `evidence` to the queries made inside this block.
+
+        Without it a `Result`'s evidence was every cache key touched by the
+        whole session --- other analyzers, other addresses, work done before
+        this one started. `Result.evidence` claims to be the queries supporting
+        *this* result, and an attestation built on it claims to prove the link.
+        Neither was true when one `Context` was shared, which is the normal case
+        for `investigate`.
+        """
+        outer = self._mark
+        self._mark = self.audit.mark() if self.audit else 0
+        try:
+            yield self
+        finally:
+            self._mark = outer
+
     def evidence(self) -> Evidence:
-        keys = self.audit.query_keys() if self.audit else ()
+        """The queries made in the current `scope`, or the session without one."""
+        keys = self.audit.query_keys(self._mark) if self.audit else ()
         return Evidence(query_keys=keys)
 
 

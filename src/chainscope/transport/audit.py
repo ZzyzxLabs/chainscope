@@ -92,10 +92,29 @@ class AuditLog:
         with self._lock:
             return tuple(self._buffer)
 
-    def query_keys(self) -> tuple[str, ...]:
-        """Cache keys touched this session --- the raw material for ``Evidence``."""
+    def mark(self) -> int:
+        """A position in the log, to bound a later `query_keys` to one window.
+
+        Opaque on purpose: it is the buffer length, but nothing outside should
+        rely on that.
+        """
         with self._lock:
-            return tuple(dict.fromkeys(r.cache_key for r in self._buffer if r.cache_key))
+            return len(self._buffer)
+
+    def query_keys(self, since: int = 0) -> tuple[str, ...]:
+        """Cache keys touched since ``since`` --- the raw material for ``Evidence``.
+
+        ``since`` defaults to the whole session, which is what an attestation of
+        a run wants. An individual ``Result`` wants the window its own analyzer
+        ran in: unbounded, its evidence lists every request the process made,
+        including those belonging to other analyzers and other addresses. That
+        reads as provenance and is not --- it cannot show which response
+        produced which finding, so an attestation over it hashes the right
+        bytes while proving nothing about the link between them.
+        """
+        with self._lock:
+            window = self._buffer[since:]
+            return tuple(dict.fromkeys(r.cache_key for r in window if r.cache_key))
 
     def replay(self) -> Iterator[dict[str, Any]]:
         """Read back a log file, including sessions other than this one."""

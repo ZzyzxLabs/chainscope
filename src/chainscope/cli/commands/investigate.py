@@ -239,7 +239,13 @@ def _windowed(ctx: Any, analyzer: Any, **params: Any) -> tuple[Any, str]:
     asked in a form that can be answered.
     """
     try:
-        return analyzer.run(ctx, **params), ""
+        # Scoped, because this function runs every analyzer against one shared
+        # `Context`. Unscoped, each result's evidence is every query the whole
+        # investigation made --- so a peel-chain finding would cite the requests
+        # that produced an unrelated cross-chain one, and an attestation over
+        # that proves nothing about which response supported which finding.
+        with ctx.scope() as scoped:
+            return analyzer.run(scoped, **params), ""
     except Exception as exc:
         if "requested" not in str(exc) and "truncat" not in str(exc).lower():
             raise

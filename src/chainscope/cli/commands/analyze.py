@@ -189,7 +189,12 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    result = instance.run(ctx, **params)
+    # One analyzer here, but scoped anyway: the audit log may already hold
+    # queries from resolver warm-up or an earlier command sharing the process,
+    # and evidence that reaches backwards past its own analyzer is the defect
+    # regardless of how it got there.
+    with ctx.scope() as scoped:
+        result = instance.run(scoped, **params)
     print(render.render(result))
     # Warnings mean the result is qualified. Exiting zero would let a pipeline
     # treat a truncated search as a complete one.
