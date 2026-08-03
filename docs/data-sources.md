@@ -22,10 +22,40 @@ fails the build otherwise --- see [CONTRIBUTING](../CONTRIBUTING.md).
 | `darklist` | `DarklistSource` | `MEDIUM` | Yes --- MIT |
 | `eth_labels` | `EthLabelsSource` | `MEDIUM` | **No** --- see below |
 | `contracts_list` | `ContractsListSource` | `MEDIUM` | **No** --- no licence declared |
+| `tagpack` | `TagPackSource` | `CERTAIN` | Yes --- MIT |
 
 The ceilings are enforced in code (`SourceMeta.max_confidence`), not merely
 documented. A community nametag dump cannot assert `CERTAIN` even if its adapter
 passes that value in.
+
+## `tagpack` --- GraphSense TagPacks
+
+- **Publisher:** GraphSense / Iknaio Cryptoasset Analytics GmbH and contributors
+- **Licence:** MIT. Redistributable.
+- **Fetch:** clone `github.com/graphsense/graphsense-tagpacks` into
+  `data/labels/tagpacks`. Needs the `tagpacks` extra for PyYAML:
+  `pip install 'chainscope[tagpacks]'`.
+- **Size:** 523,988 tags over 499,905 distinct addresses, 77 packs.
+- **Chains:** mostly Bitcoin, some Ethereum, Litecoin, Bitcoin Cash, Zcash, Tron.
+
+**Why the ceiling is `CERTAIN` when the corpus is mixed.** Each tag carries its
+own confidence, keyed on *how it was obtained* rather than on a general
+impression of the pack: `ownership` means the tagger controls the private key,
+`ledger_immanent` means it was read straight off the chain. Those two earn
+`CERTAIN` and nothing else in this corpus does. A `web_crawl` tag in the same
+file comes back `LOW`. The ceiling has to admit the top of that range; the
+per-tag value does the actual work.
+
+**Their scale is finer than ours and the difference is kept.** Theirs is
+0--100 across thirteen ids; ours is a five-step ladder. The original id and
+level travel in each claim's rationale (`confidence=authority_data (60/100)`),
+so a reader can tell an `authority_data` HIGH from a `service_api` HIGH.
+
+**Where they disagree with this package, they are right.** `authority_data`
+--- OFAC and its kind --- scores 60 with them and `CERTAIN` here. A designation
+is an authoritative claim about an *entity*; the address-to-entity mapping
+inside it is still research and has been wrong before. The adapter preserves
+their number rather than promoting it.
 
 ## `darklist` --- community scam reports
 

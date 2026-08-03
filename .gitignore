@@ -24,3 +24,4 @@ build/
 # entries accuse addresses, a stale snapshot is worse than no snapshot.
 # See docs/data-sources.md for where each comes from.
 data/labels/
+data/labels/tagpacks/

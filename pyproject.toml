@@ -40,6 +40,9 @@ dependencies = [
 evm = ["eth-utils>=5.0", "eth-abi>=5.0", "eth-hash[pycryptodome]>=0.7"]
 bitcoin = ["base58>=2.1", "bech32>=1.2"]
 solana = ["base58>=2.1"]
+# TagPacks are YAML. Optional, because the corpus is a separate 500k-address
+# download and somebody who never fetches it should not carry the parser.
+tagpacks = ["PyYAML>=6.0"]
 tron = ["base58>=2.1"]
 # Sui needs nothing extra: addresses are hex and the RPC is plain JSON.
 sui = []

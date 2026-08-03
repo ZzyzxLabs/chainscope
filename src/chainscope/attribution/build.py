@@ -49,6 +49,7 @@ def available_sources(base: Path | str = DEFAULT_LABEL_DIR) -> list[Source]:
     from .sources.ethlabels import EthLabelsSource
     from .sources.local import LocalSource
     from .sources.ofac import OfacSource
+    from .sources.tagpack import TagPackSource
 
     root = Path(base)
     candidates: list[Source] = [
@@ -58,6 +59,11 @@ def available_sources(base: Path | str = DEFAULT_LABEL_DIR) -> list[Source]:
         # The user's own file next: a judgement they recorded outranks any list.
         LocalSource(root / "local.json"),
         ExplorerDumpSource(root / "nametags.json"),
+        # TagPacks carry their own per-tag confidence, keyed on how each tag
+        # was obtained --- INTERPOL-identified services sit above a web crawl
+        # inside one corpus. Placed above the bulk lists because a tag that
+        # states its provenance outranks one that does not.
+        TagPackSource(root / "tagpacks"),
         ContractsListSource(root / "contracts"),
         EthLabelsSource(root / "eth-labels"),
         DarklistSource(root / "darklist.json"),

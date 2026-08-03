@@ -85,6 +85,11 @@ _CATALOGUE: dict[str, dict[str, str]] = {
         "what": "an explorer export you obtained yourself",
         "terms": "upstream terms apply --- not redistributable",
     },
+    "tagpack": {
+        "ceiling": "CERTAIN",
+        "what": "524k tagged addresses --- exchanges, mixers, miners, INTERPOL services",
+        "terms": "MIT (Iknaio Cryptoasset Analytics GmbH) --- redistributable",
+    },
     "contracts_list": {
         "ceiling": "MEDIUM",
         "what": "252k named contracts, each recording its own source",
