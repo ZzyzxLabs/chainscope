@@ -123,6 +123,13 @@ aside.right textarea { margin-top: 4px; }
   font-family: ui-monospace, Menlo, monospace;
 }
 .card .risk { fill: var(--bad); }
+.wm {
+  fill: #ffffff; opacity: .05; font-size: 74px; font-weight: 800;
+  pointer-events: none; letter-spacing: .06em;
+}
+#wm { flex: none; width: 110px; }
+#spacelab { display: flex; align-items: center; }
+#space { width: 88px; accent-color: var(--accent); }
 .card text { pointer-events: none; }
 .handle rect { fill: #2c3140; stroke: #3d4356; opacity: 0; cursor: pointer; }
 .handle text {
@@ -196,6 +203,8 @@ const state = {
   // Viewport. A fixed picture is fine for a screenshot and useless for a case
   // that does not fit one --- which is every case past about twenty addresses.
   view: { x: 0, y: 0, k: 1 },
+  spacing: 1,
+  watermark: "",
 };
 
 function short(a) { return a.length > 16 ? a.slice(0, 8) + "…" + a.slice(-6) : a; }
@@ -264,6 +273,28 @@ async function api(path, params) {
 
 const CARD_W = 218, CARD_H = 52, GAP_Y = 22;
 
+function readUrl() {
+  // The view restored from the address bar. That is what a "share link" can
+  // honestly be for a local tool: the data lives in somebody's store and is
+  // not ours to send, but *what was being looked at* is a real thing to hand
+  // over --- the seed, the chain, and which assets were hidden.
+  const q = new URLSearchParams(location.search);
+  const address = q.get("a") || "";
+  if (q.get("c")) state.chain = q.get("c");
+  if (q.get("h")) state.pendingHidden = new Set(q.get("h").split(","));
+  if (q.get("w")) state.watermark = q.get("w");
+  return address;
+}
+
+function writeUrl() {
+  const q = new URLSearchParams();
+  if (state.graph) q.set("a", state.graph.seed);
+  q.set("c", state.chain);
+  if (state.hidden.size) q.set("h", [...state.hidden].join(","));
+  if (state.watermark) q.set("w", state.watermark);
+  history.replaceState(null, "", "?" + q.toString());
+}
+
 function layout(graph) {
   // By hop depth, left to right. A force layout arranges by connectivity, and
   // then a five-hop laundering chain and a five-way split look identical ---
@@ -278,13 +309,14 @@ function layout(graph) {
   depths.forEach((d, i) => {
     const column = columns.get(d);
     column.forEach((n, j) => {
-      n.x = 40 + i * (CARD_W + 210);
-      n.y = 30 + j * (CARD_H + GAP_Y);
+      n.x = 40 + i * (CARD_W + 210 * state.spacing);
+      n.y = 30 + j * (CARD_H + GAP_Y * state.spacing);
     });
-    height = Math.max(height, 30 + column.length * (CARD_H + GAP_Y));
+    height = Math.max(height,
+      30 + column.length * (CARD_H + GAP_Y * state.spacing));
   });
   return {
-    width: 80 + depths.length * (CARD_W + 210),
+    width: 80 + depths.length * (CARD_W + 210 * state.spacing),
     height: Math.max(height, 200),
   };
 }
@@ -391,6 +423,12 @@ function draw() {
       `</g>`);
   });
 
+  if (state.watermark) {
+    // Inside the SVG, not a CSS overlay --- so it is present in the exported
+    // file too. A watermark that vanishes on export is decoration.
+    parts.unshift(`<text class="wm" x="${size.width / 2}" y="${size.height / 2}"` +
+      ` text-anchor="middle">${esc(state.watermark)}</text>`);
+  }
   svg.innerHTML = `<g id="vp" transform="translate(${state.view.x},${state.view.y})` +
     ` scale(${state.view.k})">${parts.join("")}</g>`;
   svg.querySelectorAll(".card").forEach((g) =>
@@ -456,6 +494,50 @@ function fit() {
     y: (box.height - size.height * k) / 2,
   };
   applyView();
+}
+
+function exportSvg() {
+  // The SVG itself, with its styles inlined. Self-contained by the same rule
+  // as everything else here: a picture that fetches a stylesheet to render is
+  // a picture that stops rendering, and tells somebody it was opened.
+  const svg = $("#g").cloneNode(true);
+  svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  const size = layout(state.graph);
+  svg.setAttribute("width", size.width);
+  svg.setAttribute("height", size.height);
+  svg.querySelector("#vp").setAttribute("transform", "translate(20,20)");
+  const style = document.createElement("style");
+  style.textContent = document.querySelector("style").textContent;
+  svg.insertBefore(style, svg.firstChild);
+  const blob = new Blob(
+    ['<?xml version="1.0" encoding="UTF-8"?>\n', svg.outerHTML],
+    { type: "image/svg+xml" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${(state.graph?.seed || "case").slice(0, 12)}.svg`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function wireTools() {
+  $("#space").addEventListener("input", (ev) => {
+    state.spacing = Number(ev.target.value);
+    draw(); applyView();
+  });
+  $("#wm").addEventListener("input", (ev) => {
+    state.watermark = ev.target.value.trim();
+    draw(); writeUrl();
+  });
+  $("#export").addEventListener("click", exportSvg);
+  $("#share").addEventListener("click", async () => {
+    writeUrl();
+    try {
+      await navigator.clipboard.writeText(location.href);
+      say("link copied — it restores this view, not the data behind it");
+    } catch {
+      say("copy the address bar: it now holds this view");
+    }
+  });
 }
 
 function wireAdd() {
@@ -544,7 +626,7 @@ function assets() {
     box.addEventListener("change", () => {
       if (box.checked) state.hidden.delete(box.dataset.asset);
       else state.hidden.add(box.dataset.asset);
-      draw(); assets(); count();
+      draw(); assets(); count(); writeUrl();
     }));
 }
 
@@ -753,7 +835,11 @@ async function load(address) {
       (graph.assets || [])
         .filter((a) => ["forged", "lookalike", "unknown-script"].includes(a.verdict))
         .map((a) => a.asset));
-    draw(); roster(); assets(); select(graph.seed); count(); fit();
+    if (state.pendingHidden) {
+      state.hidden = state.pendingHidden;
+      state.pendingHidden = null;
+    }
+    draw(); roster(); assets(); select(graph.seed); count(); fit(); writeUrl();
     const bits = [`${graph.nodes.length} addresses`, `${graph.edges.length} flows`];
     // Said, not hidden. The page reads the store; when it had to go to a
     // provider to fill it, that is a fact about where the picture came from.
@@ -781,6 +867,15 @@ $("#find").addEventListener("submit", (e) => {
 window.addEventListener("resize", () => { draw(); applyView(); });
 wireViewport();
 wireAdd();
+wireTools();
+
+const fromUrl = readUrl();
+if (fromUrl) {
+  $("#address").value = fromUrl;
+  $("#chain").value = state.chain;
+  if (state.watermark) $("#wm").value = state.watermark;
+  load(fromUrl);
+}
 
 api("/health").then((h) => {
   say(`${h.transfers ?? 0} transfers in ${h.store || "the store"} · ` +
@@ -814,6 +909,12 @@ _TEMPLATE = """<!doctype html>
     <button type="submit">open</button>
   </form>
   <button id="addbtn" title="add addresses to this case">+ add</button>
+  <button id="share" title="copy a link that restores this view">share</button>
+  <button id="export" title="download the graph as SVG">export</button>
+  <input id="wm" placeholder="watermark" size="10">
+  <label id="spacelab" title="spacing">
+    <input id="space" type="range" min="0.5" max="2.5" step="0.1" value="1">
+  </label>
 </header>
 <main>
   <aside>
