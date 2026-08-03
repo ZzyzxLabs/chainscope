@@ -321,6 +321,25 @@ class JsonRpcProvider(ReadOnlyProvider):
         vol = Volatility.LIVE if block == "latest" else Volatility.IMMUTABLE
         return self._call("eth_getCode", [address, tag], vol) or "0x"
 
+    def nonce_at(self, chain: ChainId, address: str, block: int | str = "latest") -> int:
+        """``eth_getTransactionCount`` at a block. Historical needs archive state.
+
+        The companion to `code_at`, and needed for the same reason: "no code
+        and no nonce at block b" is how a *dormant* address is identified, and
+        both halves have to be asked as of that block. `get_account` asks at
+        `latest`, which answers whether it is dormant now --- a different
+        question, and one whose answer changes every time somebody spends from
+        it.
+        """
+        if block != "latest" and not self.capabilities & Capability.ARCHIVE_STATE:
+            raise ProviderError(
+                f"{self.name} is not configured as an archive node; "
+                f"eth_getTransactionCount at block {block} needs archive state"
+            )
+        tag = block if isinstance(block, str) else hex(block)
+        vol = Volatility.LIVE if block == "latest" else Volatility.IMMUTABLE
+        return _hexint(self._call("eth_getTransactionCount", [address, tag], vol) or "0x0")
+
     def is_eoa_at(self, chain: ChainId, address: str, block: int | str = "latest") -> bool:
         """Whether ``address`` had no code at ``block``."""
         return self.code_at(chain, address, block) == "0x"
