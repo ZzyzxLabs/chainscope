@@ -45,7 +45,7 @@ chainscope investigate 0xSUSPECT -c eth
 ```
 
 Runs what applies, says what came back, and **names the next command with its
-arguments filled in**. Use it before reaching for a specific analyzer: nine
+arguments filled in**. Use it before reaching for a specific analyzer: ten
 analyzers each need parameters somebody has to already know, and this is the
 step that produces them.
 
@@ -87,9 +87,10 @@ chainscope analyze --list                       # what is installed
 chainscope analyze taint -p source=0xTHIEF      # where the stolen value sits now
 chainscope analyze probing -p address=0xOP      # did they test the route first
 chainscope analyze temporal -p address=0xOP     # what hours do they work
+chainscope analyze impersonation -p address=0xV # which of these tokens are fake
 ```
 
-Nine analyzers ship. Pick by the question, and **quote the qualifier each one
+Ten analyzers ship. Pick by the question, and **quote the qualifier each one
 carries** --- these numbers are measured, and they are the difference between a
 finding and a coincidence.
 
@@ -104,8 +105,27 @@ finding and a coincidence.
 | `peel_chain` | follow a peel chain | halts on contested or missing hops rather than guessing |
 | `cross_chain` | the far side of a swap | **ranks a decoy first when the true payout is absent** |
 | `consolidation` | where counterparties send funds | — |
+| `impersonation` | which assets are forging another's symbol | "unlisted" is not clean --- most tokens are in no registry, and the check simply had nothing to compare against |
 
-Three things to carry into any summary:
+**Run `impersonation` before quoting any per-symbol total.** Measured on a real
+case: 42 of an address's 55 ERC-20 transfers belonged to tokens imitating USDC
+and ETH, so a total grouped by symbol was mostly forgery --- and it looked
+exactly like a real number, same units, same magnitude, same place in the
+report. It is the one place in a case where the data is *chosen by the
+adversary*, having looked at the tool that will render it.
+
+Three mechanisms, and no two overlap, so no single check finds all three:
+
+| symbol | how it works | what catches it |
+|---|---|---|
+| `UЅDC` | Latin, one Cyrillic letter spliced in | mixed-script (UTS #39 §5) |
+| `ЕТН` | *entirely* Cyrillic, so perfectly consistent | confusable skeleton (§4) |
+| `ETH` | plain ASCII, simply named after a real one | **contract address only** |
+
+The third is the one Unicode cannot touch, and the reason the rule is *compare
+the contract, never the symbol string*.
+
+Four things to carry into any summary:
 
 - **`taint` separates holding from having-touched.** "Stolen value passed
   through here" and "this address holds stolen value" are different claims.

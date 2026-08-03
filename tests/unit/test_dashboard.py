@@ -106,13 +106,13 @@ class TestCoverageLeads:
 
 class TestAmounts:
     def test_totals_are_exact_and_per_asset(self, store_path):
-        totals = {sym: raw for sym, raw, _, _ in build_summary(store_path).totals_by_asset}
+        totals = {sym: raw for sym, raw, _, _, _ in build_summary(store_path).totals_by_asset}
         assert totals["ETH"] == str(TEN_ETH * 2)
         assert totals["USDC"] == "5000000"
 
     def test_totals_are_strings(self, store_path):
         """20 ETH exceeds what a JSON number holds exactly."""
-        for _, raw, _, _ in build_summary(store_path).totals_by_asset:
+        for _, raw, _, _, _ in build_summary(store_path).totals_by_asset:
             assert isinstance(raw, str)
 
     def test_totals_carry_their_own_decimals(self, store_path):
@@ -122,7 +122,7 @@ class TestAmounts:
         rows all along --- so the dashboard showed the same asset correctly in
         one panel and a trillion times too small in the other.
         """
-        places = {sym: d for sym, _, _, d in build_summary(store_path).totals_by_asset}
+        places = {sym: d for sym, _, _, d, _ in build_summary(store_path).totals_by_asset}
         assert places["USDC"] == 6
         assert places["ETH"] == 18
 

@@ -133,16 +133,32 @@ def _summarise(
 
     # Summed in Python: SQLite's INTEGER is 64-bit and one 10 ETH transfer is
     # already 1e19 wei, so SUM() overflows before it has added anything.
-    # Keyed by (symbol, decimals), not by symbol. The renderer had no decimals
-    # to work with and assumed 18, so 1,000 USDC --- six decimals --- appeared
-    # on the dashboard as 0.000000. And summing across decimals produces an
-    # integer denominated in nothing: 1000 USDC(6) plus 1 USDC(18) is neither
-    # 1001 nor anything else. The flows query on the next lines has been reading
-    # `decimals` all along; this one did not.
-    totals: dict[tuple[str, int | None], list[int]] = {}
-    for row in conn.execute("SELECT symbol, decimals, amount_raw FROM transfers"):
+    # Keyed by asset *identity* --- the contract --- not by the symbol shown to
+    # a human. Two things go wrong when you group on the symbol string, and the
+    # second is the serious one:
+    #
+    #   Different decimals sum into an integer denominated in nothing: 1000
+    #   USDC(6) plus 1 USDC(18) is neither 1001 nor anything else. And with no
+    #   decimals to render by, 1,000 USDC appeared on the dashboard as
+    #   0.000000, beside a flows table reading the same rows correctly.
+    #
+    #   A forged token merges into the real one's total. Measured on a real
+    #   case: 42 of 55 ERC-20 transfers belonged to tokens impersonating USDC
+    #   and ETH, two of them from *different contracts sharing one symbol
+    #   string*. Grouping by symbol is precisely the merge the forger is buying.
+    #   `chainscope.analysis.impersonation` says which is which; this query's
+    #   job is to not have merged them in the first place.
+    #
+    # `store.analytics.totals_by_asset` has grouped by (chain, asset, symbol)
+    # all along and says why in a comment. This one did not.
+    totals: dict[tuple[str, str, int | None], list[int]] = {}
+    for row in conn.execute("SELECT asset, symbol, decimals, amount_raw FROM transfers"):
         places = row["decimals"]
-        asset = (row["symbol"] or "", int(places) if places is not None else None)
+        asset = (
+            row["asset"] or "",
+            row["symbol"] or "",
+            int(places) if places is not None else None,
+        )
         bucket = totals.setdefault(asset, [0, 0])
         bucket[0] += int(row["amount_raw"])
         bucket[1] += 1
@@ -209,8 +225,8 @@ def _summarise(
         low_confidence=low_confidence,
         totals_by_asset=sorted(
             (
-                (sym, str(total), count, places)
-                for (sym, places), (total, count) in totals.items()
+                (sym, str(total), count, places, contract)
+                for (contract, sym, places), (total, count) in totals.items()
             ),
             key=lambda row: -row[2],
         ),

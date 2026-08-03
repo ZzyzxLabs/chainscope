@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..analysis.impersonation import report as impersonation_report
 from ..analysis.probing import (
     MIN_ESCALATION_GROWTH,
     MIN_ESCALATION_STEPS,
@@ -511,6 +512,77 @@ def build_server(config: ServerConfig) -> MCPServer:
 
     @server.tool(
         description=(
+            "Check which assets an address touched are impersonating other "
+            "assets. Reads the store only --- no network. Answer this BEFORE "
+            "quoting any per-symbol total: measured on a real case, 42 of 55 "
+            "ERC-20 transfers to one address belonged to tokens imitating USDC "
+            "and ETH, so a total grouped by symbol was mostly forgery and "
+            "looked exactly like a real number. Three mechanisms are checked "
+            "and no two overlap --- a symbol with a foreign letter spliced in "
+            "(UЅDC), a symbol written entirely in another script (ЕТН), and a "
+            "plain-ASCII token simply named after a real one (ETH), which only "
+            "the contract address can catch. Reports both the forgeries and "
+            "the genuine assets, and never filters anything out."
+        )
+    )
+    def check_impersonation(
+        address: str,
+        chain: str | None = None,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        if not address.strip():
+            raise AgentError("address is required")
+        capped = _cap(limit, config.max_rows)
+        where = _chain(chain)
+        store = _store()
+        try:
+            # Both directions: a poisoning token is *sent to* the subject and
+            # never sent by it, so an outbound-only read misses the attack.
+            rows = list(
+                store.transfers(
+                    Query(chain=where, address=address.strip().lower(), limit=capped)
+                )
+            )
+        finally:
+            store.close()
+
+        rep = impersonation_report(rows, where)
+        result: dict[str, Any] = {
+            "address": address.strip().lower(),
+            "transfers_examined": len(rows),
+            "summary": rep.summary(),
+            "forged_transfers": rep.forged_transfers,
+            "total_transfers": rep.total_transfers,
+            "assets": [
+                {
+                    "symbol": a.symbol,
+                    "contract": a.contract,
+                    "verdict": a.verdict,
+                    "transfers": a.transfers,
+                    "resembles": a.resembles or None,
+                    "reasons": list(a.reasons),
+                    # Codepoint and Unicode name per character, so the caller
+                    # can verify the claim rather than take it on trust.
+                    "characters": [list(c) for c in a.characters],
+                }
+                for a in rep.assets
+            ],
+        }
+        if len(rows) >= capped:
+            result["truncated"] = (
+                f"only the first {capped} transfers were read; an asset appearing "
+                f"only after that point was not inspected, so the share is over "
+                f"what was read, not over what exists"
+            )
+        result["caveat"] = (
+            "'unlisted' is not a clean bill. Most tokens are in no registry and "
+            "are entirely real --- it means the canonical check had nothing to "
+            "compare against. Only 'genuine' is a positive statement."
+        )
+        return result
+
+    @server.tool(
+        description=(
             "Trace how much of each address's holdings came from a source "
             "address, using the store. Answers 'how much of this balance is "
             "stolen', which is different from 'is this reachable from the "
@@ -927,6 +999,7 @@ TOOLS = (
     "export_graph",
     "store_stats",
     "find_probes",
+    "check_impersonation",
     "trace_stolen_funds",
     "trace_origins_of",
     "case_record",

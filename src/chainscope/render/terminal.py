@@ -104,13 +104,37 @@ class TerminalRenderer(Renderer):
 
 
 def _wrap(text: str, width: int) -> list[str]:
-    words, lines, current = text.split(), [], ""
-    for w in words:
-        if len(current) + len(w) + 1 > width:
-            lines.append(current)
-            current = w
-        else:
-            current = f"{current} {w}".strip()
-    if current:
-        lines.append(current)
-    return lines
+    """Wrap to ``width``, keeping the line structure the caller wrote.
+
+    ``text.split()`` collapses every run of whitespace, newlines included, so a
+    detail written as a list of points came out as one run-on paragraph --- the
+    reader could not tell where one point ended and the next began, and the
+    author had no way to make them. Silent, because a flattened paragraph still
+    looks like a paragraph.
+
+    Blank lines are kept as blank lines: they separate a summary from the
+    evidence under it, which is the one piece of structure most worth having.
+    Leading indentation is carried onto the continuation lines of the same
+    point, so a wrapped bullet stays visibly one bullet.
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            out.append("")
+            continue
+        stripped = line.lstrip()
+        indent = " " * (len(line) - len(stripped))
+        # Continuations are indented past the marker so the bullet's text lines
+        # up under itself rather than under the "-".
+        hanging = indent + ("  " if stripped[:2] in ("- ", "* ") else "")
+        current = indent
+        for word in stripped.split():
+            candidate = f"{current}{word}" if not current.strip() else f"{current} {word}"
+            if len(candidate) > width and current.strip():
+                out.append(current)
+                current = f"{hanging}{word}"
+            else:
+                current = candidate
+        if current.strip():
+            out.append(current)
+    return out
