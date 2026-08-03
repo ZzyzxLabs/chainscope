@@ -45,7 +45,7 @@ chainscope investigate 0xSUSPECT -c eth
 ```
 
 Runs what applies, says what came back, and **names the next command with its
-arguments filled in**. Use it before reaching for a specific analyzer: ten
+arguments filled in**. Use it before reaching for a specific analyzer: eleven
 analyzers each need parameters somebody has to already know, and this is the
 step that produces them.
 
@@ -88,9 +88,10 @@ chainscope analyze taint -p source=0xTHIEF      # where the stolen value sits no
 chainscope analyze probing -p address=0xOP      # did they test the route first
 chainscope analyze temporal -p address=0xOP     # what hours do they work
 chainscope analyze impersonation -p address=0xV # which of these tokens are fake
+chainscope analyze poisoning -p address=0xV     # which of these addresses are traps
 ```
 
-Ten analyzers ship. Pick by the question, and **quote the qualifier each one
+Eleven analyzers ship. Pick by the question, and **quote the qualifier each one
 carries** --- these numbers are measured, and they are the difference between a
 finding and a coincidence.
 
@@ -106,6 +107,7 @@ finding and a coincidence.
 | `cross_chain` | the far side of a swap | **ranks a decoy first when the true payout is absent** |
 | `consolidation` | where counterparties send funds | — |
 | `impersonation` | which assets are forging another's symbol | "unlisted" is not clean --- most tokens are in no registry, and the check simply had nothing to compare against |
+| `poisoning` | which counterparties were ground to resemble another | refuses to nominate the real one unless a *trusted* asset shows the subject paying it |
 
 **Run `impersonation` before quoting any per-symbol total.** Measured on a real
 case: 42 of an address's 55 ERC-20 transfers belonged to tokens imitating USDC
@@ -124,6 +126,21 @@ Three mechanisms, and no two overlap, so no single check finds all three:
 
 The third is the one Unicode cannot touch, and the reason the rule is *compare
 the contract, never the symbol string*.
+
+**`poisoning` is the same attack aimed at the address instead of the ticker**,
+and the two must be run together. An attacker grinds an address matching the
+first four and last four characters of a real counterparty, sends a zero-value
+transfer so it lands in the history, and waits for somebody to copy it. In the
+same case, 9 of 36 counterparties fell into such a group --- against a
+coincidence probability of 1.5e-7. Quote that number: "these look similar"
+invites "coincidences happen", and they do, at a rate the finding states.
+
+It will often say **it cannot tell which one is real**, and that is the feature.
+A token contract emits its own transfer events, so a forged token can log a
+payment the victim never made --- 24 of the 27 addresses in a lookalike group
+there appeared *only* in forged-token transfers. Evidence from an asset that
+fails the impersonation check counts for nothing, because naming the wrong
+address is how somebody's next payment reaches the attacker.
 
 Four things to carry into any summary:
 

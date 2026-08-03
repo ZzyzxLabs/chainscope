@@ -39,6 +39,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..analysis.impersonation import report as impersonation_report
+from ..analysis.poisoning import DEFAULT_EDGES as POISON_EDGES
+from ..analysis.poisoning import chance_of_collision, find_lookalikes
 from ..analysis.probing import (
     MIN_ESCALATION_GROWTH,
     MIN_ESCALATION_STEPS,
@@ -583,6 +585,78 @@ def build_server(config: ServerConfig) -> MCPServer:
 
     @server.tool(
         description=(
+            "Check whether any of an address's counterparties were generated to "
+            "be mistaken for another one --- address poisoning. Reads the store "
+            "only. An attacker grinds an address matching the first four and "
+            "last four characters of a real counterparty, sends a zero-value "
+            "transfer so it appears in the history, and waits for somebody to "
+            "copy it. Reports the coincidence probability, which is the point: "
+            "4+4 hex is 32 bits, so a collision among a few dozen addresses is "
+            "about 1e-7 and several collisions are proof of grinding. It will "
+            "often say it CANNOT TELL which address is the real one --- respect "
+            "that, because naming the wrong one is how the next payment reaches "
+            "the attacker."
+        )
+    )
+    def check_address_poisoning(
+        address: str,
+        chain: str | None = None,
+        edges: int = POISON_EDGES,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        if not address.strip():
+            raise AgentError("address is required")
+        capped = _cap(limit, config.max_rows)
+        where = _chain(chain)
+        subject = address.strip().lower()
+        store = _store()
+        try:
+            rows = list(store.transfers(Query(chain=where, address=subject, limit=capped)))
+        finally:
+            store.close()
+
+        groups, examined = find_lookalikes(rows, subject, edges=edges, chain=where)
+        result: dict[str, Any] = {
+            "address": subject,
+            "counterparties_examined": examined,
+            "transfers_examined": len(rows),
+            "chance_of_one_collision_by_coincidence": chance_of_collision(examined, edges),
+            "groups": [
+                {
+                    "looks_like": f"0x{g.prefix}\u2026{g.suffix}",
+                    "explanation": g.describe(),
+                    "decidable": g.is_decidable,
+                    "paid_by_subject": [m.address for m in g.paid],
+                    "suspects": [m.address for m in g.suspects],
+                    "members": [
+                        {
+                            "address": m.address,
+                            "paid_by_subject": m.sent_to_by_subject,
+                            "claimed_paid_by_forged_token": m.sent_untrusted,
+                            "received_from": m.received_from,
+                            "zero_value": m.zero_value,
+                            "transfers": m.total_transfers,
+                        }
+                        for m in g.members
+                    ],
+                }
+                for g in groups
+            ],
+        }
+        if len(rows) >= capped:
+            result["truncated"] = (
+                f"only the first {capped} transfers were read; a lookalike pair "
+                f"whose second member falls outside that window does not appear"
+            )
+        if not groups:
+            result["note"] = (
+                "No lookalike group found in what was read. Not a guarantee: an "
+                "address poisoned outside this window leaves nothing here."
+            )
+        return result
+
+    @server.tool(
+        description=(
             "Trace how much of each address's holdings came from a source "
             "address, using the store. Answers 'how much of this balance is "
             "stolen', which is different from 'is this reachable from the "
@@ -1000,6 +1074,7 @@ TOOLS = (
     "store_stats",
     "find_probes",
     "check_impersonation",
+    "check_address_poisoning",
     "trace_stolen_funds",
     "trace_origins_of",
     "case_record",

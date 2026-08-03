@@ -97,6 +97,7 @@ probing = "chainscope.analysis.probing:ProbingAnalyzer"
 mixer = "chainscope.analysis.mixer:MixerAnalyzer"
 taint = "chainscope.analysis.taint:TaintAnalyzer"
 impersonation = "chainscope.analysis.impersonation:ImpersonationAnalyzer"
+poisoning = "chainscope.analysis.poisoning:PoisoningAnalyzer"
 
 [project.entry-points."chainscope.stores"]
 sqlite = "chainscope.store.sqlite:SqliteStore"
@@ -139,6 +140,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "src/chainscope/analysis/impersonation.py" = ["RUF001", "RUF002", "RUF003"]
 "src/chainscope/agent/server.py" = ["RUF001", "RUF002", "RUF003"]
 "tests/unit/test_impersonation.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/unit/test_poisoning.py" = ["RUF001", "RUF002", "RUF003"]
 
 [tool.mypy]
 python_version = "3.10"
