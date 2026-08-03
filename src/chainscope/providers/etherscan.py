@@ -253,7 +253,14 @@ class EtherscanProvider(ReadOnlyProvider):
         raise ProviderError(f"{action}: {body.get('message')} ({detail})".strip())
 
     def _paged(
-        self, chain: ChainId, module: str, action: str, *, limit: int, **params: Any
+        self,
+        chain: ChainId,
+        module: str,
+        action: str,
+        *,
+        limit: int,
+        page: int = 1,
+        **params: Any,
     ) -> list[dict[str, Any]]:
         # Compare against what was actually requested, not just the API cap. A
         # caller asking for 1000 and receiving exactly 1000 is truncated too,
@@ -264,7 +271,7 @@ class EtherscanProvider(ReadOnlyProvider):
             chain,
             module,
             action,
-            page=1,
+            page=max(1, page),
             offset=effective,
             sort="asc",
             **params,
@@ -341,6 +348,7 @@ class EtherscanProvider(ReadOnlyProvider):
         end_block: int | str = "latest",
         contract: str | None = None,
         limit: int = 1000,
+        page: int = 1,
     ) -> list[Transfer]:
         """Native, token, and internal transfers touching an address.
 
@@ -369,6 +377,7 @@ class EtherscanProvider(ReadOnlyProvider):
                     "account",
                     action,
                     limit=limit,
+                    page=page,
                     address=address,
                     startblock=start,
                     endblock=end,

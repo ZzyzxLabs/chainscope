@@ -307,6 +307,7 @@ class BlockscoutProvider(ReadOnlyProvider):
         end_block: int | str = "latest",
         contract: str | None = None,
         limit: int = 1000,
+        page: int = 1,
     ) -> list[Transfer]:
         """ERC-20 movements touching an address.
 
@@ -329,7 +330,7 @@ class BlockscoutProvider(ReadOnlyProvider):
             startblock=int(start_block) if start_block != "latest" else 0,
             endblock=999_999_999 if end_block == "latest" else int(end_block),
             sort="asc",
-            page=1,
+            page=max(1, page),
             offset=limit,
         )
         if not isinstance(rows, list):
@@ -387,8 +388,12 @@ class BlockscoutProvider(ReadOnlyProvider):
             raise ResultTruncated(
                 f"tokentx returned {fetched} rows, at or above the {limit} "
                 f"requested --- {len(out)} of them survived the direction and "
-                f"contract filters. There is very likely more. Narrow the "
-                f"range; any total from this set is a lower bound."
+                f"contract filters. There is very likely more. Ask for the next "
+                f"page, or narrow the range; any total from this set alone is a "
+                f"lower bound.",
+                # The rows travel with the signal. A pager needs both: that the
+                # set is incomplete, and what it got.
+                rows=out,
             )
         return out
 

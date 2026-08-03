@@ -40,12 +40,13 @@ from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
-from ..providers.base import Capability, ProviderError
+from ..providers.base import Capability, ProviderError, ResultTruncated
 from ..store.sqlite import SqliteStore
 from .webapp import page as _page
 
@@ -338,7 +339,7 @@ class _Handlers:
         depth = max(1, min(int(_first(query, "depth") or "3"), 6))
         max_nodes = max(2, min(int(_first(query, "max_nodes") or "60"), 400))
 
-        fetched = 0
+        fetched, complete = 0, True
         store = self._store()
         try:
             if not store.edges(address, chain, direction="out") and not store.edges(
@@ -350,7 +351,7 @@ class _Handlers:
                 # typed an address into it. The honest form of that principle is
                 # to *say* the network was used, not to withhold the feature:
                 # `fetched` travels back and the status line reports it.
-                fetched = _fetch_into(store, address, chain)
+                fetched, complete = _fetch_into(store, address, chain)
                 if not fetched:
                     raise ValueError(
                         f"{address} has no transfers on {chain} --- not in the "
@@ -408,7 +409,9 @@ class _Handlers:
                 }
                 for e in built.edges.values()
             ],
+            "assets": _assets_in(built, chain),
             "fetched": fetched,
+            "fetch_complete": complete,
             "truncated": built.truncated,
             "frontier": sum(
                 1 for n in built.nodes.values() if not n.expanded and not n.is_seed
@@ -504,50 +507,130 @@ class _Handlers:
         }
 
 
-def _fetch_into(store: SqliteStore, address: str, chain: ChainId) -> int:
-    """Pull an address's transfers from the providers and keep them.
+def _fetch_into(
+    store: SqliteStore, address: str, chain: ChainId, *, max_pages: int = 15
+) -> tuple[int, bool]:
+    """Pull an address's transfers into the store, paging until they run out.
 
-    Both directions, because half a picture drawn without saying so is the
-    failure this package is arranged against --- and inbound is where a
-    poisoning transfer lives, which the subject never acknowledged.
+    Both directions, because inbound is where a poisoning transfer lives ---
+    something done *to* the subject, which they never acknowledged.
 
-    Returns how many were written, so the page can say the network was used.
-    A provider failure propagates: an empty graph and a failed fetch look
-    identical on screen and mean opposite things.
+    Returns ``(written, complete)``. The second is the whole point: a run that
+    stopped on its page budget rather than on the data has read a prefix, and a
+    prefix that does not announce itself is exactly the confidently-wrong answer
+    this package is arranged against. The caller puts it on screen.
+
+    An earlier attempt bisected the block range instead, because the truncation
+    signal is an exception and carries no cursor. It starts above any chain head
+    and spends its budget halving empty space: measured, 28 seconds to reach a
+    single-block window and conclude, wrongly, that one block held a thousand
+    transfers. Page numbers are what the upstream API actually offers.
+    """
+    provider = _asset_provider(chain)
+    rows: list[Any] = []
+    seen: set[tuple[str, int]] = set()
+    complete = False
+
+    for page in range(1, max_pages + 1):
+        try:
+            batch = provider.asset_transfers(
+                chain, address, direction="all", limit=1000, page=page
+            )
+        except ResultTruncated as exc:
+            # A full page is the expected outcome when paging, not a failure.
+            # The signal still means "there is more", which is what the loop is
+            # for; the rows it carries are this page.
+            batch = exc.rows
+        except ProviderError as exc:
+            # An empty page is how a listing ends, and Blockscout reports it as
+            # an error. Treating that as fatal would discard everything already
+            # gathered --- and on a paged read, that is most of the answer.
+            if "not found" in str(exc).lower() or "no token transfers" in str(exc).lower():
+                complete = True
+                break
+            raise
+
+        fresh = 0
+        for transfer in batch:
+            identity = (str(getattr(transfer.tx, "hash", "")), transfer.index)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            rows.append(transfer)
+            fresh += 1
+        if len(batch) < 1000 or fresh == 0:
+            # A short page is the end. Zero *new* rows on a full page means the
+            # provider ignored `page` and served the first one again --- some
+            # do --- and continuing would spin the budget for nothing.
+            complete = True
+            break
+
+    if rows:
+        store.put_transfers(rows)
+    return len(rows), complete
+
+
+def _assets_in(graph: Any, chain: ChainId) -> list[dict[str, Any]]:
+    """Every asset on the graph, with what the impersonation check makes of it.
+
+    Grouped rather than listed flat, because a filter that offers forty tickers
+    in one column makes the reader do the classification --- and the tickers are
+    chosen by the forger precisely to make that go wrong. Three of them read
+    `ETH` and two read `USDC` on a real case, identical to the eye.
+
+    Verdict travels per asset so the page can default to showing only what is
+    genuine, and say what it hid rather than hiding it quietly.
+    """
+    from ..analysis.impersonation import inspect_assets
+
+    seen: dict[str, dict[str, Any]] = {}
+    for edge in graph.edges.values():
+        key = (edge.asset or "").lower()
+        row = seen.setdefault(
+            key,
+            {
+                "asset": key,
+                "symbol": edge.symbol,
+                "decimals": edge.decimals,
+                "edges": 0,
+                "transfers": 0,
+            },
+        )
+        row["edges"] += 1
+        row["transfers"] += edge.transfer_count
+
+    # `inspect_assets` wants transfer-shaped objects; an edge carries the two
+    # fields it reads.
+    probe = [
+        SimpleNamespace(
+            chain=chain,
+            asset=SimpleNamespace(key=row["asset"]) if row["asset"] else None,
+            amount=SimpleNamespace(symbol=row["symbol"], decimals=row["decimals"]),
+        )
+        for row in seen.values()
+    ]
+    verdicts = {a.contract: a for a in inspect_assets(probe, chain)}
+    for key, row in seen.items():
+        found = verdicts.get(key)
+        row["verdict"] = found.verdict if found else "unlisted"
+        row["resembles"] = found.resembles if found else ""
+        row["why"] = " ".join(found.reasons) if found else ""
+    return sorted(seen.values(), key=lambda r: (-r["transfers"], r["symbol"]))
+
+
+def _asset_provider(chain: ChainId) -> Any:
+    """The first provider that can enumerate transfers, asked directly.
+
+    Not through `Router.enumerate`. Corroboration is the right default and the
+    wrong tool here: it re-raises a truncation as "all providers failed", which
+    is precisely the signal this function exists to page past.
     """
     from ..providers.build import router_for
 
     router, _skipped = router_for(chain)
-    try:
-        rows = router.enumerate(
-            chain,
-            Capability.ASSET_TRANSFERS,
-            lambda p: p.asset_transfers(chain, address, direction="all", limit=1000),
-            key=lambda t: (str(getattr(t.tx, "hash", "")), t.index),
-        ).rows
-    except ProviderError as exc:
-        # `ProviderError`, not `ResultTruncated`. The router catches each
-        # provider's failure and re-raises its own "all N providers failed",
-        # so the specific type never reaches here --- caught by testing it
-        # against a busy address rather than by reading the router.
-        if "at or above" not in str(exc):
-            raise
-        # The guard is right and is not worked around. Taking the first 1000
-        # rows would draw a graph indistinguishable from a complete one, and
-        # every total on it would be a lower bound presented as a figure.
-        #
-        # What is offered instead is the command that pages properly, because
-        # "this address is busier than one request can carry" is a fact about
-        # the address and belongs on screen.
-        raise ValueError(
-            f"{address} has more transfers than one request returns, so nothing "
-            f"is drawn --- the first thousand would look exactly like all of "
-            f"them. Bring it in with `chainscope investigate {address}`, which "
-            f"pages, then reload here ({exc})"
-        ) from None
-    if rows:
-        store.put_transfers(rows)
-    return len(rows)
+    for candidate in router.candidates(chain, Capability.ASSET_TRANSFERS):
+        return candidate
+    raise ValueError(f"no provider can enumerate transfers on {chain}")
 
 
 def _run_over_store(

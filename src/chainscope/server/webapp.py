@@ -108,6 +108,21 @@ svg { display: block; }
 .elabel { fill: #9aa1b8; font-size: 9.5px; pointer-events: none; }
 .elabel.lit { fill: var(--warn); }
 .eidx { fill: #5b62d6; }
+.vgroup {
+  font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--muted); margin: 10px 0 1px; font-weight: 600;
+}
+.vgroup.bad { color: var(--bad); }
+.vgroup:first-child { margin-top: 0; }
+.vwhy { font-size: 10px; color: #5f6577; margin-bottom: 4px; line-height: 1.35; }
+label.asset {
+  display: grid; grid-template-columns: 16px 1fr auto; gap: 6px;
+  align-items: center; padding: 2px 4px; border-radius: 4px; cursor: pointer;
+  font-size: 12px;
+}
+label.asset:hover { background: #1d2029; }
+label.asset.off span:not(.muted) { color: var(--muted); text-decoration: line-through; }
+label.asset input { margin: 0; accent-color: var(--accent); }
 .roster div {
   padding: 5px 6px; border-radius: 5px; cursor: pointer;
   font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;
@@ -141,7 +156,13 @@ svg { display: block; }
 
 _JS = r"""
 const $ = (s) => document.querySelector(s);
-const state = { graph: null, selected: null, chain: "1" };
+const state = {
+  graph: null, selected: null, chain: "1",
+  // Assets the reader has switched off. Forgeries start off, because a graph
+  // whose edges are mostly a forger's own log entries is not the case --- but
+  // they are switched off *visibly*, with a count, never dropped.
+  hidden: new Set(),
+};
 
 function short(a) { return a.length > 16 ? a.slice(0, 8) + "…" + a.slice(-6) : a; }
 function esc(s) {
@@ -275,6 +296,7 @@ function draw() {
   graph.edges.forEach((e, i) => {
     const a = byId.get(e.source), b = byId.get(e.target);
     if (!a || !b) return;
+    if (state.hidden.has(e.asset || "")) return;
     const on = lit.has(e.source + ">" + e.target);
     parts.push(
       `<path class="edge${on ? " lit" : ""}" d="${edgePath(a, b)}"` +
@@ -342,6 +364,65 @@ const PALETTE = {
 };
 
 // ------------------------------------------------------------------ panels
+
+const VERDICT_NOTE = {
+  genuine: "matches the canonical contract for its symbol",
+  forged: "claims a symbol that belongs to another contract on this chain",
+  lookalike: "renders identically to a real symbol under UTS #39",
+  "unknown-script": "built from characters outside ASCII",
+  unlisted: "no canonical entry --- says nothing either way",
+};
+
+function assets() {
+  const rows = (state.graph && state.graph.assets) || [];
+  if (!rows.length) { $("#assets").innerHTML = ""; return; }
+  // Grouped by verdict, not listed flat. A filter offering forty tickers in one
+  // column makes the reader do the classification, and the tickers were chosen
+  // by the forger to make that go wrong --- three read `ETH` on a real case.
+  const groups = ["forged", "lookalike", "unknown-script", "genuine", "unlisted"];
+  const out = [];
+  groups.forEach((verdict) => {
+    const mine = rows.filter((r) => r.verdict === verdict);
+    if (!mine.length) return;
+    const suspect = ["forged", "lookalike", "unknown-script"].includes(verdict);
+    out.push(`<div class="vgroup${suspect ? " bad" : ""}">${esc(verdict)}` +
+      ` <span class="muted">${mine.length}</span></div>`);
+    out.push(`<div class="vwhy">${esc(VERDICT_NOTE[verdict] || "")}</div>`);
+    mine.forEach((r) => {
+      const off = state.hidden.has(r.asset);
+      out.push(`<label class="asset${off ? " off" : ""}" title="${esc(r.why)}">` +
+        `<input type="checkbox" data-asset="${esc(r.asset)}"${off ? "" : " checked"}>` +
+        `<span>${esc(r.symbol || "native")}</span>` +
+        `<span class="muted">${r.transfers}</span></label>`);
+    });
+  });
+  $("#assets").innerHTML = out.join("");
+  $("#assets").querySelectorAll("input").forEach((box) =>
+    box.addEventListener("change", () => {
+      if (box.checked) state.hidden.delete(box.dataset.asset);
+      else state.hidden.add(box.dataset.asset);
+      draw(); assets(); count();
+    }));
+}
+
+function count() {
+  const graph = state.graph;
+  if (!graph) return;
+  const shown = graph.edges.filter((e) => !state.hidden.has(e.asset || "")).length;
+  const bits = [`${graph.nodes.length} addresses`, `${shown} of ${graph.edges.length} flows`];
+  if (state.hidden.size) {
+    // Said, with a number. A filtered picture that does not announce itself is
+    // the same defect as a truncated one.
+    bits.push(`${graph.edges.length - shown} hidden by an asset filter you set`);
+  }
+  if (graph.fetched) {
+    bits.push(`${graph.fetched} transfers fetched from a provider` +
+      (graph.fetch_complete ? "" : " — PAGE BUDGET SPENT, this is a prefix"));
+  }
+  say(bits.join(" · ") + (graph.truncated
+    ? " · TRUNCATED — a limit stopped the walk; this is not the whole case"
+    : ""), graph.truncated || !graph.fetch_complete ? "warn" : null);
+}
 
 function roster() {
   const graph = state.graph;
@@ -422,11 +503,21 @@ async function load(address) {
     const graph = await api("/graph", { address, chain: state.chain });
     state.graph = graph;
     state.selected = graph.seed;
-    draw(); roster(); select(graph.seed);
+    // Forgeries start hidden. A graph whose edges are mostly a forger's own
+    // log entries is not the case --- and the status line says how many, so
+    // this is a stated default rather than a silent one.
+    state.hidden = new Set(
+      (graph.assets || [])
+        .filter((a) => ["forged", "lookalike", "unknown-script"].includes(a.verdict))
+        .map((a) => a.asset));
+    draw(); roster(); assets(); select(graph.seed); count();
     const bits = [`${graph.nodes.length} addresses`, `${graph.edges.length} flows`];
     // Said, not hidden. The page reads the store; when it had to go to a
     // provider to fill it, that is a fact about where the picture came from.
-    if (graph.fetched) bits.push(`${graph.fetched} transfers fetched from a provider`);
+    if (graph.fetched) {
+      bits.push(`${graph.fetched} transfers fetched from a provider` +
+        (graph.fetch_complete ? "" : " — PAGE BUDGET SPENT, this is a prefix"));
+    }
     if (graph.frontier) bits.push(`${graph.frontier} on the frontier`);
     say(bits.join(" · ") + (graph.truncated
       ? " · TRUNCATED — a limit stopped the walk; this is not the whole case"
@@ -479,7 +570,10 @@ _TEMPLATE = """<!doctype html>
   </form>
 </header>
 <main>
-  <aside><h2>addresses in view</h2><div class="roster" id="roster"></div></aside>
+  <aside>
+    <h2>assets</h2><div id="assets"></div>
+    <h2>addresses in view</h2><div class="roster" id="roster"></div>
+  </aside>
   <div id="canvas"><svg id="g"></svg></div>
   <aside class="right"><h2>selected</h2><div id="detail">
     <p class="muted">Enter an address that is already in the case.</p>

@@ -47,7 +47,22 @@ class ResultTruncated(ProviderError):
     says nothing is the exact failure :meth:`Router.corroborate` exists to
     catch, and a corroboration source that truncates silently poisons the
     mechanism built to detect truncation.
+
+    **It carries the rows it found.** Refusing to return them makes the signal
+    unusable by the one caller who can act on it: a pager, for whom a full page
+    is the expected outcome rather than a failure. Discarding them forced that
+    caller to either re-request the same page through a different path or give
+    up --- and giving up is what a page in a browser was doing, telling the user
+    to go and run a CLI command.
+
+    A caller that ignores ``rows`` is unaffected: the exception still
+    propagates, and a total built from it is still a lower bound. What changes
+    is that completing the set is now possible without another round trip.
     """
+
+    def __init__(self, message: str, rows: list[Any] | None = None) -> None:
+        super().__init__(message)
+        self.rows = rows or []
 
 
 class Capability(Flag):
@@ -243,7 +258,23 @@ class Provider:
         end_block: int | str = "latest",
         contract: str | None = None,
         limit: int = 1000,
+        page: int = 1,
     ) -> list[Transfer]:
+        """One page of the value movements touching an address.
+
+        ``page`` is 1-based and exists because :class:`ResultTruncated` is the
+        honest answer to a busy address and an unusable one on its own: the
+        caller is told the set is incomplete and given no way to complete it.
+        Range narrowing is not that way --- the truncation signal is an
+        exception, so it carries no cursor, and bisecting blind spends its
+        budget halving empty space above the chain head.
+
+        A provider that cannot page should ignore this and keep returning the
+        first page. Returning a *short* page is how a caller knows to stop, so
+        a provider that silently repeats page one will loop until the caller's
+        own budget stops it --- which is why the caller must bound itself
+        rather than trust termination.
+        """
         raise self._unsupported("asset transfers")
 
     def block_at_time(self, chain: ChainId, when: datetime) -> Block:
