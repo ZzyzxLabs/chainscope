@@ -234,6 +234,17 @@ export type Analysis = { name: string; what: string; cannot: string };
  */
 export const ANALYSES: Analysis[] = [
   {
+    name: "linked_holders",
+    what:
+      "Takes a list of addresses and groups them into the parties that appear " +
+      "to control them, with the link that formed each group attached.",
+    cannot:
+      "That a group is one person. It shows observed linkage, and an address " +
+      "left alone is unlinked by these signals rather than independent — if " +
+      "its history was never fetched it could not have been linked, so the " +
+      "top holder's real share is a floor, never a ceiling.",
+  },
+  {
     name: "co_spend_cluster",
     what:
       "Groups addresses controlled by one party, from the fact that spending " +

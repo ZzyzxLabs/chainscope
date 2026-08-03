@@ -160,6 +160,7 @@ finding and a coincidence.
 | `probing` | did they send a test payment first | needs 5+ strictly increasing steps **and** 8x growth; length alone fires on 38% of ordinary accumulation |
 | `mixer` | which withdrawal matches this deposit | precision 100% / 56.7% / 33.3% / 8.3% at 0 / 1 / 2 / 4 competing withdrawals; refuses past 5 |
 | `common_funder` | which addresses share an origin | an exchange funds its customers: with the service guard off, precision drops to 0.7% |
+| `linked_holders` | how many parties are behind a supplied address list | one hop only: a dev who funds through an intermediary is not linked, so the top holder's share is a floor |
 | `co_spend_cluster` | which addresses share a wallet (UTXO) | one CoinJoin halves precision |
 | `temporal` | what hours the operator keeps | needs 30+ timestamps; a scripted address has no timezone to report |
 | `peel_chain` | follow a peel chain | halts on contested or missing hops rather than guessing |
