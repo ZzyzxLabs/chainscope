@@ -148,11 +148,12 @@ class Inflow:
         Never scaled by a guess. A figure rendered at the wrong number of
         decimals is off by a factor of a million and looks entirely normal.
         """
-        if self.decimals is None:
-            return f"{raw:,} raw"
-        from ..render.dashboard import _fmt
+        from ..render.amount import human
 
-        return f"{_fmt(str(raw), self.decimals)} {self.symbol or ''}".strip()
+        rendered = human(str(raw), self.decimals)
+        return (
+            f"{rendered} {self.symbol or ''}".strip() if self.decimals is not None else rendered
+        )
 
     def summary(self) -> str:
         if not self.contributions:

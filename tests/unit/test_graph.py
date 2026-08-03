@@ -161,8 +161,19 @@ class TestEdges:
         assert len(g.edges) == 2
 
     def test_totals_are_per_asset(self, graph):
-        totals = graph.totals_by_asset()
+        # Keyed by (contract, symbol, decimals), not by symbol. A token that
+        # chose its ticker to be read as another one would otherwise have its
+        # total added to the real asset's.
+        totals = {sym: raw for (_c, sym, _d), raw in graph.totals_by_asset().items()}
         assert totals == {"ETH": TEN_ETH, "USDC": 5_000_000}
+
+    def test_two_contracts_sharing_a_symbol_stay_apart(self):
+        # The case the panel showed on real data: three rows reading `ETH`,
+        # identical to the eye and different tokens.
+        g = Graph()
+        g.add_edge(Edge(A, B, CHAIN, "USDC", 1_000, asset="0x" + "a" * 40, decimals=6))
+        g.add_edge(Edge(A, B, CHAIN, "USDC", 9_000, asset="0x" + "b" * 40, decimals=6))
+        assert len(g.totals_by_asset()) == 2
 
     def test_time_range_widens_on_fold(self):
         g = Graph()

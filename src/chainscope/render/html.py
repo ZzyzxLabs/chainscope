@@ -35,6 +35,7 @@ import html
 import json
 from typing import Any
 
+from .amount import human
 from .graph import Graph
 
 __all__ = ["to_html"]
@@ -320,12 +321,20 @@ def to_html(graph: Graph, *, title: str = "chainscope") -> str:
     summary = payload["summary"]
 
     totals = graph.totals_by_asset()
-    # Per asset, never combined: two assets summed into one number is a figure
-    # denominated in nothing.
+    # Per asset, never combined --- two assets summed into one number is a
+    # figure denominated in nothing --- and per *contract*, not per symbol. On a
+    # real case this panel showed three rows reading `ETH` and two reading
+    # `USDC`, because the strings differ (Cyrillic against Latin) while looking
+    # the same. The contract disambiguates them, and without it the reader has
+    # no way to tell which row is the real asset.
     total_rows = "".join(
         f'<div class="row"><span class="k">{html.escape(sym or "native")}</span>'
-        f'<span class="v">{raw}</span></div>'
-        for sym, raw in sorted(totals.items())
+        f'<span class="v">{human(str(raw), places)}</span></div>'
+        f'<div class="row sub"><span class="k mono">'
+        f"{html.escape(contract or 'native --- no contract to forge')}</span></div>"
+        for (contract, sym, places), raw in sorted(
+            totals.items(), key=lambda item: (-item[1], item[0])
+        )
     )
 
     legend = "".join(
@@ -380,9 +389,13 @@ def to_html(graph: Graph, *, title: str = "chainscope") -> str:
     </div>
     <p class="hint">Dashed outlines mark addresses that were seen but never
     expanded. The graph stops there because nobody looked further, not because
-    nothing is further. Totals are exact integers in each asset's smallest
-    unit &mdash; <code>wei</code>, <code>satoshi</code>, <code>MIST</code>
-    &mdash; and are never combined across assets.</p>
+    nothing is further.</p>
+    <p class="hint">Totals are computed on the digits, never through a float, so
+    they are exact &mdash; and they are never combined across assets. Each row
+    shows its <b>contract</b>, because the symbol is a string the deployer
+    chose: on a real case this panel held three rows reading <code>ETH</code>
+    and two reading <code>USDC</code>, identical to the eye and different
+    tokens.</p>
   </aside>
 </main>
 <script>{script}</script>

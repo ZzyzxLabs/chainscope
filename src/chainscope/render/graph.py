@@ -305,12 +305,25 @@ class Graph:
             "note": self.note,
         }
 
-    def totals_by_asset(self) -> dict[str, int]:
-        """Exact per-asset totals. Never one combined number --- see the module
-        docstring on why summing across assets produces a meaningless figure."""
-        out: dict[str, int] = {}
+    def totals_by_asset(self) -> dict[tuple[str, str, int], int]:
+        """Exact per-asset totals, keyed by ``(contract, symbol, decimals)``.
+
+        Never one combined number --- see the module docstring on why summing
+        across assets produces a meaningless figure. And never keyed by symbol
+        alone, which is a different error with the same shape: a token that
+        chose its ticker to be read as another one would have its total added
+        to the real asset's.
+
+        The panel that renders this showed three rows reading `ETH` and two
+        reading `USDC` on a real case, because the strings genuinely differ ---
+        Cyrillic against Latin --- while looking identical. A reader could not
+        tell which row was the real asset. The contract is the identity, so it
+        is the key and it is displayed.
+        """
+        out: dict[tuple[str, str, int], int] = {}
         for edge in self.edges.values():
-            out[edge.symbol] = out.get(edge.symbol, 0) + edge.total_raw
+            key = (edge.asset or "", edge.symbol, edge.decimals)
+            out[key] = out.get(key, 0) + edge.total_raw
         return out
 
     def __len__(self) -> int:

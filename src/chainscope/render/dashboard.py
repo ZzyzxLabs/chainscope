@@ -26,6 +26,7 @@ import html
 from dataclasses import dataclass, field
 from typing import Any
 
+from .amount import human
 from .html import _json_for_script
 
 __all__ = ["CaseSummary", "to_dashboard"]
@@ -172,32 +173,10 @@ td.n { text-align:right; }
 """
 
 
-#: Fraction digits kept once something is actually visible.
-_PLACES = 6
-
-
-def _fmt(raw: str, decimals: int = 18) -> str:
-    """Render an exact integer amount without ever touching a float.
-
-    Six *significant* fraction digits, not six fraction digits. Cutting at a
-    fixed position turned one wei into ``0.000000`` and 0.000012345 ETH into
-    ``0.000012`` --- the first reads as nothing moved, which is the wrong thing
-    to tell a reader looking at a peel chain or an address-poisoning transfer,
-    where a dust amount *is* the signal. So when the whole part is zero the
-    leading zeros of the fraction are counted separately from the digits kept,
-    and a small number stays small rather than becoming none.
-    """
-    negative = raw.startswith("-")
-    digits = (raw[1:] if negative else raw).rjust(decimals + 1, "0")
-    whole = digits[: len(digits) - decimals] or "0"
-    frac = digits[len(digits) - decimals :].rstrip("0") if decimals else ""
-    if frac:
-        keep = _PLACES
-        if int(whole) == 0:
-            keep += len(frac) - len(frac.lstrip("0"))
-        frac = frac[:keep]
-    grouped = f"{int(whole):,}"
-    return ("-" if negative else "") + grouped + (f".{frac}" if frac else "")
+#: The shared formatter. Kept as a module-level name because the tests and the
+#: templates in this file reference it, and moved out because three modules
+#: imported it from here --- one of which closed an import cycle.
+_fmt = human
 
 
 def _card(value: str, label: str, why: str = "", tone: str = "") -> str:
