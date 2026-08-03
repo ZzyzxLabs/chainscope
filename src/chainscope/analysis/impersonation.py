@@ -628,7 +628,22 @@ def trusted_assets(transfers: list[Any], chain: ChainId | None = None) -> set[st
     transfers the attacker invented.
     """
     trusted = {""}
+    # By CONTRACT, not by verdict. The verdict is reached from `(chain, symbol)`,
+    # and the symbol is the part the attacker chooses --- so a transfer of the
+    # real USDC contract whose `symbol` a provider happened to omit came back
+    # `unlisted`, was therefore untrusted, and every route through it turned
+    # into "the attacker drew this" with nothing said. Silent, and in the
+    # direction of disbelieving real evidence.
+    #
+    # This module's own thesis is compare the contract, never the symbol string.
+    # Asking the registry by symbol here was the one place that did not.
+    canonical = {
+        contract
+        for (namespace, _symbol), contracts in CANONICAL.items()
+        if chain is None or namespace == str(chain)
+        for contract in contracts
+    }
     for asset in inspect_assets(transfers, chain):
-        if asset.verdict == Verdict.GENUINE:
+        if asset.verdict == Verdict.GENUINE or asset.contract in canonical:
             trusted.add(asset.contract)
     return trusted

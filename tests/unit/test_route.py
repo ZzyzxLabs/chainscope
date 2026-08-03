@@ -378,27 +378,49 @@ class TestTheSearchBudget:
 
 
 class TestForgedRoutesWithoutAChain:
-    def test_a_forged_hop_is_not_detected_without_one(self) -> None:
-        """Honest about a real limit.
-
-        `trusted_assets` needs the chain to know which contract is canonical.
-        Called without one, nothing is canonical, so every contract-borne hop
-        counts as untrusted --- which errs towards disbelief rather than
-        towards believing the attacker.
-        """
+    def test_a_forged_hop_is_still_caught_without_one(self) -> None:
+        """Without a chain, `trusted_assets` accepts a contract canonical on
+        *any* chain. A forgery is canonical on none, so it is still caught."""
         forged = "0xa599e8c7f4bac6512e250055a96a20a72bbac75e"
         rows = [_t("a", "m", 1, asset=forged), _t("m", "b", 2, asset=forged)]
         routes, _ = find_routes(rows, "a", "b")
         assert not routes[0].is_believable
         assert "route the attacker drew" in routes[0].describe()
 
-    def test_a_real_asset_is_also_disbelieved_without_a_chain(self) -> None:
-        # The cost of the conservative default, stated so nobody is surprised:
-        # pass `chain` to get a useful answer.
+    def test_a_real_asset_is_believed_without_a_chain_too(self) -> None:
+        """This used to fail, and the failure was silent.
+
+        Trust was decided from the *verdict*, which is reached from
+        `(chain, symbol)` --- and the symbol is the part the attacker chooses.
+        So a transfer of the real USDC contract whose symbol a provider omitted
+        came back `unlisted`, was untrusted, and every route through it turned
+        into "the attacker drew this" with nothing said. The check is now
+        contract membership, which is what this package's own rule says.
+        """
         real = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
         rows = [_t("a", "m", 1, asset=real), _t("m", "b", 2, asset=real)]
         routes, _ = find_routes(rows, "a", "b")
-        assert not routes[0].is_believable
+        assert routes[0].is_believable
+
+    def test_a_real_contract_with_no_symbol_is_still_believed(self) -> None:
+        # The case that exposed it: several providers omit `symbol`, and
+        # disbelieving real evidence is the expensive direction to be wrong in.
+        from chainscope.core.chainid import ETHEREUM
+
+        real = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+        rows = [
+            SimpleNamespace(
+                sender=SimpleNamespace(key=a),
+                recipient=SimpleNamespace(key=b),
+                timestamp=T0 + timedelta(minutes=m),
+                asset=SimpleNamespace(key=real),
+                amount=SimpleNamespace(raw=100, symbol=""),
+                tx=SimpleNamespace(hash=f"0x{m}"),
+            )
+            for a, b, m in (("a", "m", 1), ("m", "b", 2))
+        ]
+        routes, _ = find_routes(rows, "a", "b", chain=ETHEREUM)
+        assert routes[0].is_believable
 
     def test_and_believed_once_the_chain_is_given(self) -> None:
         from chainscope.core.chainid import ETHEREUM
