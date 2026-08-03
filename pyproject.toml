@@ -113,6 +113,7 @@ explorer_nametags = "chainscope.attribution.sources.etherscan_dump:ExplorerDumpS
 local = "chainscope.attribution.sources.local:LocalSource"
 darklist = "chainscope.attribution.sources.darklist:DarklistSource"
 eth_labels = "chainscope.attribution.sources.ethlabels:EthLabelsSource"
+contracts_list = "chainscope.attribution.sources.contracts_list:ContractsListSource"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chainscope"]

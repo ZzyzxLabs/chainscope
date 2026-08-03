@@ -231,6 +231,7 @@ class _Handlers:
         `Resolution.failed` carries it, and the caller reports `reliable`.
         """
         from ..attribution.resolver import Resolver
+        from ..attribution.sources.contracts_list import ContractsListSource
         from ..attribution.sources.darklist import DarklistSource
         from ..attribution.sources.ethlabels import EthLabelsSource
         from ..attribution.sources.local import LocalSource
@@ -246,6 +247,7 @@ class _Handlers:
             OfacSource(base / "ofac.json"),
             DarklistSource(base / "darklist.json"),
             EthLabelsSource(base / "eth-labels"),
+            ContractsListSource(base / "contracts"),
             LocalSource(base / "local.json"),
         ):
             if source.ready():

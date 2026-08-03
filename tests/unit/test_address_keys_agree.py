@@ -208,6 +208,9 @@ class TestTheCaseFoldDoesNotSpread:
         # returning an empty list --- so the hex fold is correct and cannot be
         # reached by a base58 address.
         "attribution/sources/ethlabels.py",
+        # Keyed by EVM chain reference --- the registry's directories are chain
+        # IDs, so every address in it is hex and the fold is correct.
+        "attribution/sources/contracts_list.py",
         "analysis/revenue.py",  # guarded by _fold
         "providers/jsonrpc.py",
         "providers/etherscan.py",

@@ -21,6 +21,7 @@ fails the build otherwise --- see [CONTRIBUTING](../CONTRIBUTING.md).
 | `local` | `LocalSource` | `MEDIUM` | N/A --- your own data |
 | `darklist` | `DarklistSource` | `MEDIUM` | Yes --- MIT |
 | `eth_labels` | `EthLabelsSource` | `MEDIUM` | **No** --- see below |
+| `contracts_list` | `ContractsListSource` | `MEDIUM` | **No** --- no licence declared |
 
 The ceilings are enforced in code (`SourceMeta.max_confidence`), not merely
 documented. A community nametag dump cannot assert `CERTAIN` even if its adapter
@@ -41,6 +42,30 @@ passes that value in.
   returning an unqualified empty list when asked about a non-Ethereum chain.
 - **Staleness is one-directional.** The list does not un-report, so a hit is a
   statement about the past. Each entry's date travels with the attribution.
+
+## `contracts_list` --- named contracts, with their own provenance
+
+- **Canonical:** <https://github.com/ethereum-lists/contracts>
+- **Fetch:** `contracts_list.clone()` --- a depth-1 `git clone`, ~45 MB.
+  **252,268** contract files across many chains as of August 2026.
+- **Why cloned and not crawled:** one JSON file per contract. Sixty thousand
+  HTTP requests to build a label table is not a thing to do to GitHub or to
+  somebody's rate limit.
+- **Licence: none declared.** GitHub reports no licence, so the default applies
+  and there is no permission to redistribute. `redistributable` is `False` and
+  the data is never bundled --- shipping it would be a licence violation dressed
+  as convenience.
+- **Ceiling:** `MEDIUM`. Each record carries a `source` field naming where the
+  name came from (`dune`, and others), which is more provenance than any other
+  open dump here offers --- and it is still somebody else's judgement recorded
+  without evidence.
+- **A contract name is not an entity attribution.** "This contract belongs to
+  the topbidder project" is much narrower than "this address is controlled by
+  X", so entries are `CONTRACT`. Reading a deployment record as an ownership
+  claim is the error that distinction prevents.
+- **Chain is required.** The registry is keyed by chain reference and the same
+  twenty bytes are a different contract on each; a chainless lookup would
+  attribute one deployment's name to another.
 
 ## `eth_labels` --- the largest open address dump
 
@@ -77,7 +102,7 @@ August 2026:
 | Dune `labels.addresses` | Needs an API key; not anonymously downloadable |
 | WalletLabels | Commercial API, no open dataset |
 | OpenChain | Reachable, but it maps **function selectors**, not addresses |
-| `ethereum-lists/contracts` | Alive, ≥200k contracts --- **worth adding next**; no explicit dataset licence |
+| `ethereum-lists/contracts` | **Added** --- see above. 252,268 files, no declared licence |
 | L2Beat / DefiLlama | Alive, but protocol registries rather than address attribution |
 
 Being on a recommendation list and being obtainable are different properties,
