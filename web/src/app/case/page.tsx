@@ -176,6 +176,7 @@ export default function CasePage() {
         <label className="spacing" title="spread the columns out">
           <input
             type="range"
+            aria-label="column spacing"
             min={0.5}
             max={2}
             step={0.1}
@@ -185,6 +186,7 @@ export default function CasePage() {
         </label>
         <input
           className="wm"
+          aria-label="watermark drawn across the graph"
           value={watermark}
           onChange={(event) => setWatermark(event.target.value)}
           placeholder="watermark"
@@ -273,6 +275,7 @@ export default function CasePage() {
           <span className="muted">up to</span>
           <input
             type="range"
+            aria-label="show flows up to this time"
             min={timeRange.min}
             max={timeRange.max}
             value={since ?? timeRange.max}
@@ -286,7 +289,16 @@ export default function CasePage() {
         </div>
       ) : null}
 
-      <footer className={`case-status ${status.tone}`}>{status.text}</footer>
+      {/* A live region: the status line is where truncation and fetch results
+          are reported, and a reader who cannot see it would otherwise never
+          learn that a walk stopped early. */}
+      <footer
+        className={`case-status ${status.tone}`}
+        role="status"
+        aria-live="polite"
+      >
+        {status.text}
+      </footer>
 
       {asking ? (
         <AskDialog

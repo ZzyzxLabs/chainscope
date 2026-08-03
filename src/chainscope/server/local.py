@@ -637,6 +637,7 @@ class _Handlers:
         if not address:
             raise ValueError("address is required")
         chain = self._chain(_first(query, "chain") or "1") or ChainId.evm(1)
+        _check_address(address, chain)
         depth = max(1, min(int(_first(query, "depth") or "3"), 6))
         max_nodes = max(2, min(int(_first(query, "max_nodes") or "60"), 400))
 
@@ -971,6 +972,30 @@ def _landing_for(options: ServerOptions) -> str:
         except Exception:
             transfers = 0
     return site.landing_page(options.store.exists(), str(options.store), transfers)
+
+
+def _check_address(address: str, chain: ChainId) -> None:
+    """Reject an address this chain cannot possibly hold, before spending a request.
+
+    `notanaddress` reached Blockscout and came back "Invalid address format"
+    after a network round trip --- a rate-limit slot and a second of latency
+    spent to learn something the chain adapter already knew. `is_valid` has
+    been there all along; the server simply never asked.
+
+    Silent on an unknown namespace rather than guessing: an adapter this build
+    does not carry cannot judge, and refusing an address because we lack its
+    adapter would be worse than letting the provider answer.
+    """
+    from ..chains import adapter_for
+
+    adapter = adapter_for(str(chain).split(":", 1)[0])
+    if adapter is None:
+        return
+    if not adapter.is_valid(address):
+        raise ValueError(
+            f"{address!r} is not a valid address on {chain}. Checked locally, "
+            f"so no request was spent finding out"
+        )
 
 
 def _int_or_none(text: str | None) -> int | None:
