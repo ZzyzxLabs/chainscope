@@ -147,6 +147,9 @@ class _Handlers:
 
     # ------------------------------------------------------------------ store
 
+    #: The resolver, once built. See `_from_sources`.
+    _resolver: Any = None
+
     def _store(self) -> SqliteStore:
         if not self.options.store.exists():
             raise FileNotFoundError(
@@ -237,6 +240,14 @@ class _Handlers:
         from ..attribution.sources.local import LocalSource
         from ..attribution.sources.ofac import OfacSource
 
+        # Built once and kept. Constructing it per call rebuilt every source
+        # for every node --- including the contract registry's quarter-million
+        # filename index --- which took a twenty-node graph from under a second
+        # to 8.7. Measured after wiring the sources in, not before: the cost is
+        # invisible until a source with a real index exists.
+        if self._resolver is not None:
+            return list(self._claims(self._resolver, address, chain))
+
         base = self.options.store.parent.parent / "data" / "labels"
         resolver = Resolver()
         # Only the ones whose data is actually present. `ready()` is the
@@ -252,6 +263,11 @@ class _Handlers:
         ):
             if source.ready():
                 resolver.add(source)
+        self._resolver = resolver
+        return list(self._claims(resolver, address, chain))
+
+    @staticmethod
+    def _claims(resolver: Any, address: str, chain: ChainId | None) -> list[Any]:
         if not resolver.sources:
             return []
         found = resolver.resolve(address, chain)
