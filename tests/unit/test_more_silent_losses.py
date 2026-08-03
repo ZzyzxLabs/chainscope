@@ -20,6 +20,7 @@ from chainscope.pricing.binance import BinanceKlines
 from chainscope.providers.base import ProviderError
 from chainscope.providers.etherscan import _row_index
 from chainscope.store.sqlite import SqliteStore
+from tests.conftest import NetworkAccessAttempted
 
 A = Address(ETHEREUM, "0x" + "a" * 40, "0x" + "a" * 40)
 B = Address(ETHEREUM, "0x" + "b" * 40, "0x" + "b" * 40)
@@ -796,41 +797,35 @@ class TestTheNetworkGuardHasNoSideDoors:
     reached a DNS server without the guard seeing it.
     """
 
-    def _install(self, monkeypatch):
-        import socket
-        import sys
+    # No fixture and no monkeypatch: the guard is installed when `conftest` is
+    # imported, so it is already on. These tests used to install it themselves
+    # via `import conftest`, which loaded a *second copy* of the module under a
+    # second name --- harmless while the guard lived in a fixture, and fatal
+    # once import-time installation meant the second copy rebound the socket
+    # methods to its own functions, raising its own exception class. Every later
+    # test catching `NetworkAccessAttempted` then failed to catch it.
 
-        sys.path.insert(0, "tests")
-        import conftest as guard
-
-        monkeypatch.setattr(socket, "socket", guard._GuardedSocket)
-        monkeypatch.setattr(socket, "getaddrinfo", guard._guarded_getaddrinfo)
-        return guard
-
-    def test_sendmsg_to_a_remote_address_is_refused(self, monkeypatch) -> None:
+    def test_sendmsg_to_a_remote_address_is_refused(self) -> None:
         import socket
 
-        guard = self._install(monkeypatch)
-        sock = guard._GuardedSocket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            with pytest.raises(guard.NetworkAccessAttempted):
+            with pytest.raises(NetworkAccessAttempted):
                 sock.sendmsg([b"x"], [], 0, ("8.8.8.8", 53))
         finally:
             sock.close()
 
-    def test_resolving_a_remote_name_is_refused(self, monkeypatch) -> None:
+    def test_resolving_a_remote_name_is_refused(self) -> None:
         import socket
 
-        guard = self._install(monkeypatch)
-        with pytest.raises(guard.NetworkAccessAttempted):
+        with pytest.raises(NetworkAccessAttempted):
             socket.getaddrinfo("example.com", 80)
 
     @pytest.mark.parametrize("host", ["localhost", "127.0.0.1"])
-    def test_loopback_still_resolves(self, monkeypatch, host: str) -> None:
+    def test_loopback_still_resolves(self, host: str) -> None:
         # The local server tests need it, and `localhost` reaches nobody.
         import socket
 
-        self._install(monkeypatch)
         assert socket.getaddrinfo(host, 80)
 
 

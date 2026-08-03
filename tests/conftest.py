@@ -9,6 +9,26 @@ faster than missing features do.
 So the rule is enforced rather than documented: sockets are disabled for the
 whole suite. A test that genuinely needs the network must say so explicitly with
 ``@pytest.mark.network``, and those are deselected by default.
+
+**Installed when this file is imported, not when a test starts.** It used to go
+on in an autouse fixture, which covers a test's body and nothing else. Measured,
+five things went straight out:
+
+* module-level code in a test file, which runs at collection
+* a ``session``-scoped fixture
+* a ``module``-scoped fixture
+* ``from socket import getaddrinfo`` --- the name was bound before the fixture
+  replaced the module attribute, so the guard never saw it
+* ``from socket import socket``, likewise, and then ``.connect`` on it
+
+The last two are the reason the guard patches **methods on the socket class**
+rather than swapping ``socket.socket`` for a subclass. A caller holding the
+class object directly --- which is what a from-import is, and what several HTTP
+libraries do at import time --- kept the real ``connect``. Patching the class in
+place leaves nowhere to hold a reference to.
+
+That inverts the fixture's job: the guard is on by default and the fixture
+*lifts* it for a test marked ``network``.
 """
 
 from __future__ import annotations
@@ -19,7 +39,10 @@ from typing import Any
 
 import pytest
 
-_real_socket = socket.socket
+_real_connect = socket.socket.connect
+_real_connect_ex = socket.socket.connect_ex
+_real_sendto = socket.socket.sendto
+_real_sendmsg = socket.socket.sendmsg
 _real_create_connection = socket.create_connection
 _real_getaddrinfo = socket.getaddrinfo
 
@@ -63,59 +86,59 @@ def _is_local(address: Any) -> bool:
     return host.strip("[]") in _LOOPBACK
 
 
-class _GuardedSocket(_real_socket):  # type: ignore[misc,valid-type]
-    """A socket that can be created freely but only connected locally.
+# Free functions bound onto `socket.socket` below. Written as functions rather
+# than as a subclass because a subclass only guards code that goes through
+# `socket.socket` *at call time*, and a from-import does not.
+#
+# Two earlier attempts were both wrong, and the way they were wrong is worth
+# keeping written down.
+#
+# Blocking `socket.socket` outright broke every async test: `asyncio.run` builds
+# a self-pipe, and a self-pipe reaches nobody.
+#
+# Allowing everything except AF_INET/AF_INET6 fixed that on Unix and broke
+# Windows, where the proactor event loop's self-pipe *is* an AF_INET socket over
+# loopback. The family says nothing about whether a connection leaves the
+# machine. The destination does, and it is only known at `connect` time.
 
-    Two earlier attempts were both wrong, and the way they were wrong is worth
-    keeping written down.
 
-    Blocking ``socket.socket`` outright broke every async test: ``asyncio.run``
-    builds a self-pipe, and a self-pipe reaches nobody.
+def _connect(self: Any, address: Any) -> None:
+    if not _is_local(address):
+        raise _refuse()
+    _real_connect(self, address)
 
-    Allowing everything except ``AF_INET``/``AF_INET6`` fixed that on Unix and
-    broke Windows, where the proactor event loop's self-pipe *is* an AF_INET
-    socket over loopback. The family says nothing about whether a connection
-    leaves the machine.
 
-    The destination does, and it is only known at ``connect`` time --- so that
-    is where the check belongs.
+def _connect_ex(self: Any, address: Any) -> int:
+    if not _is_local(address):
+        raise _refuse()
+    return int(_real_connect_ex(self, address))
+
+
+def _sendto(self: Any, data: Any, *args: Any) -> int:
+    """Datagrams carry their destination per call.
+
+    An unconnected UDP socket never touches `connect`, so guarding that alone
+    leaves a route out: `sendto(payload, ("8.8.8.8", 53))` would have gone
+    straight through.
     """
+    destination = args[-1] if args else None
+    if destination is not None and not _is_local(destination):
+        raise _refuse()
+    return int(_real_sendto(self, data, *args))
 
-    def connect(self, address: Any) -> None:
-        if not _is_local(address):
-            raise _refuse()
-        super().connect(address)
 
-    def connect_ex(self, address: Any) -> int:
-        if not _is_local(address):
-            raise _refuse()
-        return int(super().connect_ex(address))
+def _sendmsg(self: Any, *args: Any, **kwargs: Any) -> int:
+    """The same route as `sendto`, and it was open.
 
-    def sendto(self, data: Any, *args: Any) -> int:
-        """Datagrams carry their destination per call.
-
-        An unconnected UDP socket never touches `connect`, so guarding that
-        alone leaves a route out: `sendto(payload, ("8.8.8.8", 53))` would have
-        gone straight through.
-        """
-        destination = args[-1] if args else None
-        if destination is not None and not _is_local(destination):
-            raise _refuse()
-        return int(super().sendto(data, *args))
-
-    def sendmsg(self, *args: Any, **kwargs: Any) -> int:
-        """The same route as `sendto`, and it was open.
-
-        `sendmsg(buffers, ancdata, flags, address)` carries its destination in
-        the fourth positional argument. The reasoning written above for
-        `sendto` --- an unconnected socket never touches `connect`, so guarding
-        that alone leaves a route out --- applies here unchanged, and this one
-        was not guarded. Measured: `sendmsg` to 8.8.8.8 went straight through.
-        """
-        destination = args[3] if len(args) > 3 else kwargs.get("address")
-        if destination is not None and not _is_local(destination):
-            raise _refuse()
-        return int(super().sendmsg(*args, **kwargs))
+    `sendmsg(buffers, ancdata, flags, address)` carries its destination in the
+    fourth positional argument. The reasoning written above for `sendto` applies
+    here unchanged, and this one was not guarded. Measured: `sendmsg` to 8.8.8.8
+    went straight through.
+    """
+    destination = args[3] if len(args) > 3 else kwargs.get("address")
+    if destination is not None and not _is_local(destination):
+        raise _refuse()
+    return int(_real_sendmsg(self, *args, **kwargs))
 
 
 def _guarded_create_connection(address: Any, *args: Any, **kwargs: Any) -> Any:
@@ -140,21 +163,59 @@ def _guarded_getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
     return _real_getaddrinfo(host, *args, **kwargs)
 
 
-@pytest.fixture(autouse=True)
-def _no_network(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Disable networked sockets unless the test is marked ``network``."""
-    if request.node.get_closest_marker("network"):
-        yield
-        return
-    socket.socket = _GuardedSocket  # type: ignore[assignment,misc]
+#: Set on the `socket` module, not here, so a *second copy* of this file loaded
+#: under a second module name can see it. That happened: a test did `import
+#: conftest` while pytest had already loaded the same file as `tests.conftest`,
+#: and the second copy re-ran `_install()` --- capturing the first copy's
+#: guarded functions as its "real" ones, and raising its own, different
+#: `NetworkAccessAttempted` that no caller could catch. Harmless while the guard
+#: lived in a fixture; not once import installs it.
+_INSTALLED = "_chainscope_network_guard"
+
+
+def _install() -> None:
+    if getattr(socket, _INSTALLED, None) not in (None, __name__):
+        raise RuntimeError(
+            f"the network guard is already installed by {getattr(socket, _INSTALLED)!r}. "
+            f"This file has been imported twice under two names --- import it as "
+            f"`tests.conftest`, not `conftest`, so there is one guard and one "
+            f"exception class."
+        )
+    setattr(socket, _INSTALLED, __name__)
+    socket.socket.connect = _connect  # type: ignore[method-assign]
+    socket.socket.connect_ex = _connect_ex  # type: ignore[method-assign]
+    socket.socket.sendto = _sendto  # type: ignore[method-assign]
+    socket.socket.sendmsg = _sendmsg  # type: ignore[method-assign]
     socket.create_connection = _guarded_create_connection  # type: ignore[assignment]
     socket.getaddrinfo = _guarded_getaddrinfo  # type: ignore[assignment]
+
+
+def _lift() -> None:
+    socket.socket.connect = _real_connect  # type: ignore[method-assign]
+    socket.socket.connect_ex = _real_connect_ex  # type: ignore[method-assign]
+    socket.socket.sendto = _real_sendto  # type: ignore[method-assign]
+    socket.socket.sendmsg = _real_sendmsg  # type: ignore[method-assign]
+    socket.create_connection = _real_create_connection
+    socket.getaddrinfo = _real_getaddrinfo
+
+
+# At import, so that collection, module-level code and every fixture scope are
+# covered --- and so that a test module's own `from socket import ...` binds the
+# guarded names. See the module docstring for what was escaping.
+_install()
+
+
+@pytest.fixture(autouse=True)
+def _no_network(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Lift the guard for a test marked ``network``; leave it on otherwise."""
+    if not request.node.get_closest_marker("network"):
+        yield
+        return
+    _lift()
     try:
         yield
     finally:
-        socket.socket = _real_socket  # type: ignore[misc]
-        socket.create_connection = _real_create_connection
-        socket.getaddrinfo = _real_getaddrinfo
+        _install()
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
