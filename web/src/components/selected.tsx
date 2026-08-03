@@ -17,6 +17,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { Spinner } from "@/components/spinner";
 import { api, boot, type ExpandReply, type ResolveReply } from "@/lib/api";
 
 type Props = {
@@ -26,6 +27,8 @@ type Props = {
   frontier: string[];
   /** An analyzer the reader arrived asking for, from `/case/?run=`. */
   highlight?: string | null;
+  /** Report what is in flight, so the page can show a bar. */
+  onWork?: (state: { on: boolean; done?: number; total?: number; label?: string }) => void;
   onReload: () => void;
   say: (text: string, tone?: string) => void;
 };
@@ -39,7 +42,15 @@ type Registered = {
   needs: string[];
 };
 
-export function Selected({ address, chain, frontier, highlight, onReload, say }: Props) {
+export function Selected({
+  address,
+  chain,
+  frontier,
+  highlight,
+  onWork,
+  onReload,
+  say,
+}: Props) {
   const [found, setFound] = useState<ResolveReply | null>(null);
   const [expanding, setExpanding] = useState(false);
   const [out, setOut] = useState(true);
@@ -61,6 +72,7 @@ export function Selected({ address, chain, frontier, highlight, onReload, say }:
 
   const run = useCallback(
     async (item: Registered) => {
+      onWork?.({ on: true, label: item.name });
       const missing = item.needs.filter((n) => !params[n]?.trim());
       if (missing.length) {
         // Asked for, not guessed. Running with a blank required parameter
@@ -68,6 +80,7 @@ export function Selected({ address, chain, frontier, highlight, onReload, say }:
         // worse way to learn it than a field.
         setOpen(item.name);
         say(`${item.name} needs ${missing.join(" and ")}`, "warn");
+        onWork?.({ on: false });
         return;
       }
       try {
@@ -91,9 +104,11 @@ export function Selected({ address, chain, frontier, highlight, onReload, say }:
       } catch (err) {
         say(`${item.name}: ${(err as Error).message}`, "bad");
         setResult((err as Error).message);
+      } finally {
+        onWork?.({ on: false });
       }
     },
-    [address, chain, params, say],
+    [address, chain, params, say, onWork],
   );
 
   useEffect(() => {
@@ -123,6 +138,14 @@ export function Selected({ address, chain, frontier, highlight, onReload, say }:
       return;
     }
     setExpanding(true);
+    // Counted when there is more than one address: the reader can see it
+    // moving, and a stalled batch looks different from a slow one.
+    onWork?.({
+      on: true,
+      total: targets.length > 1 ? targets.length : undefined,
+      done: targets.length > 1 ? 0 : undefined,
+      label: targets.length > 1 ? "expanding" : "fetching one hop",
+    });
     try {
       // The relative window resolves here, against the reader's clock, and
       // travels as an absolute instant. If the server interpreted "last 7 days"
@@ -156,9 +179,10 @@ export function Selected({ address, chain, frontier, highlight, onReload, say }:
       say(`expand failed: ${(err as Error).message}`, "bad");
     } finally {
       setExpanding(false);
+      onWork?.({ on: false });
     }
     },
-    [chain, out, into, window_, say, onReload],
+    [chain, out, into, window_, say, onReload, onWork],
   );
 
   if (!address) {
@@ -227,13 +251,15 @@ export function Selected({ address, chain, frontier, highlight, onReload, say }:
       </div>
       <div className="ctl">
         <button onClick={() => expand(address ? [address] : [])} disabled={expanding}>
-          {expanding ? "fetching…" : "expand one hop"}
+          {expanding ? <Spinner /> : null}
+          {expanding ? "fetching" : "expand one hop"}
         </button>
       </div>
       {frontier.length > 1 ? (
         <div className="ctl">
           <button onClick={() => expand(frontier)} disabled={expanding}>
-            {expanding ? "fetching…" : `open the whole frontier (${frontier.length})`}
+            {expanding ? <Spinner /> : null}
+            {expanding ? "fetching" : `open the whole frontier (${frontier.length})`}
           </button>
         </div>
       ) : null}

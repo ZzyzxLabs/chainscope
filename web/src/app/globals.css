@@ -504,3 +504,39 @@ label.asset input { accent-color: var(--cs-accent); }
 .params { display: flex; flex-direction: column; gap: 6px; margin: 0 0 10px; }
 .params input { font-size: 12px; padding: 6px 8px; background: var(--cs-paper);
   color: var(--cs-ink); border: var(--cs-hair) solid var(--cs-line-soft); }
+
+/* Working indicators. Thin, top-edge, never over the canvas — this sits above
+   a graph somebody is reading. */
+.busy {
+  position: relative; height: 2px; flex: none; background: var(--cs-line-soft);
+  overflow: hidden;
+}
+.busy-fill {
+  height: 100%; background: var(--cs-accent); transition: width .2s ease;
+}
+/* Indeterminate: animates without claiming a position. A fake percentage that
+   jumps to 90% and waits is a lie about progress. */
+.busy-fill.sliding {
+  width: 34%; animation: slide 1.05s ease-in-out infinite;
+}
+@keyframes slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(392%); }
+}
+.busy-label {
+  position: absolute; right: 8px; top: 4px; font-family: var(--cs-mono);
+  font-size: 10px; color: var(--cs-muted); background: var(--cs-bg);
+  padding: 0 5px; white-space: nowrap;
+}
+.spin {
+  display: inline-block; width: 8px; height: 8px; margin-right: 6px;
+  border: 1.5px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: spin .6s linear infinite; vertical-align: -1px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  /* Motion is the signal here, so it is not removed — only slowed to something
+     that does not pulse. A still bar would say "not working". */
+  .busy-fill.sliding { animation-duration: 2.4s; }
+  .spin { animation-duration: 1.6s; }
+}

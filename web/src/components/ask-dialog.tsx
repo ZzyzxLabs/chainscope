@@ -16,6 +16,7 @@
 
 import { useState } from "react";
 
+import { Spinner } from "@/components/spinner";
 import { api, type AskReply } from "@/lib/api";
 
 type Props = {
@@ -97,7 +98,8 @@ export function AskDialog({ chain, onClose, onRun }: Props) {
 
         <div className="ctl">
           <button onClick={read} disabled={reading}>
-            {reading ? "reading…" : "read it"}
+            {reading ? <Spinner /> : null}
+            {reading ? "reading" : "read it"}
           </button>
           <button onClick={() => plan && onRun(plan)} disabled={!plan}>
             run it

@@ -17,6 +17,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AskDialog } from "@/components/ask-dialog";
+import { Busy } from "@/components/busy";
+import { Spinner } from "@/components/spinner";
 import { Graph } from "@/components/graph";
 import { Selected } from "@/components/selected";
 import { api, type Asset, type GraphReply } from "@/lib/api";
@@ -46,6 +48,15 @@ export default function CasePage() {
   const [busy, setBusy] = useState(false);
   const [asking, setAsking] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
+  // Progress reported by the panel, so a batch expand of twenty addresses is a
+  // count rather than forty seconds of "fetching…", which is indistinguishable
+  // from a hang.
+  const [work, setWork] = useState<{
+    on: boolean;
+    done?: number;
+    total?: number;
+    label?: string;
+  }>({ on: false });
 
   const say = useCallback((text: string, tone = "") => setStatus({ text, tone }), []);
 
@@ -154,7 +165,8 @@ export default function CasePage() {
             ))}
           </select>
           <button type="submit" disabled={busy}>
-            {busy ? "opening…" : "open"}
+            {busy ? <Spinner /> : null}
+            {busy ? "opening" : "open"}
           </button>
         </form>
         <button onClick={() => setAsking(true)}>ask</button>
@@ -178,6 +190,10 @@ export default function CasePage() {
           placeholder="watermark"
         />
       </header>
+
+      {/* Under the toolbar rather than over the canvas: this is the one place
+          it cannot cover the thing somebody is waiting to see. */}
+      <Busy on={busy || work.on} done={work.done} total={work.total} label={work.label} />
 
       <main className="case-main">
         <aside>
@@ -246,6 +262,7 @@ export default function CasePage() {
           chain={`eip155:${chain}`}
           frontier={(graph?.nodes ?? []).filter((n) => n.frontier).map((n) => n.address)}
           highlight={pending}
+          onWork={setWork}
           onReload={() => load(address)}
           say={say}
         />
