@@ -48,6 +48,7 @@ from ..analysis.probing import (
 )
 from ..analysis.route import find_routes
 from ..analysis.taint import TaintPolicy, trace_origins, trace_taint
+from ..case.leads import LeadStore, Verdict
 from ..chains import address_key
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
@@ -974,6 +975,56 @@ def build_server(config: ServerConfig) -> MCPServer:
             out["truncated"] = clipped
         return out
 
+    @server.tool(
+        description=(
+            "List the leads recorded for this case --- places to look next, kept "
+            "strictly apart from anything concluded. A lead is NOT an "
+            "attribution: an ENS text record saying com.twitter=alice means "
+            "whoever controls that name typed 'alice' into a field, not that "
+            "the address belongs to @alice. Every lead carries the specific "
+            "step that would confirm it, and that step is always something a "
+            "PERSON does somewhere this tool cannot reach --- do not claim to "
+            "have verified one. Settled leads are returned too, including "
+            "refuted ones: the record that somebody already checked is what "
+            "stops the work being repeated, so read the reason before "
+            "suggesting a lead be chased."
+        )
+    )
+    def case_leads(
+        address: str | None = None,
+        only_open: bool = False,
+        case: str | None = None,
+    ) -> dict[str, Any]:
+        store = LeadStore(case or config.case)
+        try:
+            records = store.open_leads(address) if only_open else store.leads(address)
+            counts = store.summary()
+        finally:
+            store.close()
+        return {
+            "leads": [
+                {
+                    "id": r.id,
+                    "address": r.address,
+                    "kind": r.kind,
+                    "value": r.value,
+                    "source": r.source,
+                    "asserted_by": r.asserted_by,
+                    "verify_by": r.verify_by,
+                    "verdict": r.verdict.value,
+                    "reason": r.reason or None,
+                    "settled_by": r.settled_by or None,
+                }
+                for r in records
+            ],
+            "counts": counts,
+            "caveat": (
+                "An open lead is unverified by definition and is not a finding. "
+                "A refuted one is finished work --- somebody looked and it was "
+                "not there."
+            ),
+        }
+
     # ------------------------------------------------------------------ writing
 
     if config.writable:
@@ -1074,6 +1125,91 @@ def build_server(config: ServerConfig) -> MCPServer:
                 ),
             }
 
+        @server.tool(
+            description=(
+                "File a lead: somewhere to look next. NOT an attribution --- use "
+                "label_address for a claim about what an address IS. A lead is "
+                "something self-asserted by whoever wrote the source, and "
+                "verify_by must name the specific thing that would confirm it, "
+                "which is always something a person does off-chain. Filing the "
+                "same lead twice returns the existing one and says so; if it has "
+                "already been settled, read the reason instead of chasing it."
+            )
+        )
+        def record_lead(
+            address: str,
+            kind: str,
+            value: str,
+            source: str,
+            verify_by: str,
+            asserted_by: str = "",
+            chain: str | None = None,
+        ) -> dict[str, Any]:
+            from ..osint.leads import Lead
+
+            try:
+                lead = Lead(
+                    address=address,
+                    kind=kind,
+                    value=value,
+                    source=source,
+                    asserted_by=asserted_by or "whoever wrote the source",
+                    verify_by=verify_by,
+                )
+            except ValueError as exc:
+                raise AgentError(str(exc)) from None
+
+            store = LeadStore(config.case)
+            try:
+                lead_id, was_new = store.add(lead, config.agent_name, chain)
+                record = store.get(lead_id)
+            finally:
+                store.close()
+            return {
+                "id": lead_id,
+                "new": was_new,
+                "verdict": record.verdict.value,
+                "reason": record.reason or None,
+                "note": (
+                    "Recorded as a place to look. It is not evidence of anything."
+                    if was_new
+                    else f"Already on file, currently {record.verdict.value}."
+                ),
+            }
+
+        @server.tool(
+            description=(
+                "Record what checking a lead found. A reason is REQUIRED and "
+                "must state what was actually observed --- 'confirmed' with no "
+                "basis reads, once you are gone, exactly like a guess. Use "
+                "'unreachable' when the check could not be completed (account "
+                "deleted, site gone): that is different from 'refuted', which "
+                "says the claim is false. Nothing is deleted; the record that "
+                "somebody looked is the most useful thing here."
+            )
+        )
+        def settle_lead(lead_id: int, verdict: str, reason: str) -> dict[str, Any]:
+            try:
+                chosen = Verdict(verdict)
+            except ValueError:
+                raise AgentError(
+                    "verdict must be one of: "
+                    + ", ".join(v.value for v in Verdict if v is not Verdict.OPEN)
+                ) from None
+            store = LeadStore(config.case)
+            try:
+                record = store.settle(lead_id, chosen, reason, config.agent_name)
+            except ValueError as exc:
+                raise AgentError(str(exc)) from None
+            finally:
+                store.close()
+            return {
+                "id": record.id,
+                "verdict": record.verdict.value,
+                "reason": record.reason,
+                "settled_by": record.settled_by,
+            }
+
     return server
 
 
@@ -1153,6 +1289,9 @@ TOOLS = (
     "trace_stolen_funds",
     "trace_origins_of",
     "case_record",
+    "case_leads",
+    "record_lead (only with --writable)",
+    "settle_lead (only with --writable)",
     "label_address (only with --writable)",
     "record_note (only with --writable)",
 )

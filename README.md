@@ -214,7 +214,7 @@ authorship, and historical token decimals.
 
 **Interfaces**
 
-CLI (17 commands) · MCP agent (15 tools, including writes) · MV3 browser
+CLI (17 commands) · MCP agent (18 tools, including writes) · MV3 browser
 extension · third-party analyzers via entry points · Docker, Nix flake, and
 uvx.
 
