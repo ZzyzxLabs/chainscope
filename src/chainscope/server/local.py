@@ -580,18 +580,31 @@ class _Handlers:
         origin = f"browser:{self.options.agent_name}"
         supplied = str(body.get("source", "")).strip()
         source = f"{origin} (reported: {supplied})" if supplied else origin
+        # Inside the guard, not before it. Moving this lookup out of the try
+        # turned an unknown level from a named error into a bare KeyError ---
+        # caught by the test that exists to keep that message helpful.
+        try:
+            claimed = Confidence[str(body.get("confidence", "medium")).upper()]
+        except KeyError as exc:
+            raise ValueError(
+                f"unknown confidence {body.get('confidence')!r}; use one of: "
+                + ", ".join(c.name.lower() for c in Confidence)
+            ) from exc
+        rationale = str(body.get("rationale", "")).strip()
+        confidence = _browser_ceiling(claimed, rationale)
+
         try:
             attribution = Attribution(
                 label=label,
                 category=Category(str(body.get("category", "service"))),
-                confidence=Confidence[str(body.get("confidence", "medium")).upper()],
+                confidence=confidence,
                 # MANUAL: a person clicked this while reading the page. That is
                 # exactly the judgement the method field is meant to record.
                 method=Method.MANUAL,
                 source=source,
                 address=address,
                 chain=self._chain(body.get("chain")),
-                rationale=str(body.get("rationale", "")),
+                rationale=rationale,
                 # From the server, never the request --- the same reasoning as
                 # `source` above. A browser-written claim carried no analyst, so
                 # `report` filed a label a person had typed alongside bulk
@@ -617,7 +630,22 @@ class _Handlers:
                 "category": attribution.category.value,
                 "confidence": attribution.confidence.name,
                 "source": attribution.source,
-            }
+            },
+            # Said out loud when the claim was written weaker than it was
+            # asked for. A silent downgrade is its own defect: the writer
+            # believes the store holds CERTAIN, and it does not.
+            "downgraded": (
+                None
+                if confidence == claimed
+                else (
+                    f"asked for {claimed.name}, recorded {confidence.name}: "
+                    + (
+                        "only a published legal fact may assert CERTAIN"
+                        if claimed > Confidence.HIGH
+                        else "above MEDIUM needs a rationale"
+                    )
+                )
+            ),
         }
 
     # ------------------------------------------------------- the browsable UI
@@ -972,6 +1000,31 @@ def _landing_for(options: ServerOptions) -> str:
         except Exception:
             transfers = 0
     return site.landing_page(options.store.exists(), str(options.store), transfers)
+
+
+def _browser_ceiling(claimed: Confidence, rationale: str) -> Confidence:
+    """What a claim typed into a browser is allowed to assert.
+
+    `docs/data-sources.md` says the ceilings are enforced in code rather than
+    merely documented, and that only a published legal fact --- a sanctions
+    designation --- may assert CERTAIN. The web form was outside that rule: a
+    click could write CERTAIN with an empty rationale, and in the store that
+    then sat level with an OFAC listing.
+
+    Two limits, both from rules this package already states elsewhere:
+
+    * CERTAIN is refused outright. A person reading a page is making a
+      judgement, however well founded, and judgement is not a legal fact.
+    * Above MEDIUM needs a reason. The form already labels that field "why ---
+      required below medium" and then did not require it; a HIGH claim whose
+      rationale is empty tells a later reader nothing about why to believe it.
+
+    Lowering rather than raising, always, and the caller reports what it did.
+    """
+    capped = min(claimed, Confidence.HIGH)
+    if capped > Confidence.MEDIUM and not rationale:
+        return Confidence.MEDIUM
+    return capped
 
 
 def _check_address(address: str, chain: ChainId) -> None:

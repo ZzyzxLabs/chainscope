@@ -181,6 +181,22 @@ export function Graph({
                 className={classes.join(" ")}
                 transform={`translate(${node.x},${node.y})`}
                 onClick={() => onSelect(node.address)}
+                // Selecting an address is the primary interaction here, and
+                // it was reachable only with a mouse: 27 nodes, none in the
+                // tab order. The roster list gave a keyboard path to the same
+                // action, but a graph nobody can enter is not an accessible
+                // graph --- it is a picture with a workaround.
+                tabIndex={0}
+                role="button"
+                aria-label={`${node.label || (node.seed ? "seed" : "unlabelled")}, ${
+                  node.as_written || node.address
+                }${node.frontier ? ", frontier — its counterparties were never fetched" : ""}`}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelect(node.address);
+                  }
+                }}
               >
                 <rect width={CARD_W} height={CARD_H} rx={0} />
                 <text className="name" x={10} y={19}>
