@@ -130,12 +130,22 @@ const view = document.getElementById("view");
 
 // Amounts arrive as strings because they exceed what a JSON number holds
 // exactly. Formatting therefore works on the digits, never on a float.
+// Four *significant* fraction digits, not four fraction digits. Slicing at a
+// fixed position rendered one wei as "0.0000", which on a flow graph reads as
+// nothing having moved --- and a dust amount is the whole signal in a peel
+// chain or an address-poisoning transfer. Mirrors `_fmt` in dashboard.py;
+// tests/unit/test_amount_formatting_agrees.py holds the two together.
 function human(raw, decimals) {
   const neg = raw.startsWith("-");
   const digits = (neg ? raw.slice(1) : raw).padStart(decimals + 1, "0");
   const whole = digits.slice(0, digits.length - decimals) || "0";
   let frac = decimals ? digits.slice(digits.length - decimals) : "";
-  frac = frac.replace(/0+$/, "").slice(0, 4);
+  frac = frac.replace(/0+$/, "");
+  if (frac) {
+    let keep = 4;
+    if (/^0*$/.test(whole)) keep += frac.length - frac.replace(/^0+/, "").length;
+    frac = frac.slice(0, keep);
+  }
   const grouped = whole.replace(/\\B(?=(\\d{3})+(?!\\d))/g, ",");
   return (neg ? "-" : "") + grouped + (frac ? "." + frac : "");
 }

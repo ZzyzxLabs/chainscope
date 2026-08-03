@@ -55,10 +55,16 @@ class CaseSummary:
     has plenty --- but a reviewer will ask, and burying the count invites a
     reader to treat every label as equally solid."""
 
-    totals_by_asset: list[tuple[str, str, int]] = field(default_factory=list)
-    """``(symbol, raw_total_as_string, transfer_count)``. Strings because these
-    exceed what a JSON number holds exactly, and never summed across assets ---
-    that produces a figure denominated in nothing."""
+    totals_by_asset: list[tuple[str, str, int, int | None]] = field(default_factory=list)
+    """``(symbol, raw_total_as_string, transfer_count, decimals)``.
+
+    Strings because these exceed what a JSON number holds exactly, and never
+    summed across assets --- that produces a figure denominated in nothing.
+
+    ``decimals`` is carried rather than assumed. Without it the renderer used
+    18 for everything, and 1,000 USDC --- six decimals --- was displayed as
+    ``0.000000``. ``None`` means the store does not know, and the raw integer
+    is then shown as a raw integer instead of being scaled by a guess."""
 
     top_flows: list[dict[str, Any]] = field(default_factory=list)
     categories: list[tuple[str, int]] = field(default_factory=list)
@@ -87,8 +93,8 @@ class CaseSummary:
             "low_confidence": self.low_confidence,
             "coverage": round(self.coverage, 3),
             "totals_by_asset": [
-                {"symbol": s, "total_raw": t, "transfers": n}
-                for s, t, n in self.totals_by_asset
+                {"symbol": s, "total_raw": t, "transfers": n, "decimals": d}
+                for s, t, n, d in self.totals_by_asset
             ],
             "top_flows": self.top_flows,
             "categories": [{"name": c, "count": n} for c, n in self.categories],
@@ -145,12 +151,30 @@ td.n { text-align:right; }
 """
 
 
+#: Fraction digits kept once something is actually visible.
+_PLACES = 6
+
+
 def _fmt(raw: str, decimals: int = 18) -> str:
-    """Render an exact integer amount without ever touching a float."""
+    """Render an exact integer amount without ever touching a float.
+
+    Six *significant* fraction digits, not six fraction digits. Cutting at a
+    fixed position turned one wei into ``0.000000`` and 0.000012345 ETH into
+    ``0.000012`` --- the first reads as nothing moved, which is the wrong thing
+    to tell a reader looking at a peel chain or an address-poisoning transfer,
+    where a dust amount *is* the signal. So when the whole part is zero the
+    leading zeros of the fraction are counted separately from the digits kept,
+    and a small number stays small rather than becoming none.
+    """
     negative = raw.startswith("-")
     digits = (raw[1:] if negative else raw).rjust(decimals + 1, "0")
     whole = digits[: len(digits) - decimals] or "0"
-    frac = digits[len(digits) - decimals :].rstrip("0")[:6] if decimals else ""
+    frac = digits[len(digits) - decimals :].rstrip("0") if decimals else ""
+    if frac:
+        keep = _PLACES
+        if int(whole) == 0:
+            keep += len(frac) - len(frac.lstrip("0"))
+        frac = frac[:keep]
     grouped = f"{int(whole):,}"
     return ("-" if negative else "") + grouped + (f".{frac}" if frac else "")
 
@@ -256,10 +280,14 @@ def to_dashboard(summary: CaseSummary) -> str:
         "".join(
             "<tr>"
             + _cell(sym or "native")
-            + _cell(_fmt(total), klass="n", mono=True)
+            + _cell(
+                _fmt(total, places) if places is not None else f"{int(total):,} raw",
+                klass="n",
+                mono=True,
+            )
             + _cell(f"{count:,}", klass="n")
             + "</tr>"
-            for sym, total, count in s.totals_by_asset
+            for sym, total, count, places in s.totals_by_asset
         )
         or '<tr><td colspan="3">nothing recorded</td></tr>'
     )

@@ -133,9 +133,17 @@ def _summarise(
 
     # Summed in Python: SQLite's INTEGER is 64-bit and one 10 ETH transfer is
     # already 1e19 wei, so SUM() overflows before it has added anything.
-    totals: dict[str, list[int]] = {}
-    for row in conn.execute("SELECT symbol, amount_raw FROM transfers"):
-        bucket = totals.setdefault(row["symbol"] or "", [0, 0])
+    # Keyed by (symbol, decimals), not by symbol. The renderer had no decimals
+    # to work with and assumed 18, so 1,000 USDC --- six decimals --- appeared
+    # on the dashboard as 0.000000. And summing across decimals produces an
+    # integer denominated in nothing: 1000 USDC(6) plus 1 USDC(18) is neither
+    # 1001 nor anything else. The flows query on the next lines has been reading
+    # `decimals` all along; this one did not.
+    totals: dict[tuple[str, int | None], list[int]] = {}
+    for row in conn.execute("SELECT symbol, decimals, amount_raw FROM transfers"):
+        places = row["decimals"]
+        asset = (row["symbol"] or "", int(places) if places is not None else None)
+        bucket = totals.setdefault(asset, [0, 0])
         bucket[0] += int(row["amount_raw"])
         bucket[1] += 1
 
@@ -200,7 +208,10 @@ def _summarise(
         frontier=frontier,
         low_confidence=low_confidence,
         totals_by_asset=sorted(
-            ((sym, str(total), count) for sym, (total, count) in totals.items()),
+            (
+                (sym, str(total), count, places)
+                for (sym, places), (total, count) in totals.items()
+            ),
             key=lambda row: -row[2],
         ),
         top_flows=top_flows,
