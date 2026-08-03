@@ -164,6 +164,30 @@ aside.right textarea { margin-top: 4px; }
 .edge.asserted { stroke: var(--ok); stroke-dasharray: 6 4; opacity: 1; }
 .elabel.asserted { fill: var(--ok); }
 .eidx { fill: #5b62d6; }
+#landing-wrap {
+  position: absolute; inset: 0; overflow-y: auto; padding: 40px 34px 60px;
+}
+#landing-wrap.gone { display: none; }
+#landing h2 { font-size: 22px; letter-spacing: -.01em; color: var(--fg);
+  text-transform: none; margin: 0 0 10px; }
+#landing .lede { max-width: 62ch; color: #c3c8d6; margin: 0 0 12px; }
+#landing .state { max-width: 62ch; color: var(--muted); font-size: 13px;
+  border-left: 2px solid var(--line); padding-left: 12px; margin: 0 0 20px; }
+#landing .views {
+  display: grid; gap: 12px; margin: 22px 0 20px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+#landing article {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px 14px; font-size: 12.5px; line-height: 1.5;
+}
+#landing article h3 { margin: 0 0 3px; font-size: 13.5px; }
+#landing article p { margin: 0 0 6px; }
+#landing .where code { font-size: 11px; }
+#landing .for { color: #c3c8d6; }
+#landing .lim { color: var(--warn); }
+#landing .foot { font-size: 12px; color: var(--muted); }
+#landing a { color: var(--accent); }
 .vgroup {
   font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
   color: var(--muted); margin: 10px 0 1px; font-weight: 600;
@@ -1138,7 +1162,15 @@ async function runAnalysis(name, address) {
 
 // ------------------------------------------------------------------ loading
 
+// The landing goes as soon as there is a case to look at, and comes back if
+// the reader clears the field. It is an empty-state, not a splash screen.
+function showLanding(on) {
+  const wrap = document.getElementById("landing-wrap");
+  if (wrap) wrap.classList.toggle("gone", !on);
+}
+
 async function load(address) {
+  showLanding(false);
   say("reading the store…");
   try {
     const graph = await api("/graph", { address, chain: state.chain });
@@ -1243,6 +1275,12 @@ _TEMPLATE = """<!doctype html>
     <h2>addresses in view</h2><div class="roster" id="roster"></div>
   </aside>
   <div id="canvas"><svg id="g"></svg>
+    <!-- The front door, shown until a graph is loaded. A blank canvas cannot
+         tell a first-time reader whether the tool is broken, the store is
+         empty, or they simply have not typed anything --- and those need
+         different responses. LANDING is filled in server-side so the numbers
+         in it are this store's, not a guess. -->
+    <div id="landing-wrap">__LANDING__</div>
     <div id="timebar" style="display:none">
       <span class="muted">up to</span>
       <input id="time" type="range"><span id="timelab" class="muted">all</span>
@@ -1280,8 +1318,8 @@ _TEMPLATE = """<!doctype html>
 """
 
 
-def page(token: str) -> str:
-    """The page, with the API token baked in.
+def page(token: str, landing: str = "") -> str:
+    """The page, with the API token and the landing copy baked in.
 
     Rather than in a URL. Whoever can fetch this HTML can already reach the
     server --- it is loopback and same-origin --- so the token is no weaker
@@ -1293,6 +1331,11 @@ def page(token: str) -> str:
     """
     return (
         _TEMPLATE.replace("__CSS__", _CSS)
+        # Server-rendered rather than fetched, so the front door works before
+        # any request succeeds --- including when the store is missing, which
+        # is exactly when a reader most needs to be told what they are looking
+        # at. Substituted before `__JS__` for the ordering reason below.
+        .replace("__LANDING__", landing)
         # Before `__JS__`, because the script itself contains the placeholder's
         # name in a comment. Substituting in the other order would rewrite that
         # comment and leave the real one alone --- the same ordering mistake

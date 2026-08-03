@@ -49,7 +49,9 @@ from ..chains import address_key
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..providers.base import Capability, ProviderError, ResultTruncated
+from ..store.base import Query
 from ..store.sqlite import SqliteStore
+from . import site
 from .webapp import page as _page
 
 __all__ = ["LocalServer", "ServerOptions", "main"]
@@ -753,14 +755,63 @@ class _Handlers:
         }
 
     def health(self) -> dict[str, Any]:
+        """Whether this is working, and how much is in the case.
+
+        `transfers` is here because the page's footer reads it. Without it the
+        footer printed "0 transfers" for a store holding a thousand --- the
+        field was simply never sent, and `?? 0` in the page turned the absence
+        into a confident zero. The landing, which counts for itself, then
+        contradicted the footer on the same screen.
+        """
+        transfers = 0
+        if self.options.store.exists():
+            store = self._store()
+            try:
+                transfers = store.count(Query())
+            finally:
+                store.close()
         return {
             "ok": True,
             "store": str(self.options.store),
             "store_exists": self.options.store.exists(),
+            "transfers": transfers,
             "writable": self.options.writable,
             "categories": sorted(c.value for c in Category),
             "confidences": [c.name.lower() for c in Confidence],
         }
+
+
+#: Pages that describe the tool rather than the case. One table so a new page
+#: cannot be added without deciding its content type, and so the docs, the
+#: llms.txt index and the agent card stay reachable from one place.
+_SITE_PAGES: dict[str, tuple[str, Any]] = {
+    "/docs": ("text/html", lambda origin, _opt: site.docs_page(origin)),
+    "/llms.txt": ("text/plain", lambda origin, _opt: site.llms_txt(origin)),
+    "/.well-known/agent.json": (
+        "application/json",
+        lambda origin, opt: site.agent_card(origin, opt.writable),
+    ),
+}
+
+
+def _landing_for(options: ServerOptions) -> str:
+    """The front-door copy, with this store's state filled in.
+
+    Counting is cheap and failing to count must not blank the page: a store
+    that cannot be opened is itself the most useful thing to say, so the count
+    falls back to zero and the page reports the path either way.
+    """
+    transfers = 0
+    if options.store.exists():
+        try:
+            store = SqliteStore(options.store)
+            try:
+                transfers = store.count(Query())
+            finally:
+                store.close()
+        except Exception:
+            transfers = 0
+    return site.landing_page(options.store.exists(), str(options.store), transfers)
 
 
 def _int_or_none(text: str | None) -> int | None:
@@ -1078,9 +1129,29 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
             # here, and those are authorised. Requiring a token to fetch the
             # HTML would only put one in a URL somebody can copy.
             if parsed.path in ("/", "/index.html"):
-                body = _page(options.token).encode()
+                # The landing carries this store's real numbers. A generic
+                # "no data yet" cannot distinguish an empty store from a
+                # missing one, and those need different responses from the
+                # reader.
+                body = _page(options.token, _landing_for(options)).encode()
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            # Documentation and agent discovery. Unauthenticated for the same
+            # reason the page is: they carry no case data, only a description
+            # of what this tool is and what its answers mean. Requiring a token
+            # would make them unreachable to the agent that needs them most ---
+            # the one that has not been told what any of this is yet.
+            if parsed.path in _SITE_PAGES:
+                kind, render = _SITE_PAGES[parsed.path]
+                origin = f"http://{self.headers.get('Host', '127.0.0.1')}"
+                body = render(origin, options).encode()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", f"{kind}; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
