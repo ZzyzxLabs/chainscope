@@ -1,8 +1,9 @@
 # Address poisoning
 
-**Confidence produced:** none. It reports groups and the probability that they
-arose by chance, and explicitly refuses to nominate the real address unless one
-signal — a payment in a trustworthy asset — distinguishes it.
+**Confidence produced:** `MEDIUM` where one member is singled out by a payment
+in a trustworthy asset, `SPECULATIVE` otherwise — both as `Hypothesis` objects
+with their score factors exposed. That a group *exists* is arithmetic and is
+reported as a `Finding` with no confidence attached.
 **Implemented by:** `chainscope.analysis.poisoning.PoisoningAnalyzer`
 
 ---
@@ -28,8 +29,13 @@ chance collisions is `pairs / 2**32` and the probability of seeing any is
 `1 - exp(-expected)`.
 
 Measured on one real case: 36 counterparties, **nine** groups, against a
-coincidence probability of **1.5 × 10⁻⁷**. Nine is not luck; it is proof of
-grinding.
+coincidence probability of **1.5 × 10⁻⁷**.
+
+At that probability chance is not a plausible explanation, which is a statement
+about the *arithmetic* and not about anybody's intent. Deliberate grinding is by
+far the likeliest cause; a vanity-address service, or a set of addresses derived
+from one another, would also produce it. The finding is that these addresses are
+confusable and did not become so at random.
 
 `chance_of_collision` computes this for whatever set is in front of the reader,
 because "these look similar" invites "coincidences happen" — and they do, at a

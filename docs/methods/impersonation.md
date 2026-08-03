@@ -1,8 +1,9 @@
 # Asset impersonation
 
-**Confidence produced:** none of its own. It reports what an asset claims and
-what the registry says; the strongest positive statement it makes is `genuine`,
-which is contract identity rather than a judgement.
+**Confidence produced:** `MEDIUM`, and only for the Unicode-based verdicts,
+which are emitted as `Hypothesis` objects with their score factors exposed. The
+registry-based verdicts — `genuine` and `forged` — are `Finding`s carrying no
+confidence at all, because contract identity is settled rather than inferred.
 **Implemented by:** `chainscope.analysis.impersonation.ImpersonationAnalyzer`
 
 ---
@@ -93,7 +94,8 @@ identity — not that somebody set out to defraud.
 |---|---|
 | `genuine` | "This is USDC" — contract identity, the strongest statement here |
 | `forged` | "This claims to be USDC and is not"; quote the contract |
-| `lookalike` / `unknown-script` | "This renders identically to X"; quote the codepoint |
+| `lookalike` | "This folds to X under UTS #39"; quote the codepoint |
+| `unknown-script` | "This symbol contains characters outside ASCII" — **not** that it renders like anything in particular. Whether a reader would confuse it depends on the font, and this does not know |
 | `unlisted` | Say nothing about it either way |
 
 Every finding carries the codepoint and Unicode name of each suspect character,

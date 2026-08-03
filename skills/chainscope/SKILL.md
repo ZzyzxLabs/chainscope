@@ -172,9 +172,11 @@ invites "coincidences happen", and they do, at a rate the finding states.
 arithmetic and is reported as a finding. *Which member is genuine* is an
 inference, it is capped at MEDIUM, and its score factors are listed so you can
 disagree with one instead of with the conclusion. The same split applies to
-`impersonation`: a contract that is not the canonical one for its symbol is a
-finding --- the chain settles that --- while "this string renders like that
-string" is a hypothesis.
+`impersonation`: that a contract is *not the one this package's registry records
+for that symbol* is a finding --- an observable mismatch, not a judgement ---
+while "this string renders like that string" is a hypothesis. The registry is a
+curated list, not a chain-level fact; what the chain settles is which contract a
+transfer belongs to, and the finding is that the two disagree.
 
 It will often say **it cannot tell which one is real**, and that is the feature.
 A token contract emits its own transfer events, so a forged token can log a

@@ -45,6 +45,7 @@ than proof and a much stronger one than a line on a picture.
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -236,7 +237,12 @@ def _instant(value: Any) -> float | None:
             value = value.replace(tzinfo=timezone.utc)
         return float(value.timestamp())
     if isinstance(value, (int, float)):
-        return float(value)
+        number = float(value)
+        # NaN compares False against everything, so `hop.at < since` was always
+        # False and a NaN timestamp passed every ordering check --- manufacturing
+        # a route rather than being rejected by one. Infinity is not a moment
+        # either. Both are dropped and counted, like any undated transfer.
+        return number if math.isfinite(number) else None
     return None
 
 
@@ -671,10 +677,17 @@ class RouteAnalyzer(Analyzer):
             params={
                 "source": source,
                 "target": target,
+                "chain": str(ctx.chain),
                 "max_hops": max_hops,
                 "allow_hubs": allow_hubs,
                 "max_expand": max_expand,
                 "per_node": per_node,
+                # The resolved depth, not the requested one. `max_depth` is a
+                # context limit and `max_hops` an argument, and the search uses
+                # the smaller --- so recording either alone describes a run that
+                # may not reproduce.
+                "max_depth": min(max_hops, ctx.limit("max_depth", 3)),
+                "addresses_read": len(seen),
             },
             started_at=started,
             finished_at=datetime.now(timezone.utc),

@@ -168,18 +168,31 @@ def _summarise(
         bucket[0] += int(row["amount_raw"])
         bucket[1] += 1
 
-    flows: dict[tuple[str, str, str], dict[str, Any]] = {}
+    # Keyed by asset identity, exactly as `totals` above. Keying on the symbol
+    # was fixed there and left here, which is the more dangerous half: a flow is
+    # a claim that this much moved between two addresses, so merging a forged
+    # token into the real one's edge overstates a specific payment rather than a
+    # column of totals.
+    flows: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     for row in conn.execute(
-        "SELECT sender, recipient, symbol, decimals, amount_raw FROM transfers "
-        "WHERE sender IS NOT NULL AND recipient IS NOT NULL"
+        "SELECT chain, sender, recipient, asset, symbol, decimals, amount_raw "
+        "FROM transfers WHERE sender IS NOT NULL AND recipient IS NOT NULL"
     ):
-        key = (row["sender"], row["recipient"], row["symbol"] or "")
+        key = (
+            row["chain"] or "",
+            row["sender"],
+            row["recipient"],
+            row["asset"] or "",
+            row["symbol"] or "",
+        )
         flow = flows.get(key)
         if flow is None:
             flow = {
                 "sender": row["sender"],
                 "recipient": row["recipient"],
                 "symbol": row["symbol"] or "",
+                "asset": row["asset"] or "",
+                "chain": row["chain"] or "",
                 "decimals": row["decimals"],
                 "_total": 0,
                 "transfers": 0,
@@ -207,6 +220,11 @@ def _summarise(
             "sender": f["sender"],
             "recipient": f["recipient"],
             "symbol": f["symbol"],
+            # Carried through. Splitting the rows by asset and then not showing
+            # which is which leaves two identical-looking "USDC" edges and no
+            # way to tell them apart --- worse than the merge it replaced.
+            "asset": f["asset"],
+            "chain": f["chain"],
             "decimals": f["decimals"],
             "total_raw": str(f["_total"]),
             "transfers": f["transfers"],

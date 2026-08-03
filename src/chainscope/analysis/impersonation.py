@@ -481,6 +481,31 @@ def hypotheses(rep: Report) -> list[Hypothesis]:
                 ),
             ),
         ]
+        # The competing reading: that the symbol is simply what this token is
+        # called. It usually is not, and it sometimes is --- a testnet
+        # deployment or a fork carries a real name honestly --- and a
+        # nomination with no stated alternative reads as the only possibility.
+        alternatives = (
+            Hypothesis(
+                claim=(
+                    f"{asset.symbol!r} is this token's own name, chosen "
+                    f"without reference to another"
+                ),
+                factors=(
+                    ScoreFactor(
+                        name="in_the_registry",
+                        weight=0.4,
+                        value=canonical_for(asset.chain, asset.symbol) is None,
+                        note=(
+                            "no canonical contract is recorded for this symbol on "
+                            "this chain, so nothing here is being displaced"
+                        ),
+                    ),
+                ),
+                confidence=Confidence.SPECULATIVE,
+                data={"contract": asset.contract},
+            ),
+        )
         out.append(
             Hypothesis(
                 claim=(
@@ -489,6 +514,7 @@ def hypotheses(rep: Report) -> list[Hypothesis]:
                     f"{asset.resembles or 'another asset'}"
                 ),
                 factors=tuple(factors),
+                alternatives=alternatives,
                 # MEDIUM is the ceiling the type enforces, and it is the right
                 # one: nothing here observes intent, only appearance.
                 confidence=Confidence.MEDIUM,
@@ -598,7 +624,13 @@ class ImpersonationAnalyzer(Analyzer):
             params={
                 "address": address,
                 "start_block": start_block,
+                # As given. "latest" is not a block and a params block saying so
+                # cannot reproduce the run --- but resolving it costs a call the
+                # analysis does not otherwise make, so it is recorded honestly
+                # as unresolved rather than silently as a number that was never
+                # queried.
                 "end_block": end_block,
+                "end_block_is_relative": end_block == "latest",
                 # The share reported below is over what was read. Without the
                 # limit, "76% forged" cannot be reproduced or bounded.
                 "per_node": limit,

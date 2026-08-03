@@ -274,8 +274,36 @@ class LeadStore:
             raise ValueError(f"no lead {lead_id}")
         return _to_record(row)
 
+    def count(self, address: str | None = None, verdict: Verdict | None = None) -> int:
+        """How many leads match, without building them.
+
+        So a caller can cap the rows it reads and still say how many there are.
+        Reading everything in order to slice it works until a case has enough
+        leads for that to matter, and by then the fix is a schema change.
+        """
+        where, params = self._filter(address, verdict)
+        row = self._conn.execute(
+            f"SELECT COUNT(*) n FROM leads WHERE {' AND '.join(where)}", params
+        ).fetchone()
+        return int(row["n"])
+
+    def _filter(
+        self, address: str | None, verdict: Verdict | None
+    ) -> tuple[list[str], list[str]]:
+        where, params = ["1=1"], []
+        if address:
+            where.append("address = ?")
+            params.append(_fold(address))
+        if verdict is not None:
+            where.append("verdict = ?")
+            params.append(verdict.value)
+        return where, params
+
     def leads(
-        self, address: str | None = None, verdict: Verdict | None = None
+        self,
+        address: str | None = None,
+        verdict: Verdict | None = None,
+        limit: int | None = None,
     ) -> list[LeadRecord]:
         """Leads, newest last, filtered by address or verdict.
 
@@ -284,21 +312,19 @@ class LeadStore:
         repeating the search --- and in a shared case, stops two people doing it
         at the same time.
         """
-        where, params = ["1=1"], []
-        if address:
-            where.append("address = ?")
-            params.append(_fold(address))
-        if verdict is not None:
-            where.append("verdict = ?")
-            params.append(verdict.value)
-        rows = self._conn.execute(
-            f"SELECT * FROM leads WHERE {' AND '.join(where)} ORDER BY at, id", params
-        ).fetchall()
+        where, params = self._filter(address, verdict)
+        clause = f"SELECT * FROM leads WHERE {' AND '.join(where)} ORDER BY at, id"
+        if limit is not None:
+            clause += " LIMIT ?"
+            params = [*params, str(limit)]
+        rows = self._conn.execute(clause, params).fetchall()
         return [_to_record(r) for r in rows]
 
-    def open_leads(self, address: str | None = None) -> list[LeadRecord]:
+    def open_leads(
+        self, address: str | None = None, limit: int | None = None
+    ) -> list[LeadRecord]:
         """What is still worth somebody's time."""
-        return self.leads(address, Verdict.OPEN)
+        return self.leads(address, Verdict.OPEN, limit)
 
     def summary(self) -> dict[str, int]:
         """Counts by verdict, including the ones that are zero.

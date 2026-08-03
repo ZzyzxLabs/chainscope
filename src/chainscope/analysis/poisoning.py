@@ -419,10 +419,36 @@ def hypotheses(
             f"0x{group.prefix}…{group.suffix} was meant cannot be told from "
             f"this data"
         )
+        # The other members, as competing candidates. `Hypothesis.alternatives`
+        # exists precisely so a nomination cannot be read without the field it
+        # was chosen from --- and here that field is the set of addresses
+        # somebody might pay by mistake.
+        alternatives = tuple(
+            Hypothesis(
+                claim=f"{member.address} is the one the subject meant",
+                factors=(
+                    ScoreFactor(
+                        name="paid_in_a_trusted_asset",
+                        weight=0.8,
+                        value=member.was_paid,
+                        note=(
+                            "no payment to this address in an asset that reports honestly"
+                            if not member.was_paid
+                            else "the subject paid it"
+                        ),
+                    ),
+                ),
+                confidence=Confidence.SPECULATIVE,
+                data={"address": member.address},
+            )
+            for member in group.members
+            if not (group.is_decidable and member is paid[0])
+        )
         out.append(
             Hypothesis(
                 claim=claim,
                 factors=factors,
+                alternatives=alternatives,
                 confidence=Confidence.MEDIUM if group.is_decidable else Confidence.SPECULATIVE,
                 data={
                     "prefix": group.prefix,
@@ -464,11 +490,14 @@ def findings(
                 else Severity.NOTABLE
             ),
             detail=(
-                f"Across {examined} counterparties. Matching {edges} hex characters "
-                f"at each end is {8 * edges} bits, so the chance that any two of "
-                f"{examined} unrelated addresses collide is {probability:.2e}.\n"
+                f"OBSERVED: {len(groups)} group(s) across {examined} "
+                f"counterparties.\n"
                 f"\n"
-                f"{_verdict_sentence(len(groups), probability)} These "
+                f"ARITHMETIC: matching {edges} hex characters at each end is "
+                f"{8 * edges} bits, so the chance that any two of {examined} "
+                f"unrelated addresses collide is {probability:.2e}.\n"
+                f"\n"
+                f"READING: {_verdict_sentence(len(groups), probability)} These "
                 f"addresses may have been generated to be mistaken for each other. Copying "
                 f"one from a transaction list, which is where the first and last "
                 f"four characters are all anybody reads, is the attack."
@@ -583,6 +612,7 @@ class PoisoningAnalyzer(Analyzer):
             evidence=ctx.evidence(),
             params={
                 "address": address,
+                "chain": str(ctx.chain),
                 "edges": edges,
                 "start_block": start_block,
                 "end_block": end_block,

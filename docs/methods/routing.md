@@ -39,9 +39,13 @@ by default and *counted*, never silently dropped.
 moved 0.001 ETH is not how 1,000 ETH travelled. Every route reports `carries`,
 so "a path exists" and "this path could have carried the sum" stay separate.
 
-**A hop in a forged token is not a hop.** A token contract emits its own
-`Transfer` events, so a route built from an impersonating token is a route the
-attacker drew. Routes are ranked believable-first and a forged one says so.
+**A hop in a forged token is not evidence of a hop.** A token contract emits its
+own `Transfer` events, and nothing constrains them to correspond to anything.
+So a transfer of an impersonating token is an assertion by whoever wrote that
+contract, and a route built from such transfers rests entirely on that
+assertion — which is not the same as knowing who wrote it, and this does not
+know. Routes are ranked believable-first and a route resting on unverifiable
+assertions says so.
 
 ## Algorithm
 

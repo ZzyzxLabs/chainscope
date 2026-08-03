@@ -138,10 +138,12 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 # markers on seventy table entries would be noise around the one file where
 # nobody could mistake the intent.
 #
-# Two more carry RUF002 only, and for a reason that is a language limitation
-# rather than a preference: their confusables sit inside *docstrings* --- the
-# worked examples that explain the attack --- and Python has nowhere to put a
-# `noqa` inside a string literal. RUF001, which covers code, stays on for them.
+# `analysis/impersonation.py` carries RUF002 only and
+# `tests/unit/test_impersonation.py` carries RUF001 and RUF002 --- the test
+# file's fixtures are forged symbols in code as well as in its docstring. The
+# reason in both cases is a language limitation rather than a preference: their
+# confusables sit inside *docstrings*, the worked examples that explain the
+# attack, and Python has nowhere to put a `noqa` inside a string literal.
 #
 # Everywhere a marker can actually attach --- the agent tool description, the
 # poisoning fixture --- it is per line, so an *accidental* confusable in those

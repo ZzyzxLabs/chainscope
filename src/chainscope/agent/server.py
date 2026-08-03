@@ -1026,12 +1026,17 @@ def build_server(config: ServerConfig) -> MCPServer:
         capped = _cap(limit, config.max_rows)
         store = LeadStore(config.case)
         try:
-            records = store.open_leads(address) if only_open else store.leads(address)
+            # Capped in SQL, and counted separately, so a large case does not
+            # build every record in order to discard most of them.
+            records = (
+                store.open_leads(address, capped)
+                if only_open
+                else store.leads(address, limit=capped)
+            )
+            total = store.count(address, Verdict.OPEN if only_open else None)
             counts = store.summary()
         finally:
             store.close()
-        total = len(records)
-        records = records[:capped]
         out: dict[str, Any] = {
             "leads": [
                 {

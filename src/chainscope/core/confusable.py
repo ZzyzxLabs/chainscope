@@ -212,9 +212,10 @@ def scripts(text: str) -> set[str]:
     # it breaks on compatibility glyphs: `U+212A KELVIN SIGN` reports as KELVIN
     # rather than LATIN, so `KUSDC` written with it looked single-script.
     # Normalising folds those to their Latin equivalents before the question is
-    # asked. Mathematical alphanumerics still report as MATHEMATICAL, which is
-    # correct --- and a wholly-mathematical symbol is caught by `skeleton`
-    # instead, which is why there are three mechanisms rather than one.
+    # asked --- including the mathematical alphanumerics, which NFKC maps to
+    # plain ASCII, so `𝐔𝐒𝐃𝐂` reports as LATIN rather than as a script of its
+    # own. That means mixed-script does not flag it and `skeleton` does, which
+    # is the division of labour the three mechanisms exist for.
     return {_script_of(ch) for ch in unicodedata.normalize("NFKC", text) if ch.isalpha()}
 
 

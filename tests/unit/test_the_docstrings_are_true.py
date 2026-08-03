@@ -163,3 +163,94 @@ class TestEnsLookup:
 
         source = inspect.getsource(EnsLookup.look_up)
         assert source.index("is_confirmed") < source.index("self.text_of")
+
+
+class TestTheVerificationReviewFound:
+    """A second review, over the fixes from the first. No criticals, and these.
+
+    Two were the *same* defect half-fixed --- a lesson worth keeping in one
+    place: correcting one side of a pair and not the other can be worse than
+    leaving both wrong, because the two sides had at least agreed.
+    """
+
+    def test_the_resolver_cache_is_readable_by_the_path_that_wrote_it(self) -> None:
+        """`resolve` used `address_key`, `resolve_many` used `.lower()`.
+
+        Fixing only the *write* made `resolve_many`'s read and write disagree,
+        so on Solana, Sui and Bitcoin its cache became write-only: a batch
+        resolve of a thousand addresses re-fetched every one on the next call.
+        """
+        from chainscope.attribution.base import Source, SourceMeta
+        from chainscope.attribution.resolver import Resolver
+        from chainscope.core.chainid import SOLANA
+
+        solana_address = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+
+        class Counting(Source):
+            name = "counting"
+
+            def __init__(self) -> None:
+                self.meta = SourceMeta(publisher="X", license="MIT", redistributable=True)
+                self.calls = 0
+
+            def ready(self) -> bool:
+                return True
+
+            def lookup(self, address, chain=None):  # type: ignore[no-untyped-def]
+                self.calls += 1
+                return []
+
+        source = Counting()
+        resolver = Resolver([source])
+        resolver.resolve_many([solana_address], SOLANA)
+        resolver.resolve_many([solana_address], SOLANA)
+        resolver.resolve(solana_address, SOLANA)
+        assert source.calls == 1
+
+    def test_a_nan_timestamp_does_not_manufacture_a_route(self) -> None:
+        """NaN compares False against everything, so `hop.at < since` was always
+        False and a NaN passed every ordering check --- the one input that could
+        defeat the whole time-respecting property."""
+        rows = [
+            SimpleNamespace(
+                sender=SimpleNamespace(key=a),
+                recipient=SimpleNamespace(key=b),
+                timestamp=t,
+                asset=None,
+                amount=SimpleNamespace(raw=1, symbol=""),
+                tx=SimpleNamespace(hash=""),
+            )
+            for a, b, t in (("a", "m", float("nan")), ("m", "b", 2.0))
+        ]
+        routes, notes = find_routes(rows, "a", "b")
+        assert routes == []
+        assert notes["undated_transfers_ignored"] == 1
+
+    def test_infinity_is_not_a_moment_either(self) -> None:
+        rows = [
+            SimpleNamespace(
+                sender=SimpleNamespace(key=a),
+                recipient=SimpleNamespace(key=b),
+                timestamp=t,
+                asset=None,
+                amount=SimpleNamespace(raw=1, symbol=""),
+                tx=SimpleNamespace(hash=""),
+            )
+            for a, b, t in (("a", "m", float("inf")), ("m", "b", 2.0))
+        ]
+        assert find_routes(rows, "a", "b")[0] == []
+
+    def test_a_nomination_carries_the_field_it_was_chosen_from(self) -> None:
+        """`Hypothesis.alternatives` exists so a nomination cannot be read
+        without the candidates it beat --- and here those candidates are the
+        addresses somebody might pay by mistake."""
+        from chainscope.analysis.poisoning import hypotheses
+
+        subject = "0x" + "e" * 40
+        genuine = "0x5bfb6836cc38d4b4f3949b99464afed728b5add8"
+        impostor = "0x5bfbfac19e0d3b5a56abdd0c6a31d31e3b85add8"
+        rows = [_t(subject, genuine, 1), _t(impostor, subject, 2, raw=0)]
+        groups, examined = find_lookalikes(rows, subject, chain=ETHEREUM)
+        found = hypotheses(groups, examined)
+        assert found[0].alternatives
+        assert impostor in " ".join(a.claim for a in found[0].alternatives)

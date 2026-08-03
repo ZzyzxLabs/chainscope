@@ -90,6 +90,22 @@ class Resolution:
         return f"{self.address}  {base}"
 
 
+def _cache_key(chain: ChainId | None, address: str) -> tuple[str, str | None]:
+    """The one key expression, so the three call sites cannot drift.
+
+    They did. `resolve` used `address_key` and `resolve_many` used `.lower()`,
+    so on Solana, Sui and Bitcoin the two never shared an entry and every single
+    lookup re-consulted every source. Fixing only the *write* made it worse:
+    within `resolve_many` the read and the write then disagreed, so its cache
+    became write-only on those chains --- a batch resolve of a thousand
+    addresses re-fetched every one of them on the next call.
+
+    Three call sites and one expression is the point. Two of them agreeing is
+    not a property anybody can check by reading.
+    """
+    return (address_key(chain, address), str(chain) if chain else None)
+
+
 @dataclass
 class Resolver:
     """Queries every configured source and merges the results."""
@@ -107,7 +123,7 @@ class Resolver:
     def resolve(self, address: str, chain: ChainId | None = None) -> Resolution:
         # Chain-aware: two distinct base58 addresses shared one cache entry,
         # so the second lookup returned the first one's claims.
-        key = (address_key(chain, address), str(chain) if chain else None)
+        key = _cache_key(chain, address)
         if (hit := self._cache.get(key)) is not None:
             return hit
 
@@ -151,9 +167,7 @@ class Resolver:
     ) -> dict[str, Resolution]:
         """Batch resolve, using each source's bulk path where it has one."""
         wanted = list(dict.fromkeys(addresses))
-        pending = [
-            a for a in wanted if (a.lower(), str(chain) if chain else None) not in self._cache
-        ]
+        pending = [a for a in wanted if _cache_key(chain, a) not in self._cache]
 
         gathered: dict[str, list[Attribution]] = {a: [] for a in pending}
         consulted: list[str] = []
@@ -173,13 +187,7 @@ class Resolver:
                 failed.append((source.name, f"{type(exc).__name__}: {exc}"))
 
         for addr in pending:
-            # The same key `resolve` builds. It used `.lower()` here and
-            # `address_key` there, so on any chain where those differ --- Solana,
-            # Sui, Bitcoin --- the two never shared an entry: `resolve_many`
-            # filled a cache `resolve` could not read, and every later single
-            # lookup re-consulted every source. On EVM they agreed, which is why
-            # nothing noticed.
-            key = (address_key(chain, addr), str(chain) if chain else None)
+            key = _cache_key(chain, addr)
             self._cache[key] = Resolution(
                 address=addr,
                 entity=merge(gathered.get(addr, [])),

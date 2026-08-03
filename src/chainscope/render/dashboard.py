@@ -232,6 +232,7 @@ def _flow_row(flow: dict[str, Any]) -> str:
         + _cell(f"{recipient}…", mono=True)
         + _cell(amount, klass="n", mono=True)
         + _cell(flow.get("symbol", ""))
+        + _cell(str(flow.get("asset") or "native"), mono=True)
         + _cell(f"{int(flow.get('transfers', 0)):,}", klass="n")
         + "</tr>"
     )
@@ -312,11 +313,11 @@ def to_dashboard(summary: CaseSummary) -> str:
             + "</tr>"
             for sym, total, count, places, contract, where in s.totals_by_asset
         )
-        or '<tr><td colspan="3">nothing recorded</td></tr>'
+        or '<tr><td colspan="5">nothing recorded</td></tr>'
     )
 
     flows = "".join(_flow_row(f) for f in s.top_flows) or (
-        '<tr><td colspan="5">no flows recorded</td></tr>'
+        '<tr><td colspan="6">no flows recorded</td></tr>'
     )
 
     def _rows(pairs: list[tuple[str, int]], empty: str) -> str:
@@ -395,7 +396,8 @@ def to_dashboard(summary: CaseSummary) -> str:
   <section>
     <h2>Largest flows</h2>
     <div class="scroll"><table>
-      <tr><th>from</th><th>to</th><th class="n">total</th><th>asset</th>
+      <tr><th>from</th><th>to</th><th class="n">total</th><th>symbol</th>
+          <th>contract</th>
           <th class="n">transfers</th></tr>
       {flows}
     </table></div>
