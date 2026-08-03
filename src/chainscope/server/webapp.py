@@ -92,6 +92,27 @@ svg { display: block; width: 100%; height: 100%; cursor: grab; }
 }
 #zoombar button { padding: 2px 8px; border-radius: 5px; }
 #zoom { color: var(--muted); min-width: 44px; text-align: center; }
+#addbtn { flex: none; }
+dialog {
+  background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 10px; padding: 16px; width: min(520px, 90vw);
+}
+dialog::backdrop { background: rgba(0,0,0,.55); }
+dialog h3 { margin: 0 0 6px; font-size: 14px; }
+textarea {
+  width: 100%; background: #1d2029; color: var(--fg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 8px; font: 12px ui-monospace, Menlo, monospace;
+  resize: vertical;
+}
+#addout { max-height: 180px; overflow-y: auto; font-size: 11.5px; margin-top: 6px; }
+#addout p { margin: 2px 0; }
+.noterow {
+  font-size: 11.5px; border-left: 2px solid var(--line); padding: 3px 0 3px 8px;
+  margin: 4px 0;
+}
+.noterow.superseded { opacity: .55; text-decoration: line-through; }
+.noterow b { color: var(--accent); font-weight: 600; }
+aside.right textarea { margin-top: 4px; }
 .card rect { fill: #22252f; stroke: #333846; stroke-width: 1px; cursor: pointer; }
 .card:hover rect { stroke: #47506a; }
 .card.on rect { stroke: var(--warn); stroke-width: 2px; }
@@ -437,6 +458,36 @@ function fit() {
   applyView();
 }
 
+function wireAdd() {
+  const dialog = $("#adddlg");
+  $("#addbtn").addEventListener("click", () => dialog.showModal());
+  $("#addclose").addEventListener("click", () => dialog.close());
+  $("#addgo").addEventListener("click", async () => {
+    const wanted = $("#addtext").value.split(/[\s,]+/)
+      .map((a) => a.trim()).filter(Boolean);
+    if (!wanted.length) return;
+    const out = $("#addout");
+    // One at a time, with the count visible. A batch that reports only at the
+    // end looks identical to a hung one, and these are network calls.
+    for (let i = 0; i < wanted.length; i++) {
+      out.innerHTML = `<p class="muted">${i + 1} of ${wanted.length}: ` +
+        `${esc(short(wanted[i]))}…</p>` + out.innerHTML;
+      try {
+        const found = await api("/graph", { address: wanted[i], chain: state.chain });
+        out.innerHTML = `<p>${esc(short(wanted[i]))} — ${found.fetched} fetched` +
+          `${found.fetch_complete ? "" : " (prefix — page budget spent)"}</p>` +
+          out.innerHTML;
+      } catch (err) {
+        out.innerHTML = `<p class="bad">${esc(short(wanted[i]))} — ` +
+          `${esc(err.message)}</p>` + out.innerHTML;
+      }
+    }
+    // Reload the seed's graph: the new addresses are in the store now and the
+    // walk may reach them.
+    if (state.graph) await load(state.graph.seed);
+  });
+}
+
 function wireViewport() {
   const canvas = $("#canvas");
   canvas.addEventListener("wheel", (ev) => {
@@ -575,12 +626,43 @@ async function select(address) {
       '<p class="note">Recorded with this browser named as the source. A claim ' +
       'that picks its own provenance is worse than one carrying none, so the ' +
       'store will always say a browser wrote it.</p>' +
+      '<h2>notes</h2><div id="notes"></div>' +
+      '<textarea id="notebody" rows="2" placeholder="what you noticed"></textarea>' +
+      '<div class="actions"><select id="notekind">' +
+      ["observation", "question", "decision"]
+        .map((k) => `<option>${k}</option>`).join("") +
+      '</select><button id="notesave">file</button></div>' +
+      '<p class="note">Filed in the case log --- append-only, authored, timed. ' +
+      'Not a sticky on the drawing: a note that lives in a picture is lost when ' +
+      'the picture is redrawn, and cannot answer "what is still open".</p>' +
       '<h2>run on this address</h2><div class="actions">' +
       ["impersonation", "poisoning", "contributors"].map((a) =>
         `<button data-run="${a}">${a}</button>`).join("") + "</div><div id='out'></div>";
     panel.innerHTML = html;
     panel.querySelectorAll("[data-run]").forEach((b) =>
       b.addEventListener("click", () => runAnalysis(b.dataset.run, address)));
+    loadNotes(address);
+    const filed = $("#notesave");
+    if (filed) {
+      filed.addEventListener("click", async () => {
+        const text = $("#notebody").value.trim();
+        if (!text) { say("a note needs a body", "bad"); return; }
+        filed.disabled = true;
+        try {
+          await post("/note", {
+            body: text, kind: $("#notekind").value,
+            subject: address, chain: state.chain,
+          });
+          $("#notebody").value = "";
+          await loadNotes(address);
+          say("note filed");
+        } catch (err) {
+          say(err.message, "bad");
+        } finally {
+          filed.disabled = false;
+        }
+      });
+    }
     const save = $("#save");
     if (save) {
       save.addEventListener("click", async () => {
@@ -609,6 +691,27 @@ async function select(address) {
     }
   } catch (err) {
     panel.innerHTML = `<p class="bad">${esc(err.message)}</p>`;
+  }
+}
+
+async function loadNotes(address) {
+  const box = $("#notes");
+  if (!box) return;
+  try {
+    const found = await api("/notes", { subject: address });
+    box.innerHTML = found.notes.length
+      ? found.notes.map((n) => {
+          // Superseded notes are shown struck through, not removed. "I thought
+          // X, then found Y" is the record; a log showing only the final
+          // position reads like one that was right the first time.
+          const gone = n.superseded ? " superseded" : "";
+          return `<div class="noterow${gone}"><b>${esc(n.kind)}</b> ` +
+            `${esc(n.body)}<br><span class="muted">${esc(n.analyst)} · ` +
+            `${esc(n.at.slice(0, 16).replace("T", " "))}</span></div>`;
+        }).join("")
+      : '<p class="muted">none filed against this address</p>';
+  } catch (err) {
+    box.innerHTML = `<p class="bad">${esc(err.message)}</p>`;
   }
 }
 
@@ -677,6 +780,7 @@ $("#find").addEventListener("submit", (e) => {
 });
 window.addEventListener("resize", () => { draw(); applyView(); });
 wireViewport();
+wireAdd();
 
 api("/health").then((h) => {
   say(`${h.transfers ?? 0} transfers in ${h.store || "the store"} · ` +
@@ -709,6 +813,7 @@ _TEMPLATE = """<!doctype html>
     </select>
     <button type="submit">open</button>
   </form>
+  <button id="addbtn" title="add addresses to this case">+ add</button>
 </header>
 <main>
   <aside>
@@ -729,6 +834,19 @@ _TEMPLATE = """<!doctype html>
     spends somebody's rate limit and should not sit behind a text field.</p>
   </div></aside>
 </main>
+<dialog id="adddlg">
+  <h3>Add to this case</h3>
+  <p class="note">One per line. Each is fetched and merged into the store, so
+  the graph you are looking at grows rather than being replaced. Anything
+  already present is skipped, not fetched again.</p>
+  <textarea id="addtext" rows="7" spellcheck="false"
+    placeholder="0x… one address per line"></textarea>
+  <div class="actions">
+    <button id="addgo">add</button>
+    <button id="addclose">cancel</button>
+  </div>
+  <div id="addout"></div>
+</dialog>
 <div id="status"></div>
 <script>const TOKEN = "__TOKEN__";__JS__</script>
 </body></html>

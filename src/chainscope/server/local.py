@@ -37,6 +37,7 @@ import secrets
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -496,6 +497,96 @@ class _Handlers:
         finally:
             store.close()
 
+    def note(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Record an observation against an address, in the case log.
+
+        Not a free-floating sticky on a canvas. The commercial tools offer one
+        and it is the wrong shape for this: a note that lives in a drawing is
+        lost when the drawing is regenerated, carries no author and no time,
+        and cannot be answered by "what is still open in this case".
+
+        The case log already has all of that --- append-only, authored, with
+        corrections that must name what they supersede --- so this writes there
+        and the canvas reads it back. The picture is a view of the record
+        rather than a place things are kept.
+        """
+        if not self.options.writable:
+            raise PermissionError(
+                "this server is read-only. Restart with --writable to record notes."
+            )
+        from ..case.log import CaseLog, Note, NoteKind
+
+        body_text = str(body.get("body", "")).strip()
+        if not body_text:
+            raise ValueError("a note needs a body")
+        kind = str(body.get("kind", "observation")).strip().lower()
+        try:
+            chosen = NoteKind(kind)
+        except ValueError:
+            raise ValueError(
+                f"kind must be one of: {', '.join(k.value for k in NoteKind)}"
+            ) from None
+        if chosen is NoteKind.CORRECTION:
+            # A correction must name what it replaces, and the page has no way
+            # to choose that yet. Refusing is better than writing a correction
+            # that supersedes nothing, which the log would reject anyway --- and
+            # this says so in terms the caller can act on.
+            raise ValueError(
+                "a correction has to name the note it replaces, which this page "
+                "cannot do yet. Use `chainscope note` for that"
+            )
+
+        who = self.options.analyst or ""
+        log = CaseLog(self.options.store.parent / "case.db")
+        try:
+            note_id = log.add(
+                Note(
+                    at=datetime.now(timezone.utc),
+                    # The configured analyst, never a value from the request ---
+                    # the same reason `tag` will not take a caller-supplied
+                    # source. A record that picks its own authorship is worse
+                    # than one carrying none.
+                    analyst=who or "browser",
+                    identified_by="server" if who else "unattributed",
+                    kind=chosen,
+                    body=body_text,
+                    subject=str(body.get("subject", "")).strip(),
+                    chain=str(self._chain(str(body.get("chain", "")) or None) or "") or None,
+                )
+            )
+        finally:
+            log.close()
+        return {"id": note_id, "analyst": who or "browser", "kind": chosen.value}
+
+    def notes(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """Notes filed against an address, so the canvas can show them."""
+        from ..case.log import CaseLog
+
+        log = CaseLog(self.options.store.parent / "case.db")
+        try:
+            found = log.notes(subject=_first(query, "subject") or "")
+            superseded = log.superseded()
+        finally:
+            log.close()
+        return {
+            "notes": [
+                {
+                    "id": n.id,
+                    "at": n.at.isoformat(),
+                    "analyst": n.analyst,
+                    "kind": n.kind.value,
+                    "body": n.body,
+                    "subject": n.subject,
+                    # Kept and marked rather than dropped: "I thought X, then
+                    # found Y" is the record, and a log showing only the final
+                    # position is indistinguishable from one that was right
+                    # first time.
+                    "superseded": n.id in superseded,
+                }
+                for n in found[-200:]
+            ]
+        }
+
     def health(self) -> dict[str, Any]:
         return {
             "ok": True,
@@ -757,6 +848,7 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
                 "/graph": handlers.graph,
                 "/analyze": handlers.analyze,
                 "/leads": handlers.leads,
+                "/notes": handlers.notes,
             }
             route = routes.get(parsed.path)
             if route is None:
@@ -768,7 +860,8 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
             if not self._authorised():
                 self._send(HTTPStatus.UNAUTHORIZED, {"error": "bad or missing token"})
                 return
-            if urlparse(self.path).path != "/tag":
+            posted = urlparse(self.path).path
+            if posted not in ("/tag", "/note"):
                 self._send(HTTPStatus.NOT_FOUND, {"error": "no route"})
                 return
 
@@ -784,7 +877,8 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
             if not isinstance(body, dict):
                 self._send(HTTPStatus.BAD_REQUEST, {"error": "expected a JSON object"})
                 return
-            self._guard(lambda: handlers.tag(body))
+            route = handlers.tag if posted == "/tag" else handlers.note
+            self._guard(lambda: route(body))
 
         def _guard(self, call: Any) -> None:
             """Run a route, mapping failures onto statuses a client can act on."""
