@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..attribution.ens import EnsRecord
 
-__all__ = ["TEXT_KEYS", "Lead", "leads_from_text_records"]
+__all__ = ["TEXT_KEYS", "Lead", "default_verify_by", "leads_from_text_records"]
 
 #: Re-exported for the CLI, which offers the same default when a person files a
 #: lead by hand and does not state the verification step themselves.
@@ -68,6 +68,24 @@ _VERIFY = {
     "url": "check whether that site publishes this address, not merely the name",
     "description": "free text set by the name owner; treat as a starting point only",
 }
+
+
+def default_verify_by(kind: str) -> str:
+    """How a lead of this kind is confirmed.
+
+    Public because the CLI needs it when somebody files a lead by hand without
+    stating the step themselves --- it was reaching into `_VERIFY` directly,
+    which makes a private name part of the interface by accident.
+
+    An unknown kind gets a sentence telling the caller to write one, not an
+    empty string: `Lead` refuses to exist without a verification step, and the
+    refusal should say what to do rather than what went wrong.
+    """
+    return _VERIFY.get(
+        kind,
+        "state what would confirm this; a lead without a verification step "
+        "will be read as a finding",
+    )
 
 
 @dataclass(frozen=True, slots=True)

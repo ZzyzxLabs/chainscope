@@ -67,10 +67,17 @@ CREATE TABLE IF NOT EXISTS leads (
 
 CREATE INDEX IF NOT EXISTS ix_leads_address ON leads(address);
 CREATE INDEX IF NOT EXISTS ix_leads_verdict ON leads(verdict);
--- One lead per (address, kind, value): the same handle found twice by two
--- analysts is one lead with two finders, not two leads. Without this a rerun of
--- the same enumeration doubles every count in the report.
-CREATE UNIQUE INDEX IF NOT EXISTS ux_leads_identity ON leads(address, kind, value);
+-- One lead per (chain, address, kind, value): the same handle found twice by
+-- two analysts is one lead with two finders, not two leads. Without this a
+-- rerun of the same enumeration doubles every count in the report.
+--
+-- `chain` is in the key because it was not, and the same hex address on
+-- Ethereum and on BSC collapsed into a single lead --- they are different
+-- accounts controlled by different people, and a verdict reached about one was
+-- silently presented as settling the other. COALESCE because a chainless lead
+-- is legitimate and NULL never equals NULL in an index.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_leads_identity
+    ON leads(COALESCE(chain, ''), address, kind, value);
 """
 
 
@@ -183,8 +190,9 @@ class LeadStore:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT id FROM leads WHERE address = ? AND kind = ? AND value = ?",
-                (_fold(lead.address), lead.kind, lead.value),
+                "SELECT id FROM leads WHERE COALESCE(chain, '') = ? "
+                "AND address = ? AND kind = ? AND value = ?",
+                (chain or "", _fold(lead.address), lead.kind, lead.value),
             ).fetchone()
             if row is not None:
                 return int(row["id"]), False
@@ -229,10 +237,23 @@ class LeadStore:
             )
         with self._lock:
             found = self._conn.execute(
-                "SELECT id FROM leads WHERE id = ?", (lead_id,)
+                "SELECT id, verdict, reason, settled_by FROM leads WHERE id = ?", (lead_id,)
             ).fetchone()
             if found is None:
                 raise ValueError(f"no lead {lead_id}")
+            if str(found["verdict"]) != Verdict.OPEN.value:
+                # This module's own docstring says the record that somebody
+                # checked is the most valuable thing here, and then `settle`
+                # overwrote it: a second call replaced the first analyst's
+                # verdict, their reason, and their name, with no trace. A
+                # disagreement is a real event and it is a *note*, which is
+                # append-only; it is not a silent edit of somebody else's work.
+                raise ValueError(
+                    f"lead {lead_id} was already settled as "
+                    f"{found['verdict']} by {found['settled_by']}: "
+                    f"{found['reason']}. Record a disagreement as a note rather "
+                    f"than overwriting what they found"
+                )
             self._conn.execute(
                 "UPDATE leads SET verdict = ?, reason = ?, settled_at = ?, settled_by = ? "
                 "WHERE id = ?",

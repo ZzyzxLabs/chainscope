@@ -216,8 +216,32 @@ def _key(transfer: Any, field_name: str) -> str:
     return str(raw).strip().lower()
 
 
+def _instant(value: Any) -> float | None:
+    """One comparable number for a timestamp, whatever shape it arrived in.
+
+    A store returns `datetime`; a provider parsed straight from JSON returns
+    Unix seconds. Sorting a list holding both raises `TypeError: '<' not
+    supported between instances of 'int' and 'datetime.datetime'` --- from
+    inside a sort, several frames from anything the caller recognises. Since
+    the route search *is* comparison of times, one representation is used
+    throughout and anything that cannot become one is not a hop.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        # A naive datetime is read as local time by `.timestamp()`, which
+        # shifts it by the machine's offset. Assumed UTC and said so, rather
+        # than silently taking on the timezone of whoever is running this.
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return float(value.timestamp())
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
 def _hop(transfer: Any) -> Hop | None:
-    at = getattr(transfer, "timestamp", None)
+    at = _instant(getattr(transfer, "timestamp", None))
     sender, recipient = _key(transfer, "sender"), _key(transfer, "recipient")
     if at is None or not sender or not recipient:
         # An undated transfer is dropped rather than assumed. Placing it
@@ -277,12 +301,30 @@ def find_routes(
     """
     src, dst = _fold(source), _fold(target)
     hops: list[Hop] = []
-    undated = 0
+    undated = duplicates = 0
+    seen_hops: set[tuple[str, str, str, Any, int, str]] = set()
     for transfer in transfers:
         hop = _hop(transfer)
         if hop is None:
             undated += 1
             continue
+        # One hop per transfer, however many times it was read. The analyzer
+        # expands outward from both ends, so every transfer between two
+        # expanded addresses arrives twice --- once from each side's history ---
+        # and each copy multiplied the routes through it. A ledger read twice
+        # produced four routes for one path.
+        identity = (
+            hop.tx,
+            hop.sender,
+            hop.recipient,
+            hop.at,
+            hop.amount,
+            hop.asset,
+        )
+        if identity in seen_hops:
+            duplicates += 1
+            continue
+        seen_hops.add(identity)
         hops.append(hop)
 
     hubs = hubs_in(transfers, hub_degree)
@@ -307,8 +349,15 @@ def find_routes(
             if hop.recipient in visited:
                 continue
             if hop.recipient == dst:
-                crossed = next((a for a in visited if a in hubs and a != src), "")
                 walked = [*trail, hop]
+                # From the ordered walk. Taking it from `visited` --- a set ---
+                # meant that a route crossing two hubs named an arbitrary one of
+                # them, chosen by hash order, so the same query could report a
+                # different address between runs and neither was "the first hub
+                # the money reached".
+                crossed = next(
+                    (h.sender for h in walked if h.sender in hubs and h.sender != src), ""
+                )
                 routes.append(
                     Route(
                         hops=walked,
@@ -343,6 +392,8 @@ def find_routes(
     }
     if undated:
         notes["undated_transfers_ignored"] = undated
+    if duplicates:
+        notes["duplicate_transfers_collapsed"] = duplicates
     return routes, notes
 
 
@@ -429,6 +480,13 @@ def findings(
                     "carries": route.carries,
                     "crosses_hub": route.crosses_hub or None,
                     "single_asset": route.single_asset,
+                    # A consumer reading `data` never saw this, so a route made
+                    # entirely of the attacker's own log entries was
+                    # indistinguishable in JSON from one built out of real
+                    # transfers. It is in the title and the detail; it belongs
+                    # where a machine reads.
+                    "forged_hops": route.forged_hops,
+                    "believable": route.is_believable,
                     "transactions": [h.tx for h in route.hops if h.tx],
                 },
             )
@@ -578,7 +636,19 @@ class RouteAnalyzer(Analyzer):
             findings=tuple(findings(routes, found_notes, src, dst)),
             warnings=tuple(dict.fromkeys(notes)),
             evidence=ctx.evidence(),
-            params={"source": source, "target": target, "max_hops": max_hops},
+            # Every input that changed the answer, not just the two addresses.
+            # `allow_hubs` decides whether a route is offered at all and
+            # `max_expand` decides how much was searched, so a params block
+            # without them describes a run nobody can repeat --- and "no route"
+            # is the result most in need of repeating.
+            params={
+                "source": source,
+                "target": target,
+                "max_hops": max_hops,
+                "allow_hubs": allow_hubs,
+                "max_expand": max_expand,
+                "per_node": per_node,
+            },
             started_at=started,
             finished_at=datetime.now(timezone.utc),
         )

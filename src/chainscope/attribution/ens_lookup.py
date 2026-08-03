@@ -104,10 +104,11 @@ class EnsLookup:
 
     def name_of(self, address: str) -> str:
         """What the address says it is called. Unverified by construction."""
-        resolver = self.resolver_for(reverse_node(address))
+        node = reverse_node(address)
+        resolver = self.resolver_for(node)
         if not resolver:
             return ""
-        return _decode_string(self._call(resolver, "0x" + _NAME + reverse_node(address).hex()))
+        return _decode_string(self._call(resolver, "0x" + _NAME + node.hex()))
 
     def address_of(self, name: str) -> str | None:
         """Where a name points, or ``None`` if it has no resolver.

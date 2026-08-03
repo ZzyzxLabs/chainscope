@@ -44,18 +44,26 @@ def _script() -> str:
 
 def _run(nodes: list[dict], edges: list[dict], seeds: list[str], target: str) -> dict:
     """Execute the page's own `pathsTo` against a small graph."""
-    body = re.search(r"const MAX_PATHS = 40;\n(function pathsTo.*?\n\})", _script(), re.S)
+    # The cap is read from the page, not restated here. Hardcoding it meant the
+    # test would keep exercising 40 after somebody changed the page to 5, and
+    # would pass while testing a bound that no longer exists.
+    body = re.search(r"const MAX_PATHS = (\d+);\n(function pathsTo.*?\n\})", _script(), re.S)
     assert body, "pathsTo not found --- has it been renamed?"
     program = (
         f"const DATA = {json.dumps({'nodes': nodes, 'edges': edges, 'seeds': seeds})};\n"
-        "const MAX_PATHS = 40;\n"
-        + body.group(1)
+        f"const MAX_PATHS = {body.group(1)};\n"
+        + body.group(2)
         + f"\nconst r = pathsTo({json.dumps(target)}, DATA.edges);\n"
         "console.log(JSON.stringify({"
         "hops: r.hops.map(h => h.map(e => e.source + '>' + e.target)),"
         " impossible: r.impossible, capped: r.capped}));\n"
     )
-    out = subprocess.run(["node", "-e", program], capture_output=True, text=True, check=True)
+    # A timeout, because one of the tests below is called
+    # `test_a_cycle_does_not_hang_it` and without this it would hang forever
+    # proving the opposite --- pytest would sit there rather than fail.
+    out = subprocess.run(
+        ["node", "-e", program], capture_output=True, text=True, check=True, timeout=30
+    )
     return dict(json.loads(out.stdout))
 
 

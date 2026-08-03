@@ -250,3 +250,95 @@ class TestARouteMadeOfForgedTransfers:
         rows = [_t("a", "m", 1, asset=self.FORGED), _t("m", "b", 2, asset=self.FORGED)]
         routes, _ = find_routes(rows, "a", "b", chain=ETHEREUM)
         assert len(routes) == 1
+
+
+class TestWhatTheReviewFound:
+    """Three defects, each of which produced a plausible wrong picture."""
+
+    def test_a_ledger_mixing_datetime_and_unix_seconds_does_not_raise(self) -> None:
+        """A store returns `datetime`; a provider parsed from JSON returns ints.
+
+        Sorting a list holding both raised `TypeError` from inside the sort,
+        several frames from anything a caller recognises --- and the route
+        search *is* comparison of times, so it could not have been anywhere
+        else.
+        """
+        rows = [
+            _t("a", "m", 1),
+            SimpleNamespace(
+                sender=SimpleNamespace(key="m"),
+                recipient=SimpleNamespace(key="b"),
+                timestamp=int((T0 + timedelta(minutes=2)).timestamp()),
+                asset=SimpleNamespace(key="usdc"),
+                amount=SimpleNamespace(raw=100, symbol="USDC"),
+                tx=SimpleNamespace(hash="0xmb"),
+            ),
+        ]
+        routes, _ = find_routes(rows, "a", "b")
+        assert [r.addresses for r in routes] == [["a", "m", "b"]]
+
+    def test_a_naive_datetime_is_read_as_utc_not_as_local_time(self) -> None:
+        # `.timestamp()` on a naive value takes the machine's offset, so the
+        # same ledger would order differently in Taipei and in London.
+        naive = SimpleNamespace(
+            sender=SimpleNamespace(key="a"),
+            recipient=SimpleNamespace(key="b"),
+            timestamp=datetime(2026, 1, 1, 12, 0),
+            asset=None,
+            amount=SimpleNamespace(raw=1, symbol=""),
+            tx=SimpleNamespace(hash="0x1"),
+        )
+        routes, _ = find_routes([naive], "a", "b")
+        assert (
+            routes
+            and routes[0].hops[0].at
+            == datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc).timestamp()
+        )
+
+    def test_the_same_transfer_read_twice_is_one_hop(self) -> None:
+        """The analyzer expands from both ends, so every transfer between two
+        expanded addresses arrives twice --- and each copy multiplied the routes
+        through it. A ledger read twice reported four routes for one path."""
+        rows = [_t("a", "m", 1), _t("m", "b", 2)]
+        routes, notes = find_routes(rows + rows, "a", "b")
+        assert len(routes) == 1
+        assert notes["duplicate_transfers_collapsed"] == 2
+
+    def test_the_hub_named_is_the_first_one_reached(self) -> None:
+        """It came from `visited`, a set, so a route crossing two hubs named an
+        arbitrary one by hash order --- and neither was 'where the money first
+        went into a custodian'."""
+        rows = [_t("a", "h1", 1)]
+        rows += [_t(f"in{n}", "h1", 1) for n in range(DEFAULT_HUB_DEGREE)]
+        rows += [_t("h1", f"out{n}", 2) for n in range(DEFAULT_HUB_DEGREE)]
+        rows += [_t("h1", "h2", 3)]
+        rows += [_t(f"z{n}", "h2", 1) for n in range(DEFAULT_HUB_DEGREE)]
+        rows += [_t("h2", f"w{n}", 2) for n in range(DEFAULT_HUB_DEGREE)]
+        rows += [_t("h2", "b", 5)]
+        routes, _ = find_routes(rows, "a", "b", allow_hubs=True, max_hops=4)
+        assert routes
+        assert routes[0].crosses_hub == "h1"
+
+    def test_the_params_record_what_decided_the_answer(self) -> None:
+        # `allow_hubs` decides whether a route is offered at all and
+        # `max_expand` decides how much was searched. Without them the params
+        # describe a run nobody can repeat, and "no route" is the result most
+        # in need of repeating.
+        from chainscope.analysis.route import RouteAnalyzer
+
+        signature = RouteAnalyzer.run.__code__.co_varnames
+        assert "allow_hubs" in signature and "max_expand" in signature
+
+    def test_a_forged_route_says_so_in_its_data(self) -> None:
+        # It was in the title and the detail but not in `data`, so a route made
+        # of the attacker's own log entries was indistinguishable in JSON from
+        # one built out of real transfers.
+        from chainscope.core.chainid import ETHEREUM
+
+        forged = "0xa599e8c7f4bac6512e250055a96a20a72bbac75e"
+        rows = [_t("a", "m", 1, asset=forged), _t("m", "b", 2, asset=forged)]
+        routes, notes = find_routes(rows, "a", "b", chain=ETHEREUM)
+        found = findings(routes, notes, "a", "b")
+        route_data = [f.data for f in found if "believable" in f.data]
+        assert route_data and route_data[0]["believable"] is False
+        assert route_data[0]["forged_hops"] == 2

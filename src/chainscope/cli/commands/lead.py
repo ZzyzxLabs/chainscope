@@ -25,7 +25,7 @@ from typing import Any
 
 from ...case.leads import LeadStore, Verdict
 from ...case.log import whoami
-from ...osint.leads import TEXT_KEYS, Lead
+from ...osint.leads import TEXT_KEYS, Lead, default_verify_by
 from ...render.base import Renderer
 
 __all__ = ["add_parser", "run"]
@@ -138,13 +138,7 @@ def _add(args: argparse.Namespace, store: LeadStore, analyst: str) -> int:
 
 
 def _default_verification(kind: str) -> str:
-    from ...osint.leads import _VERIFY
-
-    return _VERIFY.get(
-        kind,
-        "state what would confirm this; a lead without a verification step "
-        "will be read as a finding",
-    )
+    return default_verify_by(kind)
 
 
 def _settle(args: argparse.Namespace, store: LeadStore, analyst: str) -> int:

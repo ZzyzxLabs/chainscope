@@ -193,3 +193,61 @@ class TestItIsReachable:
                 asserted_by="somebody",
                 verify_by="  ",
             )
+
+
+class TestWhatTheReviewFound:
+    """Two defects this file's own premises should have caught.
+
+    The module docstring says the record that somebody checked is the most
+    valuable thing here --- and `settle` overwrote it. A second call replaced
+    the first analyst's verdict, their reason and their name with no trace,
+    which is the precise opposite of the design it was written to serve.
+
+    And a lead's identity was `(address, kind, value)` with no chain, so the
+    same hex address on Ethereum and on BSC --- different accounts, different
+    people --- collapsed into one lead, and a verdict about one silently
+    settled the other.
+    """
+
+    def test_a_settled_lead_cannot_be_resettled(self, store: LeadStore) -> None:
+        lead_id, _ = store.add(_lead(), "alice@lab")
+        store.settle(lead_id, Verdict.REFUTED, "checked thoroughly", "alice@lab")
+        with pytest.raises(ValueError, match="already settled"):
+            store.settle(lead_id, Verdict.CONFIRMED, "actually yes", "bob@lab")
+
+    def test_the_first_analysts_finding_survives_the_attempt(self, store: LeadStore) -> None:
+        lead_id, _ = store.add(_lead(), "alice@lab")
+        store.settle(lead_id, Verdict.REFUTED, "checked thoroughly", "alice@lab")
+        with pytest.raises(ValueError):
+            store.settle(lead_id, Verdict.CONFIRMED, "actually yes", "bob@lab")
+        record = store.get(lead_id)
+        assert record.reason == "checked thoroughly"
+        assert record.settled_by == "alice@lab"
+        assert record.verdict == Verdict.REFUTED
+
+    def test_the_refusal_says_what_to_do_instead(self, store: LeadStore) -> None:
+        # A disagreement is a real event. It belongs in the append-only note
+        # log, not as a silent edit of somebody else's work.
+        lead_id, _ = store.add(_lead(), "alice@lab")
+        store.settle(lead_id, Verdict.REFUTED, "checked", "alice@lab")
+        with pytest.raises(ValueError, match="as a note"):
+            store.settle(lead_id, Verdict.CONFIRMED, "no", "bob@lab")
+
+    def test_the_same_address_on_two_chains_is_two_leads(self, store: LeadStore) -> None:
+        first, _ = store.add(_lead(), "alice@lab", "eip155:1")
+        second, was_new = store.add(_lead(), "alice@lab", "eip155:56")
+        assert first != second
+        assert was_new
+
+    def test_and_a_verdict_on_one_does_not_settle_the_other(self, store: LeadStore) -> None:
+        first, _ = store.add(_lead(), "alice@lab", "eip155:1")
+        second, _ = store.add(_lead(), "alice@lab", "eip155:56")
+        store.settle(first, Verdict.REFUTED, "checked on mainnet", "alice@lab")
+        assert store.get(second).is_open
+
+    def test_a_chainless_lead_still_deduplicates(self, store: LeadStore) -> None:
+        # COALESCE in the index: NULL never equals NULL, so without it every
+        # chainless lead would be unique and a rerun would double the count.
+        first, _ = store.add(_lead(), "alice@lab")
+        second, was_new = store.add(_lead(), "bob@lab")
+        assert first == second and not was_new

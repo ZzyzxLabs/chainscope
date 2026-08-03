@@ -1014,15 +1014,22 @@ def build_server(config: ServerConfig) -> MCPServer:
     def case_leads(
         address: str | None = None,
         only_open: bool = False,
-        case: str | None = None,
+        limit: int = 200,
     ) -> dict[str, Any]:
-        store = LeadStore(case or config.case)
+        # No caller-chosen path. `case` was a parameter, which let anything
+        # talking to this server name an arbitrary file on disk and have it
+        # opened as a SQLite database. The server is configured with one case
+        # for a reason, and the two write tools beside this never offered it.
+        capped = _cap(limit, config.max_rows)
+        store = LeadStore(config.case)
         try:
             records = store.open_leads(address) if only_open else store.leads(address)
             counts = store.summary()
         finally:
             store.close()
-        return {
+        total = len(records)
+        records = records[:capped]
+        out: dict[str, Any] = {
             "leads": [
                 {
                     "id": r.id,
@@ -1045,6 +1052,14 @@ def build_server(config: ServerConfig) -> MCPServer:
                 "not there."
             ),
         }
+        if total > capped:
+            # An agent cannot tell a short list from a truncated one, and a
+            # summary written over the first 200 of 500 reads as complete.
+            out["truncated"] = (
+                f"{total} leads exist; the first {capped} are returned. Raise "
+                f"limit or filter by address rather than summarising these as all."
+            )
+        return out
 
     # ------------------------------------------------------------------ writing
 

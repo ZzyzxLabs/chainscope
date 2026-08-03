@@ -43,9 +43,18 @@ distinguish them, in decreasing strength:
 3. Its transfers carry value. Zero-value and dust are the attack's signature,
    because the attacker is buying a line in a list, not moving money.
 
-Where these disagree, or where nothing distinguishes the members of a group,
-this refuses to nominate one. A confidently-wrong answer here sends somebody's
-funds to the attacker, which is the exact harm the module exists to prevent.
+**Only the first decides anything.** Two and three are reported --- every
+member's counts are printed --- and deliberately do not enter
+:attr:`LookalikeGroup.is_decidable`. They are frequencies, not proofs: an
+address can legitimately appear once, and a real payment can legitimately be
+small. Letting them tip a verdict would mean nominating a "real" address on the
+strength of it having been busier, which is exactly the confident guess this
+module exists not to make. They are there for the reader, who has context this
+code does not.
+
+Where the first signal is absent, or where several members share it, this
+refuses to nominate one. A confidently-wrong answer here sends somebody's funds
+to the attacker, which is the harm the module exists to prevent.
 """
 
 from __future__ import annotations
@@ -470,7 +479,13 @@ class PoisoningAnalyzer(Analyzer):
             findings=tuple(findings(groups, examined, edges)),
             warnings=tuple(warnings),
             evidence=ctx.evidence(),
-            params={"address": address, "edges": edges},
+            params={
+                "address": address,
+                "edges": edges,
+                "start_block": start_block,
+                "end_block": end_block,
+                "per_node": limit,
+            },
             started_at=started,
             finished_at=datetime.now(timezone.utc),
         )

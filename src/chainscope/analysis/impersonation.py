@@ -515,7 +515,14 @@ class ImpersonationAnalyzer(Analyzer):
             findings=tuple(findings(rep)),
             warnings=tuple(warnings),
             evidence=ctx.evidence(),
-            params={"address": address, "start_block": start_block, "end_block": end_block},
+            params={
+                "address": address,
+                "start_block": start_block,
+                "end_block": end_block,
+                # The share reported below is over what was read. Without the
+                # limit, "76% forged" cannot be reproduced or bounded.
+                "per_node": limit,
+            },
             started_at=started,
             finished_at=datetime.now(timezone.utc),
         )

@@ -131,11 +131,11 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 # RUF001/2/3 flag characters that resemble ASCII --- the same UTS #39 property
 # `chainscope.core.confusable` is built on, and a good rule everywhere else in
-# this codebase. In these four files the confusable characters ARE the subject:
+# this codebase. In these files the confusable characters ARE the subject:
 # the module implements the detection, the tests use real forged symbols
 # observed in a case, and the agent tool's description shows the caller what a
 # forgery looks like. Ignoring the rule repo-wide would remove a real check
-# from 100 other files to accommodate four.
+# from 100 other files to accommodate five.
 [tool.ruff.lint.per-file-ignores]
 "src/chainscope/core/confusable.py" = ["RUF001", "RUF002", "RUF003"]
 "src/chainscope/analysis/impersonation.py" = ["RUF001", "RUF002", "RUF003"]
