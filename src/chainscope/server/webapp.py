@@ -845,7 +845,14 @@ async function select(address) {
   panel.innerHTML = '<p class="muted">reading the store…</p>';
   try {
     const found = await api("/resolve", { address, chain: state.chain });
-    const node = (state.graph?.nodes || []).find((n) => n.address === address) || {};
+    // `found.key`, not the address as typed. The server applies the per-chain
+    // normalisation and hands back the identity the node list uses; comparing
+    // the raw string matched nothing whenever a user typed a checksummed
+    // address, and the panel then said hop "—" for an address plainly on
+    // screen. A second copy of the rule in JavaScript is what would drift.
+    const key = found.key || address;
+    const node = (state.graph?.nodes || []).find(
+      (n) => n.address === key || n.address === address) || {};
     const rows = [
       ["address", `<span class="mono">${esc(address)}</span>`],
       ["hop", node.depth ?? "—"],

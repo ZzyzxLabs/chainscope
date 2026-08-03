@@ -45,6 +45,7 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from ..chains import address_key
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..providers.base import Capability, ProviderError, ResultTruncated
@@ -202,6 +203,12 @@ class _Handlers:
 
         return {
             "address": address,
+            # The identity the graph payload uses. The page needs to find this
+            # address among nodes it was sent, and it cannot apply the
+            # per-chain normalisation rule itself without keeping a second copy
+            # of that rule in JavaScript --- which is how the two halves drift
+            # apart. The rule stays here; the page is told the answer.
+            "key": address_key(chain, address) if chain else address,
             "chain": str(chain) if chain else None,
             "claims": [
                 {
@@ -444,21 +451,31 @@ class _Handlers:
         return {
             "seed": address,
             "chain": str(chain),
+            # `address_key` on both sides. The page matches an edge to a node
+            # by comparing these strings, so they have to be produced by one
+            # rule: the seed arrives as somebody typed it (checksummed) and
+            # every counterparty arrives lowercase from the store, and raw
+            # strings meant the seed's own edges matched a *second*, lowercase
+            # copy of the seed rather than the seed itself. Two boxes for one
+            # address, its flows split between them.
             "nodes": [
                 {
-                    "address": n.address,
-                    "depth": depths.get(f"{chain}:{n.address}", depths.get(n.address, 0)),
+                    "address": address_key(chain, n.address),
+                    "depth": depths.get(address_key(chain, n.address), 0),
                     "seed": n.is_seed,
                     "frontier": not n.expanded and not n.is_seed,
                     "label": n.label or from_sources.get(n.address, ("", ""))[0],
                     "category": n.category or from_sources.get(n.address, ("", ""))[1],
+                    # What the store actually holds, for anyone checking a
+                    # claim against it by hand.
+                    "as_written": n.address,
                 }
                 for n in built.nodes.values()
             ],
             "edges": [
                 {
-                    "source": e.source,
-                    "target": e.target,
+                    "source": address_key(chain, e.source),
+                    "target": address_key(chain, e.target),
                     "symbol": e.symbol,
                     "asset": e.asset or "",
                     "decimals": e.decimals,

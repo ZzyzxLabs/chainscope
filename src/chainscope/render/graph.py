@@ -93,7 +93,11 @@ class Node:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "id": f"{self.chain}:{self.address}",
+            # The same key `add_node` stores under, so an edge endpoint and a
+            # node id are comparable strings. `address` below keeps the address
+            # as written, for display --- normalising is for identity, not for
+            # what a reader is shown.
+            "id": f"{self.chain}:{address_key(self.chain, self.address)}",
             "address": self.address,
             "chain": self.chain,
             "label": self.label,
@@ -125,12 +129,22 @@ class Edge:
 
     @property
     def key(self) -> tuple[str, str, str, str]:
-        return (self.chain, self.source, self.target, self.asset or self.symbol)
+        # `address_key`, so the same edge seen from the sender's outbound rows
+        # and the recipient's inbound rows folds into one. Raw strings did not:
+        # an EVM address arrives checksummed from a user and lowercase from the
+        # store, and the two spellings produced two edges carrying the same
+        # money twice.
+        return (
+            self.chain,
+            address_key(self.chain, self.source),
+            address_key(self.chain, self.target),
+            self.asset or self.symbol,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "source": f"{self.chain}:{self.source}",
-            "target": f"{self.chain}:{self.target}",
+            "source": f"{self.chain}:{address_key(self.chain, self.source)}",
+            "target": f"{self.chain}:{address_key(self.chain, self.target)}",
             "chain": self.chain,
             "symbol": self.symbol,
             # A string, not a number. JSON numbers are IEEE 754 doubles in
@@ -168,7 +182,14 @@ class Graph:
         second sighting of an address through a lower-confidence path must not
         downgrade a claim already made on stronger evidence.
         """
-        key = f"{node.chain}:{node.address}"
+        # Keyed by `address_key`, not by the address as written. The seed
+        # arrives as somebody typed it --- checksummed --- while every
+        # counterparty arrives lowercase from the store, so a raw key drew the
+        # seed twice: two boxes at the same place in the layout, listed twice
+        # in the sidebar, with its flows split between them. On a case-
+        # sensitive chain `address_key` leaves the address alone, so this
+        # merges what is the same and never merges what is not.
+        key = f"{node.chain}:{address_key(node.chain, node.address)}"
         existing = self.nodes.get(key)
         if existing is None:
             self.nodes[key] = node
