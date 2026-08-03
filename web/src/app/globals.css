@@ -1,0 +1,347 @@
+/* =============================================================================
+   chainscope — Swiss-grid design system.
+
+   Ported from the sup-wallet v5 marketing system so the two read as one family:
+   sharp corners, structural hairlines, one accent, a mono/sans/display trio, and
+   a single `theme-dark` switch on <html> that flips every token together.
+
+   What is deliberately NOT carried over is the accent. sup-wallet's electric
+   `#1F1FE6` is a product signature; using it here would say these are the same
+   product. chainscope takes a colder blue and — more importantly — spends most
+   of its colour budget on two semantic tokens that the marketing system has no
+   need for:
+
+     --cs-caution   what a view cannot tell you
+     --cs-absent    an absence that is not a result
+
+   Those exist because this tool's whole argument is that a missing answer and
+   an empty answer are different claims, and if the design cannot show the
+   difference then the prose is doing it alone.
+   ========================================================================== */
+
+:root {
+  --cs-bg: #ffffff;
+  --cs-ink: #0a0a0a;
+  --cs-ink-2: #262626;
+  --cs-muted: #565656;          /* AA ~7:1 on white */
+  --cs-line: #111111;           /* structural hairline */
+  --cs-line-soft: #d6d6d6;      /* inner rule */
+  --cs-paper: #ffffff;
+  --cs-paper-2: #f4f4f4;
+
+  --cs-accent: #1433d4;
+  --cs-accent-ink: #0f28a8;     /* accent text on white, AA */
+  --cs-accent-wash: #ecefff;
+  --cs-on-accent: #ffffff;
+
+  /* The two semantic tokens this tool needs and a marketing system does not. */
+  --cs-caution: #8a5a12;        /* "it cannot tell you" */
+  --cs-caution-wash: #fdf6e9;
+  --cs-absent: #9a1c1c;         /* an absence rendered as a result */
+
+  --cs-r: 0px;
+  --cs-hair: 1px;
+  --cs-nav-h: 64px;
+  --cs-maxw: min(1280px, 92vw);
+  --cs-band-pad: clamp(56px, 8vh, 104px);
+
+  --cs-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --cs-sans: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  --cs-disp: "Archivo", "Space Grotesk", system-ui, sans-serif;
+}
+
+/* One switch. Set on <html> by the toggle and pre-painted in layout.tsx before
+   first paint, so nothing flashes the wrong theme on load. */
+html.theme-dark {
+  --cs-bg: #0a0a0c;
+  --cs-ink: #f2f3f5;
+  --cs-ink-2: #d3d5db;
+  --cs-muted: #9a9daa;
+  --cs-line: #f2f3f5;
+  --cs-line-soft: #2b2d35;
+  --cs-paper: #101116;
+  --cs-paper-2: #16181f;
+
+  --cs-accent: #7b91ff;
+  --cs-accent-ink: #9fb0ff;
+  --cs-accent-wash: #141733;
+
+  --cs-caution: #e0a458;
+  --cs-caution-wash: #1e1a12;
+  --cs-absent: #e06c75;
+}
+
+* { box-sizing: border-box; }
+
+html {
+  background: var(--cs-bg);
+  color-scheme: light;
+}
+html.theme-dark { color-scheme: dark; }
+
+body {
+  margin: 0;
+  background: var(--cs-bg);
+  color: var(--cs-ink);
+  font-family: var(--cs-sans);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01";
+  overflow-x: clip;
+}
+
+a { color: inherit; }
+
+/* ---------------------------------------------------------------- structure */
+
+.frame { width: var(--cs-maxw); margin: 0 auto; }
+
+.nav {
+  height: var(--cs-nav-h);
+  border-bottom: var(--cs-hair) solid var(--cs-line);
+  display: flex;
+  align-items: center;
+  position: sticky;
+  top: 0;
+  background: var(--cs-bg);
+  z-index: 20;
+}
+.nav-inner {
+  width: var(--cs-maxw);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  height: 100%;
+}
+.nav-mark {
+  font-family: var(--cs-disp);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-size: 17px;
+  text-decoration: none;
+}
+.nav-links { display: flex; gap: 22px; margin-left: auto; align-items: center; }
+.nav-links a {
+  font-family: var(--cs-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  color: var(--cs-muted);
+  text-transform: lowercase;
+}
+.nav-links a:hover { color: var(--cs-ink); }
+.nav-toggle {
+  font-family: var(--cs-mono);
+  font-size: 11px;
+  background: transparent;
+  color: var(--cs-muted);
+  border: var(--cs-hair) solid var(--cs-line-soft);
+  border-radius: var(--cs-r);
+  padding: 5px 9px;
+  cursor: pointer;
+}
+.nav-toggle:hover { color: var(--cs-ink); border-color: var(--cs-line); }
+
+/* ------------------------------------------------------------------- typography */
+
+.eyebrow {
+  font-family: var(--cs-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cs-muted);
+  margin: 0 0 18px;
+}
+
+h1.display {
+  font-family: var(--cs-disp);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 0.98;
+  font-size: clamp(42px, 7.5vw, 104px);
+  margin: 0 0 26px;
+  text-wrap: balance;
+}
+
+h2.section {
+  font-family: var(--cs-disp);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  font-size: clamp(26px, 3.6vw, 44px);
+  line-height: 1.04;
+  margin: 0 0 10px;
+}
+
+h3.item {
+  font-family: var(--cs-sans);
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+}
+
+.lede {
+  font-size: clamp(16px, 1.5vw, 20px);
+  color: var(--cs-ink-2);
+  max-width: 62ch;
+  margin: 0 0 20px;
+  text-wrap: pretty;
+}
+
+p { margin: 0 0 12px; }
+.muted { color: var(--cs-muted); }
+
+code, .mono {
+  font-family: var(--cs-mono);
+  font-size: 0.86em;
+}
+code {
+  background: var(--cs-paper-2);
+  padding: 1px 5px;
+  border-radius: var(--cs-r);
+}
+
+/* ------------------------------------------------------------------ sections */
+
+.band {
+  padding: var(--cs-band-pad) 0;
+  border-top: var(--cs-hair) solid var(--cs-line);
+}
+.band:first-of-type { border-top: 0; }
+
+.rule {
+  border: 0;
+  border-top: var(--cs-hair) solid var(--cs-line-soft);
+  margin: 0;
+}
+
+/* The numbered grid the v5 system uses for feature bands. Numbers are content,
+   not decoration: they let a reader refer to "view 3" in a handover note. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  border-top: var(--cs-hair) solid var(--cs-line);
+  border-left: var(--cs-hair) solid var(--cs-line);
+}
+.cell {
+  border-right: var(--cs-hair) solid var(--cs-line);
+  border-bottom: var(--cs-hair) solid var(--cs-line);
+  padding: 26px 24px 30px;
+  background: var(--cs-paper);
+}
+.cell-n {
+  font-family: var(--cs-mono);
+  font-size: 11px;
+  color: var(--cs-muted);
+  margin: 0 0 14px;
+}
+.cell-where {
+  font-family: var(--cs-mono);
+  font-size: 11.5px;
+  color: var(--cs-muted);
+  margin: 0 0 12px;
+  word-break: break-word;
+}
+.cell p { font-size: 14px; }
+
+/* The two semantic blocks. Different colour, different border, different
+   label — because "what this is for" and "what this cannot tell you" are
+   different kinds of claim and must not read as one paragraph. */
+.for-this {
+  border-left: 2px solid var(--cs-accent);
+  padding-left: 11px;
+  margin: 14px 0 0;
+  font-size: 13.5px;
+}
+.cannot {
+  border-left: 2px solid var(--cs-caution);
+  background: var(--cs-caution-wash);
+  padding: 9px 11px;
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--cs-ink-2);
+}
+.cannot b { color: var(--cs-caution); }
+
+.callout {
+  border: var(--cs-hair) solid var(--cs-line);
+  padding: 22px 24px;
+  background: var(--cs-paper);
+}
+.callout.stark {
+  background: var(--cs-ink);
+  color: var(--cs-bg);
+  border-color: var(--cs-ink);
+}
+.callout.stark .lede { color: var(--cs-bg); opacity: 0.86; }
+
+.cta {
+  display: inline-block;
+  font-family: var(--cs-mono);
+  font-size: 12.5px;
+  text-decoration: none;
+  padding: 11px 20px;
+  border: var(--cs-hair) solid var(--cs-line);
+  border-radius: var(--cs-r);
+  background: var(--cs-ink);
+  color: var(--cs-bg);
+}
+.cta:hover { background: var(--cs-accent); border-color: var(--cs-accent); color: #fff; }
+.cta.ghost { background: transparent; color: var(--cs-ink); }
+.cta.ghost:hover { background: var(--cs-ink); color: var(--cs-bg); }
+.cta-row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 26px; }
+
+/* ---------------------------------------------------------------------- docs */
+
+.docs { display: grid; grid-template-columns: 220px 1fr; gap: 48px; }
+.toc { position: sticky; top: calc(var(--cs-nav-h) + 28px); align-self: start; }
+.toc a {
+  display: block;
+  font-family: var(--cs-mono);
+  font-size: 12px;
+  color: var(--cs-muted);
+  text-decoration: none;
+  padding: 4px 0;
+  border-left: 2px solid transparent;
+  padding-left: 10px;
+}
+.toc a:hover { color: var(--cs-ink); border-left-color: var(--cs-accent); }
+.prose { max-width: 68ch; }
+.prose h2 {
+  font-family: var(--cs-disp);
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  margin: 44px 0 12px;
+  padding-top: 22px;
+  border-top: var(--cs-hair) solid var(--cs-line-soft);
+}
+.prose h2:first-child { margin-top: 0; border-top: 0; padding-top: 0; }
+.prose h3 { font-size: 16px; margin: 26px 0 6px; }
+.prose li { margin: 0 0 6px; }
+
+.endpoint {
+  font-family: var(--cs-mono);
+  font-size: 12.5px;
+  background: var(--cs-paper-2);
+  border-left: 2px solid var(--cs-accent);
+  padding: 7px 11px;
+  margin: 0 0 8px;
+  word-break: break-word;
+}
+
+.foot {
+  border-top: var(--cs-hair) solid var(--cs-line);
+  padding: 30px 0 60px;
+  font-family: var(--cs-mono);
+  font-size: 12px;
+  color: var(--cs-muted);
+}
+.foot a { text-decoration: none; }
+.foot a:hover { color: var(--cs-ink); }
+
+@media (max-width: 860px) {
+  .docs { grid-template-columns: 1fr; gap: 24px; }
+  .toc { position: static; }
+  .nav-links { gap: 14px; }
+}

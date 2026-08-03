@@ -57,7 +57,7 @@ VIEWS: tuple[dict[str, str], ...] = (
         ),
         "limits": (
             "The columns are hop distance, not time \u2014 an address two columns "
-            "right is not necessarily later. A node drawn with a dashed border "
+            "right is not necessarily later. A node with a dashed border "
             "is a frontier: its counterparties were never fetched, so the "
             "picture stops there because nobody looked, not because the money "
             "did."
@@ -71,7 +71,7 @@ VIEWS: tuple[dict[str, str], ...] = (
         "limits": (
             "An edge aggregates many transfers, so it appears once its span "
             "reaches the cursor. Undated edges are always shown: a missing "
-            "timestamp means the provider gave none, which says nothing about when."
+            "timestamp means the provider gave none, which says nothing about when it happened."
         ),
     },
     {
@@ -86,8 +86,8 @@ VIEWS: tuple[dict[str, str], ...] = (
             "Forged tokens are how a graph is made to tell a false story."
         ),
         "limits": (
-            "UNLISTED means there is no canonical entry to compare against \u2014 "
-            "it is neither an accusation nor a clearance."
+            "UNLISTED means there is no canonical entry to compare against. It is "
+            "neither an accusation nor a clearance."
         ),
     },
     {
@@ -103,7 +103,7 @@ VIEWS: tuple[dict[str, str], ...] = (
             "worth following."
         ),
         "limits": (
-            "The only control here that spends a rate limit. A filter narrows "
+            "The only control that spends a rate limit. A filter narrows "
             "what is fetched, so it narrows what you will ever see \u2014 the "
             "result states how many flows it excluded, because a filter that "
             "matched nothing and an address that never moved money produce the "

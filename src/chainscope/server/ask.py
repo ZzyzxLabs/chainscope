@@ -34,6 +34,7 @@ box, and for an agent that wants the same interpretation a person would get.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -120,8 +121,6 @@ def interpret(question: str, *, chain: str = "eip155:1", now: int = 0) -> Plan:
         if not match:
             continue
         plan = build(address, chain, since, match, text)
-        if plan is None:
-            continue
         if window_said and "since" not in plan.params:
             unknowns.append(f"the time window ({window_said}) --- this view has no time filter")
         plan.unknowns = unknowns
@@ -261,11 +260,13 @@ def _stats(address: str, chain: str, since: int | None, m: Any, text: str) -> Pl
     )
 
 
+_Build = Callable[[str, str, "int | None", Any, str], Plan]
+
 #: Intent patterns, most specific first. Regexes rather than keywords so
 #: "sent to" and "who sent" do not collide: the first is outbound from the
 #: subject, the second inbound to it, and mixing them reverses the direction of
 #: an accusation.
-_INTENTS: tuple[tuple[str, Any], ...] = (
+_INTENTS: tuple[tuple[str, _Build], ...] = (
     (r"\b(?:impersonat|pretend|fake|forged|really\s+(?:usdc|usdt|weth|eth))", _impersonation),
     (r"\b(?:poison|lookalike|look.alike|similar\s+address|mistak)", _poisoning),
     (
