@@ -448,7 +448,25 @@ class Client:
                 self.breaker.record_failure(host)
                 time.sleep(0.5 * (attempt + 1))
 
-        raise TransportError(f"{host}: failed after {self.max_retries} attempts: {last}")
+        # The body, when there was one.
+        #
+        # httpx's message for a 4xx is "Client error '400 Bad Request' for url
+        # ...", which says a request was refused and nothing about why. The
+        # reason is almost always in the body --- "query returned more than
+        # 10000 results", "invalid params: trailing null in topics" --- and
+        # discarding it turns a five-second fix into an afternoon of guessing.
+        # Truncated, because an HTML error page is not worth a screen of noise.
+        detail = ""
+        if isinstance(last, httpx.HTTPStatusError):
+            try:
+                body = last.response.text.strip()
+            except Exception:
+                body = ""
+            if body:
+                detail = f"\n  the server said: {body[:400]}"
+        raise TransportError(
+            f"{host}: failed after {self.max_retries} attempts: {last}{detail}"
+        )
 
     def close(self) -> None:
         if self._client is not None:

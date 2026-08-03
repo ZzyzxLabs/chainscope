@@ -85,6 +85,33 @@ def is_cacheable(body: Any) -> bool:
     return any(n in str(body.get("message", "")).lower() for n in _NO_DATA)
 
 
+def _normalise_log(row: dict[str, Any]) -> dict[str, Any]:
+    """One log, in the shape `eth_getLogs` returns.
+
+    Blockscout's Etherscan-compatible endpoint differs from the JSON-RPC one in
+    two ways that are silent rather than loud, which is what makes them worth
+    fixing here rather than in every caller:
+
+    **Topics are padded to four with nulls.** A caller applying the ERC-20 rule
+    "exactly three topics" gets four and rejects every record --- fifteen real
+    transfers became zero, and an empty set does not look like a mistake.
+
+    **There is no `blockHash`.** Deduplicating by `(blockHash, transactionHash,
+    logIndex)`, which is the standard identity for a log, silently keys on
+    `None` and folds unrelated records together.
+
+    Normalising at the provider boundary is the point: a caller written against
+    one provider's shape must not quietly return a different answer from
+    another, because the whole reason a second provider exists here is to catch
+    the first one being wrong.
+    """
+    out = dict(row)
+    topics = [t for t in (row.get("topics") or []) if t is not None]
+    out["topics"] = topics
+    out.setdefault("blockHash", None)
+    return out
+
+
 class BlockscoutProvider(ReadOnlyProvider):
     """Explorer-backed history from a public Blockscout instance."""
 
@@ -454,4 +481,4 @@ class BlockscoutProvider(ReadOnlyProvider):
                 f"There is very likely more. Narrow fromBlock/toBlock; any set "
                 f"derived from this is a subset and not a complete enumeration."
             )
-        return [r for r in rows if isinstance(r, dict)]
+        return [_normalise_log(r) for r in rows if isinstance(r, dict)]
