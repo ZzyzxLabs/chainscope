@@ -13,6 +13,7 @@ public RPC cannot.
 from __future__ import annotations
 
 from collections.abc import Callable, Hashable, Iterable, Sequence
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
@@ -205,6 +206,93 @@ class Router:
         rows = list(self.dispatch(chain, capability, call))
         return Corroboration(rows=rows, sources=(options[0].name,) if options else ())
 
+    def _ask_concurrently(
+        self,
+        options: Sequence[Provider],
+        call: Callable[[Provider], Iterable[T]],
+        *,
+        want: int,
+    ) -> list[tuple[Provider, list[T], str | None]]:
+        """Ask providers in parallel, stopping once ``want`` have succeeded.
+
+        **It issues exactly the requests the serial version would.** That is the
+        constraint the design is built around, not an accident: candidates are
+        ranked by cost tier, so a naive fan-out across every option would bill a
+        paid provider to corroborate an answer two free ones had already agreed
+        on, and would spend rate limit nobody asked to spend.
+
+        The way it holds is to keep ``want`` requests in flight and top up only
+        when one *fails*. Serially, a provider is tried only because the ones
+        before it did not yield enough successes; here a provider is launched
+        only when a launched one has already failed. Both stop at ``want``
+        successes, so both make the same calls --- these are merely overlapped.
+
+        Returns ``(provider, rows, failure)`` in **``options`` order**, not
+        completion order, so the caller's merge cannot depend on which endpoint
+        happened to be quick.
+
+        Threads rather than asyncio: every provider is a blocking HTTP client,
+        the shared state they touch (cache, throttle, circuit breaker, audit
+        log) is already lock-guarded, and the token bucket computes its wait
+        under the lock and sleeps outside it --- so the configured per-host rate
+        is still enforced across all of them. Making this async would mean
+        rewriting the transport for a path whose cost is entirely latency.
+        """
+        if not options:
+            return []
+        # One candidate is the common case on most chains. Skipping the pool
+        # keeps the stack trace and the audit log identical to the serial path.
+        if len(options) == 1 or want <= 1:
+            provider = options[0]
+            return [(provider, *self._attempt(provider, call))]
+
+        outcomes: dict[int, tuple[list[T], str | None]] = {}
+        succeeded = 0
+        next_index = 0
+        with ThreadPoolExecutor(max_workers=want, thread_name_prefix="chainscope-ask") as pool:
+            running: dict[Any, int] = {}
+            while next_index < min(want, len(options)):
+                job = pool.submit(self._attempt, options[next_index], call)
+                running[job] = next_index
+                next_index += 1
+
+            while running:
+                done, _ = wait(list(running), return_when=FIRST_COMPLETED)
+                for future in done:
+                    index = running.pop(future)
+                    rows, failure = future.result()
+                    outcomes[index] = (rows, failure)
+                    if failure is None:
+                        succeeded += 1
+                    elif succeeded + len(running) < want and next_index < len(options):
+                        # Top up only on a failure, and only if the ones still
+                        # in flight cannot reach `want` on their own.
+                        job = pool.submit(self._attempt, options[next_index], call)
+                        running[job] = next_index
+                        next_index += 1
+
+        return [(options[i], outcomes[i][0], outcomes[i][1]) for i in sorted(outcomes)]
+
+    @staticmethod
+    def _attempt(
+        provider: Provider, call: Callable[[Provider], Iterable[T]]
+    ) -> tuple[list[T], str | None]:
+        """Run one provider, returning its rows or a description of its failure.
+
+        Never raises. A provider that throws inside a worker thread would
+        otherwise surface as an unrelated traceback from `future.result()` at a
+        point that says nothing about which provider failed.
+        """
+        try:
+            return list(call(provider)), None
+        except ProviderError as exc:
+            return [], f"{provider.name}: {exc}"
+        except Exception as exc:
+            # Same shape as dispatch: a parsing bug in one provider's adapter
+            # should not take down a query another can answer. Recorded by type
+            # so it is not mistaken for an upstream error.
+            return [], f"{provider.name}: {type(exc).__name__}: {exc}"
+
     def corroborate(
         self,
         chain: ChainId,
@@ -263,19 +351,25 @@ class Router:
         # and free public endpoints fail constantly, which is the reason the
         # router falls back at all. Two *successes* is the target, not two
         # attempts.
-        for provider in options:
+        #
+        # Run concurrently, because the two providers are independent and the
+        # wait is the network. Measured: an uncached round trip is ~1.6s and the
+        # local half of this runs at 2,451x that, so asking twice in sequence
+        # spends its entire budget waiting twice for answers that never needed
+        # to be ordered.
+        results = self._ask_concurrently(options, call, want=2)
+
+        # Merged in `options` order, never completion order. Whichever provider
+        # answers first is a fact about the network that day, and `setdefault`
+        # below means it would decide which rendering of a duplicated row is
+        # kept --- so replaying the same case on a slower connection could
+        # produce a different result. Ordering by preference keeps the answer a
+        # function of the inputs.
+        for provider, rows, failure in results:
             if len(by_source) >= 2:
                 break
-            try:
-                rows = list(call(provider))
-            except ProviderError as exc:
-                failures.append(f"{provider.name}: {exc}")
-                continue
-            except Exception as exc:
-                # Same shape as dispatch: a parsing bug in one provider's
-                # adapter should not take down a query another can answer.
-                # Recorded by type so it is not mistaken for an upstream error.
-                failures.append(f"{provider.name}: {type(exc).__name__}: {exc}")
+            if failure is not None:
+                failures.append(failure)
                 continue
             keys = set()
             for row in rows:

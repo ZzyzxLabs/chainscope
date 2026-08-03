@@ -36,6 +36,7 @@ import json
 import secrets
 import threading
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -927,8 +928,32 @@ def _sift(
     return kept, dropped
 
 
+def _fetch_page(
+    provider: Any, chain: ChainId, address: str, page: int
+) -> tuple[list[Any], bool]:
+    """One page. Returns ``(rows, ended)`` and never raises for an empty listing.
+
+    ``ended`` means the provider said there is nothing beyond here --- which
+    Blockscout reports as an error rather than an empty list, so the check has
+    to be on the message. Treating that as fatal would discard everything
+    already gathered, and on a paged read that is most of the answer.
+    """
+    try:
+        rows = provider.asset_transfers(chain, address, direction="all", limit=1000, page=page)
+        return list(rows), False
+    except ResultTruncated as exc:
+        # A full page is the expected outcome when paging, not a failure. The
+        # signal still means "there is more", which is what the loop is for;
+        # the rows it carries are this page.
+        return list(exc.rows), False
+    except ProviderError as exc:
+        if "not found" in str(exc).lower() or "no token transfers" in str(exc).lower():
+            return [], True
+        raise
+
+
 def _fetch_into(
-    store: SqliteStore, address: str, chain: ChainId, *, max_pages: int = 15
+    store: SqliteStore, address: str, chain: ChainId, *, max_pages: int = 15, width: int = 4
 ) -> tuple[int, bool]:
     """Pull an address's transfers into the store, paging until they run out.
 
@@ -945,31 +970,21 @@ def _fetch_into(
     and spends its budget halving empty space: measured, 28 seconds to reach a
     single-block window and conclude, wrongly, that one block held a thousand
     transfers. Page numbers are what the upstream API actually offers.
+
+    **Page one is fetched alone, and only then does it widen.** Paging is
+    sequential by nature --- you learn there is a page five by seeing that page
+    four was full --- so fetching a window speculatively spends requests on
+    pages that may not exist. Almost every address is one page. Asking for one
+    first means the common case costs exactly one request, as before, and only
+    an address that has already proved it has more pays for the guess. The
+    window is what turns fifteen sequential round trips into four.
     """
     provider = _asset_provider(chain)
     rows: list[Any] = []
     seen: set[tuple[str, int]] = set()
     complete = False
 
-    for page in range(1, max_pages + 1):
-        try:
-            batch = provider.asset_transfers(
-                chain, address, direction="all", limit=1000, page=page
-            )
-        except ResultTruncated as exc:
-            # A full page is the expected outcome when paging, not a failure.
-            # The signal still means "there is more", which is what the loop is
-            # for; the rows it carries are this page.
-            batch = exc.rows
-        except ProviderError as exc:
-            # An empty page is how a listing ends, and Blockscout reports it as
-            # an error. Treating that as fatal would discard everything already
-            # gathered --- and on a paged read, that is most of the answer.
-            if "not found" in str(exc).lower() or "no token transfers" in str(exc).lower():
-                complete = True
-                break
-            raise
-
+    def absorb(batch: list[Any]) -> int:
         fresh = 0
         for transfer in batch:
             identity = (str(getattr(transfer.tx, "hash", "")), transfer.index)
@@ -978,12 +993,42 @@ def _fetch_into(
             seen.add(identity)
             rows.append(transfer)
             fresh += 1
-        if len(batch) < 1000 or fresh == 0:
-            # A short page is the end. Zero *new* rows on a full page means the
-            # provider ignored `page` and served the first one again --- some
-            # do --- and continuing would spin the budget for nothing.
-            complete = True
-            break
+        return fresh
+
+    first, ended = _fetch_page(provider, chain, address, 1)
+    fresh = absorb(first)
+    if ended or len(first) < 1000 or fresh == 0:
+        complete = True
+    else:
+        page = 2
+        # The window ramps rather than starting at its full size. Speculation
+        # always risks fetching a page that does not exist, and a fixed window
+        # spends that risk where addresses are most common: measured, a
+        # two-page address issued five requests instead of two. Doubling from
+        # two means a shallow address wastes at most one request and a deep one
+        # still reaches full width after a single round.
+        span = 2
+        while page <= max_pages and not complete:
+            window = list(range(page, min(page + span, max_pages + 1)))
+            with ThreadPoolExecutor(max_workers=len(window)) as pool:
+                jobs = {
+                    n: pool.submit(_fetch_page, provider, chain, address, n) for n in window
+                }
+                # Absorbed in page order regardless of completion order, so the
+                # rows land in the same sequence a serial read would produce
+                # and `seen` resolves duplicates the same way every run.
+                for n in window:
+                    batch, page_ended = jobs[n].result()
+                    fresh = absorb(batch)
+                    if page_ended or len(batch) < 1000 or fresh == 0:
+                        # A short page is the end. Zero *new* rows on a full
+                        # page means the provider ignored `page` and served the
+                        # first one again --- some do --- and continuing would
+                        # spin the budget for nothing.
+                        complete = True
+                        break
+            page += span
+            span = min(span * 2, width)
 
     if rows:
         store.put_transfers(rows)
