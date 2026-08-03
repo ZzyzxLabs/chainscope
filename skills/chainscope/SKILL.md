@@ -53,6 +53,29 @@ It exits non-zero when nothing was found, so silence is not readable as a clean
 bill of health. An empty step means *this window held no evidence of that
 pattern*, never *the pattern is absent*.
 
+### Record somewhere to look next, and what came of it
+
+```bash
+chainscope lead add 0xADDR -k twitter -v alice -s "ENS text record on foo.eth"
+chainscope lead list --open                       # what is still outstanding
+chainscope lead settle 1 --verdict refuted --why "that account never published it"
+```
+
+**A lead is not an attribution and the distinction is load-bearing.** An ENS
+text record reading `com.twitter = alice` does not mean the address belongs to
+@alice; it means whoever controls that name typed "alice" into a field. Every
+lead carries the specific step that would confirm it, and that step is always
+something a *person* does somewhere this tool cannot reach.
+
+Two behaviours to rely on:
+
+- **Refuted leads are kept, never deleted.** The record that somebody already
+  checked is what stops you repeating the search --- and in a shared case, stops
+  two people doing it at once. Re-filing a settled lead tells you it was
+  settled, and by whom, and why.
+- **A verdict without a reason is refused.** "Confirmed" with no stated basis
+  reads, once its author has moved on, exactly like a guess made quickly.
+
 ### Look up what is known about an address
 
 ```bash

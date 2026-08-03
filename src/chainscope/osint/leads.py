@@ -37,6 +37,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = ["TEXT_KEYS", "Lead", "leads_from_text_records"]
 
+#: Re-exported for the CLI, which offers the same default when a person files a
+#: lead by hand and does not state the verification step themselves.
+
 #: ENS text-record keys worth following, and what each is.
 #:
 #: Deliberately a fixed map rather than "every key present". A resolver can
