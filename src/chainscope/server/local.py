@@ -269,6 +269,92 @@ class _Handlers:
         claims = list(found.entity.all_claims) if found.entity else []
         return claims, failed
 
+    def expand(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """Fetch one hop out from a single address, on the investigator's terms.
+
+        The alternative --- and what this tool did before --- is choosing a
+        depth up front and fetching everything within it. That spends a rate
+        limit on addresses nobody has looked at yet, and fills the picture with
+        counterparties whose presence records no decision. Expanding one node
+        at a time means every address on screen is there because somebody
+        judged the one before it worth following, which is also what makes the
+        drawing readable as an argument rather than a dump.
+
+        The filters exist because "expand this" is rarely the real question.
+        The real one is "where did the large amounts go", or "who paid this in
+        the week before the theft", and a walk that ignores those spends its
+        budget on dust. Each is applied at fetch time, so the cost tracks the
+        question.
+
+        What must not happen is a filter silently deciding the answer: a time
+        window that excludes the interesting transfer looks exactly like an
+        address that never made one. So the response states what it applied and
+        what it left out, and the page repeats it.
+        """
+        address = (_first(query, "address") or "").strip()
+        if not address:
+            raise ValueError("address is required")
+        chain = self._chain(_first(query, "chain") or "1") or ChainId.evm(1)
+
+        ways = [w for w in (_first(query, "direction") or "both").split(",") if w]
+        if ways == ["both"]:
+            ways = ["out", "in"]
+        if not set(ways) <= {"out", "in"}:
+            raise ValueError("direction must be 'out', 'in', 'both', or 'out,in'")
+
+        asset = (_first(query, "asset") or "").strip()
+        since = _int_or_none(_first(query, "since"))
+        until = _int_or_none(_first(query, "until"))
+        min_raw = (_first(query, "min_raw") or "").strip()
+        limit = max(1, min(int(_first(query, "limit") or "40"), 400))
+
+        store = self._store()
+        try:
+            key = address_key(chain, address)
+            before = {address_key(chain, a) for a in _counterparties(store, key, chain)}
+            fetched, complete = _fetch_into(store, key, chain)
+
+            edges: list[Any] = []
+            for way in ways:
+                edges.extend(store.edges(key, chain, direction=way))
+            kept, dropped = _sift(edges, asset=asset, since=since, until=until, min_raw=min_raw)
+            kept.sort(key=lambda e: e.total_raw, reverse=True)
+            trimmed = len(kept) > limit
+            kept = kept[:limit]
+            after = {
+                address_key(
+                    chain, e.recipient if address_key(chain, e.sender) == key else e.sender
+                )
+                for e in kept
+            }
+        finally:
+            store.close()
+
+        return {
+            "address": key,
+            "chain": str(chain),
+            "directions": ways,
+            "fetched": fetched,
+            # Whether the provider had more to give. A partial fetch that reads
+            # as a complete one is the difference between "this address sent
+            # money to four places" and "we stopped asking after four".
+            "complete": complete,
+            "new_addresses": sorted(after - before),
+            "kept": len(kept),
+            # Named, never inferred from a smaller number. A filter that
+            # removed the interesting transfer must not look like an address
+            # that never made one.
+            "filtered_out": dropped,
+            "truncated": trimmed,
+            "applied": {
+                "asset": asset or "any",
+                "since": since,
+                "until": until,
+                "min_raw": min_raw or "any",
+                "limit": limit,
+            },
+        }
+
     def flows(self, query: dict[str, list[str]]) -> dict[str, Any]:
         address = (_first(query, "address") or "").strip()
         if not address:
@@ -677,6 +763,93 @@ class _Handlers:
         }
 
 
+def _int_or_none(text: str | None) -> int | None:
+    """A unix timestamp, or nothing. Never a default.
+
+    A missing bound means "no bound"; parsing junk into 0 or into "now" would
+    silently answer a different question than the one asked.
+    """
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        raise ValueError(f"{text!r} is not a unix timestamp") from None
+
+
+def _counterparties(store: SqliteStore, address: str, chain: ChainId) -> list[str]:
+    """Everyone this address already has an edge to, in either direction."""
+    seen: list[str] = []
+    for way in ("out", "in"):
+        for edge in store.edges(address, chain, direction=way):
+            seen.append(edge.recipient if way == "out" else edge.sender)
+    return seen
+
+
+def _stamp(value: Any) -> int | None:
+    """A datetime as unix seconds, passing through ints and None.
+
+    An undated edge returns None and is *kept* by every time filter. Dropping
+    it would be worse than keeping it: the reason it has no timestamp is that
+    the provider did not supply one, which says nothing about when it happened.
+    """
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    return int(value.timestamp())
+
+
+def _sift(
+    edges: list[Any],
+    *,
+    asset: str,
+    since: int | None,
+    until: int | None,
+    min_raw: str,
+) -> tuple[list[Any], int]:
+    """Apply the filters, and count what they removed.
+
+    Returning the count is the point. An empty result after filtering and an
+    address with no counterparties are the same empty list, and only one of
+    them is a finding --- so the caller can say which.
+
+    Time is compared against the edge's *span*, not its start: an edge
+    aggregates many transfers, and one that began before the window and
+    continued into it belongs in the window.
+    """
+    floor = int(min_raw) if min_raw else 0
+    kept, dropped = [], 0
+    for edge in edges:
+        # Either identity matches. `asset` is the contract address and is the
+        # real identity; `symbol` is only what to print --- but the page offers
+        # a symbol dropdown, because that is what a person reading a graph
+        # knows. Comparing against the contract alone silently excluded
+        # everything whenever somebody picked "WETH", which looked exactly like
+        # an address that never held WETH.
+        if asset:
+            wanted = asset.lower()
+            if wanted not in {(edge.asset or "").lower(), (edge.symbol or "").lower()}:
+                dropped += 1
+                continue
+        # `EdgeSummary` carries datetimes; the query carries unix seconds.
+        # Comparing the two directly raises at runtime and mypy cannot see it
+        # through `list[Any]`, so the conversion is explicit here.
+        last = _stamp(edge.last_seen)
+        first = _stamp(edge.first_seen)
+        if since is not None and last is not None and last < since:
+            dropped += 1
+            continue
+        if until is not None and first is not None and first > until:
+            dropped += 1
+            continue
+        if floor and edge.total_raw < floor:
+            dropped += 1
+            continue
+        kept.append(edge)
+    return kept, dropped
+
+
 def _fetch_into(
     store: SqliteStore, address: str, chain: ChainId, *, max_pages: int = 15
 ) -> tuple[int, bool]:
@@ -924,6 +1097,7 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
             routes = {
                 "/resolve": handlers.resolve,
                 "/flows": handlers.flows,
+                "/expand": handlers.expand,
                 "/graph": handlers.graph,
                 "/analyze": handlers.analyze,
                 "/leads": handlers.leads,

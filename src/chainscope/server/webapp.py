@@ -16,12 +16,23 @@ because it fits the work:
 * **right** — everything known about whatever is selected, and the analyses you
   can run on it without leaving the page.
 
-**It shows the store, and says so.** Nothing here fetches from a chain. The
-search box takes an address that is *already* in the case, and when it is not,
-the answer says the store has never seen it rather than drawing an empty graph
-— those look identical and mean opposite things. Bringing new data in is
-`chainscope investigate`, which is a decision about spending somebody's rate
-limit and does not belong behind a text field.
+**It shows the store, and says so.** Reading never fetches: the search box
+takes an address that is *already* in the case, and when it is not, the answer
+says the store has never seen it rather than drawing an empty graph — those
+look identical and mean opposite things.
+
+**Fetching is one button, pressed deliberately.** "Follow the money from here"
+expands the selected address one hop and merges the result in. It is the only
+control that spends somebody's rate limit, which is why it is a press rather
+than something a redraw can trigger, and why it reports what it did *not*
+bring back — a filter that excluded the interesting transfer and an address
+that never made one both end in a smaller graph, and only one is a finding.
+
+Expanding by hand rather than choosing a depth up front is the point. A depth
+spends the budget on addresses nobody has looked at yet and fills the picture
+with counterparties whose presence records no decision; this way every address
+on screen is there because somebody judged the one before it worth following,
+which is also what makes the drawing readable as an argument.
 
 **Loopback and same-origin only.** The page is served by the same server that
 answers its requests, so a token is not in a URL anybody can copy. The store
@@ -191,6 +202,11 @@ label.asset input { margin: 0; accent-color: var(--accent); }
   padding-left: 9px; margin: 8px 0;
 }
 .row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; }
+.ctl { display: flex; gap: 10px; align-items: center; padding: 4px 0; }
+.ctl select { flex: 1; min-width: 0; }
+.ctl button { flex: 1; }
+.ctl label { display: flex; gap: 5px; align-items: center; cursor: pointer; }
+.ctl input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
 .row + .sub { color: var(--muted); font-size: 10.5px; margin-top: -3px; }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .actions button { font-size: 12px; padding: 4px 9px; }
@@ -950,12 +966,36 @@ async function select(address) {
       '<p class="note">Filed in the case log --- append-only, authored, timed. ' +
       'Not a sticky on the drawing: a note that lives in a picture is lost when ' +
       'the picture is redrawn, and cannot answer "what is still open".</p>' +
+      // Expanding one node at a time, rather than picking a depth up front.
+      // A depth spends the rate limit on addresses nobody has looked at and
+      // fills the picture with counterparties whose presence records no
+      // decision; expanding by hand means every address on screen is there
+      // because somebody judged the one before it worth following.
+      '<h2>follow the money from here</h2>' +
+      '<div class="ctl"><label><input type="checkbox" id="xout" checked> out</label>' +
+      '<label><input type="checkbox" id="xin" checked> in</label></div>' +
+      `<div class="ctl"><select id="xasset"><option value="">every asset</option>` +
+      (state.graph?.assets || []).map((a) =>
+        `<option value="${esc(a.symbol)}">${esc(a.symbol)}</option>`).join("") +
+      '</select><select id="xwhen">' +
+      '<option value="">any time</option><option value="86400">last 24 hours</option>' +
+      '<option value="604800">last 7 days</option>' +
+      '<option value="2592000">last 30 days</option>' +
+      '<option value="7776000">last 90 days</option></select></div>' +
+      '<div class="ctl"><button id="xgo">expand one hop</button></div>' +
+      '<p class="note">Fetches this address\\u2019s counterparties from a chain and ' +
+      'merges them in. A filter narrows what is fetched, so it also narrows what ' +
+      'you will ever see \\u2014 the result says what it left out, because a window ' +
+      'that excludes the interesting transfer looks exactly like an address that ' +
+      'never made one.</p>' +
       '<h2>run on this address</h2><div class="actions">' +
       ["impersonation", "poisoning", "contributors"].map((a) =>
         `<button data-run="${a}">${a}</button>`).join("") + "</div><div id='out'></div>";
     panel.innerHTML = html;
     panel.querySelectorAll("[data-run]").forEach((b) =>
       b.addEventListener("click", () => runAnalysis(b.dataset.run, address)));
+    const xgo = $("#xgo");
+    if (xgo) xgo.addEventListener("click", () => expandFrom(address));
     loadNotes(address);
     const filed = $("#notesave");
     if (filed) {
@@ -1027,6 +1067,49 @@ async function loadNotes(address) {
       : '<p class="muted">none filed against this address</p>';
   } catch (err) {
     box.innerHTML = `<p class="bad">${esc(err.message)}</p>`;
+  }
+}
+
+// Fetch one hop out from a node and merge it in.
+//
+// The one place in this page that spends somebody's rate limit, so it is a
+// button somebody presses rather than something a redraw can trigger. It also
+// reports what it did NOT bring back: a filter that removed the interesting
+// transfer and an address that never made one both end in a smaller graph, and
+// only one of those is a finding.
+async function expandFrom(address) {
+  const go = $("#xgo");
+  const ways = [];
+  if ($("#xout")?.checked) ways.push("out");
+  if ($("#xin")?.checked) ways.push("in");
+  if (!ways.length) { say("pick a direction — in, out, or both", "bad"); return; }
+
+  const window_ = $("#xwhen")?.value;
+  const params = { address, chain: state.chain, direction: ways.join(",") };
+  const asset = $("#xasset")?.value;
+  if (asset) params.asset = asset;
+  // Relative windows are resolved here, against the reader's clock, and sent
+  // as an absolute instant. The server must never interpret "last 7 days"
+  // itself: the same request replayed tomorrow would mean a different week,
+  // and a case that cannot be replayed is not evidence.
+  if (window_) params.since = Math.floor(Date.now() / 1000) - Number(window_);
+
+  go.disabled = true;
+  go.textContent = "fetching\u2026";
+  try {
+    const r = await api("/expand", params);
+    const bits = [`${r.fetched} transfer(s) fetched`,
+                  `${r.new_addresses.length} new address(es)`];
+    if (r.filtered_out) bits.push(`${r.filtered_out} flow(s) excluded by your filter`);
+    if (r.truncated) bits.push(`list cut at ${r.applied.limit}`);
+    if (!r.complete) bits.push("the provider had more — this is not all of it");
+    say(bits.join(" · "), r.complete && !r.truncated ? "ok" : "warn");
+    await load(address);
+  } catch (err) {
+    say(`expand failed: ${err.message}`, "bad");
+  } finally {
+    go.disabled = false;
+    go.textContent = "expand one hop";
   }
 }
 
@@ -1114,7 +1197,7 @@ if (fromUrl) {
 
 api("/health").then((h) => {
   say(`${h.transfers ?? 0} transfers in ${h.store || "the store"} · ` +
-      `this page reads what is already there and never fetches from a chain`);
+      `reading never fetches \u2014 expanding a node does, and says so`);
 }).catch(() => say("the server is not answering", "bad"));
 """
 
@@ -1172,9 +1255,10 @@ _TEMPLATE = """<!doctype html>
   </div>
   <aside class="right"><h2>selected</h2><div id="detail">
     <p class="muted">Enter an address that is already in the case.</p>
-    <p class="note">This page reads the store. It never fetches from a chain &mdash;
-    bringing new data in is <span class="mono">chainscope investigate</span>, which
-    spends somebody's rate limit and should not sit behind a text field.</p>
+    <p class="note">This page reads the store. Select an address and use
+      &ldquo;follow the money from here&rdquo; to fetch one hop from a chain
+      &mdash; the only control that spends a rate limit, which is why it is a
+      button and not something a redraw does for you.</p>
   </div></aside>
 </main>
 <dialog id="adddlg">
