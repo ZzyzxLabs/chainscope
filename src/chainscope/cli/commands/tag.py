@@ -199,10 +199,31 @@ def _analyst(args: argparse.Namespace) -> str:
 
 
 def _confidence(raw: str) -> Confidence:
+    """Parse ``--confidence``, and name the options when it is wrong.
+
+    ``Confidence[text.upper()]`` raises `KeyError('HGIH')` --- an uncaught
+    traceback from a one-character typo, at the boundary whose job is to turn a
+    typed argument into either a value or a sentence. `_tag_one` catches
+    `ValueError` and would have printed something; `KeyError` is not one, so it
+    escaped both call sites.
+
+    The numeric form stays: `--confidence 3` appears in scripts. Out of range
+    now reads as out of range rather than as an enum's internal complaint.
+    """
     text = raw.strip().lower()
+    names = ", ".join(c.name.lower() for c in Confidence)
     if text.isdigit():
-        return Confidence(int(text))
-    return Confidence[text.upper()]
+        try:
+            return Confidence(int(text))
+        except ValueError:
+            raise ValueError(
+                f"--confidence {raw!r} is out of range. "
+                f"Use 0-{max(c.value for c in Confidence)}, or a name: {names}"
+            ) from None
+    try:
+        return Confidence[text.upper()]
+    except KeyError:
+        raise ValueError(f"unknown --confidence {raw!r}. Use one of: {names}") from None
 
 
 def _import_file(args: argparse.Namespace, render: Renderer, path: Path) -> int:
@@ -232,6 +253,14 @@ def _import_file(args: argparse.Namespace, render: Renderer, path: Path) -> int:
     except ImportError_ as exc:
         _err(str(exc))
         return 1
+    except ValueError as exc:
+        # `--chain bsx` and `--confidence hgih` reach here. Both are the caller
+        # mistyping an argument, which is exit 2 and the same code `_tag_one`
+        # returns for them --- neither is an import that ran and failed, and a
+        # script has to be able to tell those apart. Before this they came back
+        # as a traceback, which is neither.
+        _err(str(exc))
+        return 2
     finally:
         if store is not None:
             store.close()

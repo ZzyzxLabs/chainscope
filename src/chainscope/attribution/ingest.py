@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..chains import adapter_for
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId, resolve
 
@@ -252,6 +253,54 @@ def read_rows(path: Path | str) -> Iterator[Mapping[str, Any]]:
 # --------------------------------------------------------------------- mapping
 
 
+#: The shortest thing that is an address on any chain this tool might be handed
+#: a list for. XRP's are 25; nothing real is shorter. Used only for the chainless
+#: case, where there is no adapter to ask.
+_SHORTEST_PLAUSIBLE = 25
+
+
+def _check_address(
+    address: str,
+    chain: ChainId | None,
+    mapping: Mapping[str, Sequence[str]],
+) -> None:
+    """Refuse a row whose address column does not hold an address.
+
+    The importer checked the label and the category and never the address, so
+    ``not-an-address`` imported clean and the report read "1 label ready". The
+    mistake this catches is not a person typing a bad address --- it is a column
+    mapping being off by one, or a header row read as data, which puts a *name*
+    or a *date* in this column for the whole file. Those attributions then sit in
+    the store keyed on a string nothing will ever match, and the module docstring
+    is explicit that getting them back out is much harder than not writing them.
+
+    **With a chain, the adapter decides.** That is exact --- it is the same
+    check `ChainAdapter.address` makes before building an `Address`.
+
+    **Without one, the test is deliberately weak**, because a chainless list is
+    usually a sanctions publication and those carry Monero, Zcash and Ripple
+    addresses this package has no adapter for. Rejecting anything unrecognised
+    would throw away the rows most worth having. So the chainless rule only
+    catches what cannot be an address on *any* chain: it has whitespace, or it is
+    shorter than the shortest address anybody issues.
+    """
+    if chain is not None:
+        adapter = adapter_for(chain.namespace)
+        if adapter is not None and not adapter.is_valid(address):
+            raise ValueError(
+                f"{address!r} is not a valid address on {chain}. If the file "
+                f"mixes chains, give each row a chain column "
+                f"({', '.join(mapping['chain'])}) instead of --chain"
+            )
+        return
+    if len(address) < _SHORTEST_PLAUSIBLE or any(c.isspace() for c in address):
+        raise ValueError(
+            f"{address!r} does not look like an address. Check the column "
+            f"mapping --- this is the shape a header row or a shifted column "
+            f"takes, and it would be stored as a real one"
+        )
+
+
 def _pick(row: Mapping[str, Any], names: Sequence[str]) -> Any:
     lowered = {str(k).strip().lower(): v for k, v in row.items()}
     for name in names:
@@ -348,6 +397,7 @@ def parse_rows(
                 raise ValueError(
                     f"no address column found (looked for: {', '.join(mapping['address'])})"
                 )
+            _check_address(str(address).strip(), chain, mapping)
             label = _pick(row, mapping["label"])
             if not label:
                 raise ValueError(

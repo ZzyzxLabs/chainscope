@@ -465,19 +465,19 @@ class TestTwoRowsThatDisagreeAreNotDuplicates:
         This module surfaces a clash with the *store* as a Conflict; a clash
         inside the file is the same fact about somebody's spreadsheet.
         """
-        plan = self._plan(tmp_path, "0xaaa,Binance,cex,high\n0xaaa,Binance,service,high\n")
+        plan = self._plan(tmp_path, f"{A},Binance,cex,high\n{A},Binance,service,high\n")
         assert len(plan.conflicts) == 1
         assert plan.duplicates == 0
 
     def test_a_genuine_duplicate_is_still_a_duplicate(self, tmp_path) -> None:
-        plan = self._plan(tmp_path, "0xbbb,Kraken,cex,high\n0xbbb,Kraken,cex,high\n")
+        plan = self._plan(tmp_path, f"{B},Kraken,cex,high\n{B},Kraken,cex,high\n")
         assert plan.duplicates == 1
         assert plan.conflicts == []
 
     def test_only_the_first_of_a_disagreeing_pair_is_written(self, tmp_path) -> None:
         # Reported, not resolved: which is right is a judgement for a person,
         # and the resolver decides at read time anyway.
-        plan = self._plan(tmp_path, "0xaaa,Binance,cex,high\n0xaaa,Binance,service,high\n")
+        plan = self._plan(tmp_path, f"{A},Binance,cex,high\n{A},Binance,service,high\n")
         assert len(plan.attributions) == 1
 
 

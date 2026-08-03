@@ -21,6 +21,14 @@ from chainscope.attribution.ingest import _to_chain, plan_import
 from chainscope.cli.commands.tag import _chain
 from chainscope.core.chainid import BSC, ETHEREUM
 
+#: Full-length fixture addresses. They were three characters until the
+#: importer started checking the address column, which is the sort of
+#: shortcut that makes a test pass for the wrong reason.
+A = "0x" + "a" * 40
+B = "0x" + "b" * 40
+C = "0x" + "c" * 40
+D = "0x" + "d" * 40
+
 
 class TestTagChainArgument:
     @pytest.mark.parametrize(
@@ -69,10 +77,10 @@ class TestABadRowIsRejectedNotWidened:
         path.write_text(
             json.dumps(
                 [
-                    {"address": "0xa", "label": "Good", "chain": "bsc", "category": "cex"},
-                    {"address": "0xb", "label": "Typo", "chain": "etherium", "category": "cex"},
+                    {"address": A, "label": "Good", "chain": "bsc", "category": "cex"},
+                    {"address": B, "label": "Typo", "chain": "etherium", "category": "cex"},
                     {
-                        "address": "0xc",
+                        "address": C,
                         "label": "Global",
                         "chain": "",
                         "category": "sanctioned",
@@ -97,10 +105,10 @@ class TestABadRowIsRejectedNotWidened:
         """A thirty-thousand-row file with one typo should import the rest."""
         path = tmp_path / "labels.json"
         rows = [
-            {"address": f"0x{i}", "label": f"L{i}", "chain": "eth", "category": "cex"}
+            {"address": f"0x{i:040x}", "label": f"L{i}", "chain": "eth", "category": "cex"}
             for i in range(20)
         ]
-        rows.append({"address": "0xbad", "label": "X", "chain": "nope", "category": "cex"})
+        rows.append({"address": D, "label": "X", "chain": "nope", "category": "cex"})
         path.write_text(json.dumps(rows))
         plan = plan_import(path, source="test")
         assert len(plan.attributions) == 20
