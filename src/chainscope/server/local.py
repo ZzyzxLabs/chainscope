@@ -46,6 +46,7 @@ from urllib.parse import parse_qs, urlparse
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..store.sqlite import SqliteStore
+from .webapp import page as _page
 
 __all__ = ["LocalServer", "ServerOptions", "main"]
 
@@ -316,6 +317,172 @@ class _Handlers:
             }
         }
 
+    # ------------------------------------------------------- the browsable UI
+
+    def graph(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """A flow graph around a seed, built from the store alone.
+
+        No network. An address the store has never seen is reported as exactly
+        that rather than drawn as an empty graph --- the two look identical on
+        screen and mean opposite things, and the second is the one that quietly
+        ends an investigation.
+        """
+        from ..cli.commands.graph import _attribute, _walk
+        from ..render.flow import layer_nodes
+
+        address = (_first(query, "address") or "").strip()
+        if not address:
+            raise ValueError("address is required")
+        chain = self._chain(_first(query, "chain") or "1") or ChainId.evm(1)
+        depth = max(1, min(int(_first(query, "depth") or "3"), 6))
+        max_nodes = max(2, min(int(_first(query, "max_nodes") or "60"), 400))
+
+        store = self._store()
+        try:
+            if not store.edges(address, chain, direction="out") and not store.edges(
+                address, chain, direction="in"
+            ):
+                raise ValueError(
+                    f"{address} is not in this store on {chain}. Nothing is drawn, "
+                    f"because an empty graph and an unknown address look the same "
+                    f"and mean opposite things. Run `chainscope investigate "
+                    f"{address}` to fetch it"
+                )
+            built = _walk(
+                store,
+                address,
+                chain,
+                depth=depth,
+                max_nodes=max_nodes,
+                per_node=12,
+                direction="both",
+            )
+            for node in list(built.nodes.values()):
+                _attribute(store, built, node.address, chain)
+        finally:
+            store.close()
+
+        # Hop distance from the seed, computed the same way the flow renderer
+        # does it: breadth-first over directed edges, so a column means "how
+        # many hops the money travelled" rather than "how far apart these are
+        # in the drawing". The whole left-to-right reading depends on it.
+        depths = layer_nodes(built)
+
+        return {
+            "seed": address,
+            "chain": str(chain),
+            "nodes": [
+                {
+                    "address": n.address,
+                    "depth": depths.get(f"{chain}:{n.address}", depths.get(n.address, 0)),
+                    "seed": n.is_seed,
+                    "frontier": not n.expanded and not n.is_seed,
+                    "label": n.label or "",
+                    "category": n.category or "",
+                }
+                for n in built.nodes.values()
+            ],
+            "edges": [
+                {
+                    "source": e.source,
+                    "target": e.target,
+                    "symbol": e.symbol,
+                    "asset": e.asset or "",
+                    "decimals": e.decimals,
+                    "total_raw": str(e.total_raw),
+                    "transfers": e.transfer_count,
+                    # An edge is an aggregate over a span, so both ends travel.
+                    # Without them every label read "[undated]", which is what
+                    # the page said about data that has timestamps.
+                    "first_seen": e.first_seen,
+                    "last_seen": e.last_seen,
+                }
+                for e in built.edges.values()
+            ],
+            "truncated": built.truncated,
+            "frontier": sum(
+                1 for n in built.nodes.values() if not n.expanded and not n.is_seed
+            ),
+        }
+
+    def analyze(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """Run one analyzer over the store and return its result verbatim.
+
+        Warnings and hypotheses travel with the findings, not stripped for a
+        tidier payload. A truncated walk and a complete one produce the same
+        list of findings, and the warning is the only thing that distinguishes
+        them; a hypothesis is capped at MEDIUM by construction and a UI that
+        showed only findings would present every inference as an observation.
+        """
+        name = (_first(query, "name") or "").strip()
+        address = (_first(query, "address") or "").strip()
+        if not name or not address:
+            raise ValueError("name and address are required")
+        chain = self._chain(_first(query, "chain") or "1") or ChainId.evm(1)
+
+        rows = self._transfers(address, chain)
+        found = _run_over_store(name, rows, address, chain, _first(query, "subject") or address)
+        return {
+            "analyzer": name,
+            "address": address,
+            "findings": [
+                {"title": f.title, "severity": f.severity.value, "detail": f.detail}
+                for f in found.findings
+            ],
+            "hypotheses": [
+                {
+                    "claim": h.claim,
+                    "confidence": h.confidence.name,
+                    "score": round(h.score, 3),
+                    "factors": [
+                        {
+                            "name": x.name,
+                            "contribution": round(x.contribution, 3),
+                            "note": x.note,
+                        }
+                        for x in h.factors
+                    ],
+                }
+                for h in found.hypotheses
+            ],
+            "warnings": list(found.warnings),
+        }
+
+    def leads(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """Open questions for the case, so the page can show what is unfinished."""
+        from ..case.leads import LeadStore
+
+        store = LeadStore(self.options.store.parent / "case.db")
+        try:
+            records = store.leads(_first(query, "address") or None, limit=100)
+            counts = store.summary()
+        finally:
+            store.close()
+        return {
+            "counts": counts,
+            "leads": [
+                {
+                    "id": r.id,
+                    "address": r.address,
+                    "kind": r.kind,
+                    "value": r.value,
+                    "verdict": r.verdict.value,
+                    "verify_by": r.verify_by,
+                    "reason": r.reason,
+                }
+                for r in records
+            ],
+        }
+
+    def _transfers(self, address: str, chain: ChainId) -> list[Any]:
+        from ..store.base import Query
+
+        store = self._store()
+        try:
+            return list(store.transfers(Query(chain=chain, address=address, limit=5000)))
+        finally:
+            store.close()
+
     def health(self) -> dict[str, Any]:
         return {
             "ok": True,
@@ -325,6 +492,52 @@ class _Handlers:
             "categories": sorted(c.value for c in Category),
             "confidences": [c.name.lower() for c in Confidence],
         }
+
+
+def _run_over_store(
+    name: str, rows: list[Any], address: str, chain: ChainId, subject: str
+) -> Any:
+    """Dispatch to an analyzer that works over transfers already in the store.
+
+    Only the store-based ones. The rest need a provider, which means spending
+    somebody's rate limit --- a decision that belongs to `chainscope
+    investigate`, not to a button. Asking for one of those says so instead of
+    silently returning nothing, because an empty panel reads as "clean".
+    """
+    from ..analysis import contributors as contributors_mod
+    from ..analysis import impersonation as impersonation_mod
+    from ..analysis import poisoning as poisoning_mod
+    from ..analysis import route as route_mod
+    from ..core.result import Result
+
+    if name == "impersonation":
+        return impersonation_mod.analyse(rows, chain)
+    if name == "poisoning":
+        groups, examined = poisoning_mod.find_lookalikes(rows, address, chain=chain)
+        return Result(
+            analyzer=name,
+            findings=tuple(poisoning_mod.findings(groups, examined)),
+            hypotheses=tuple(poisoning_mod.hypotheses(groups, examined)),
+        )
+    if name == "contributors":
+        inflow = contributors_mod.contributors(rows, address, subject, chain=chain)
+        return Result(
+            analyzer=name,
+            findings=tuple(contributors_mod.findings(inflow)),
+            warnings=(inflow.summary(),),
+        )
+    if name == "route":
+        routes, notes = route_mod.find_routes(rows, subject, address, chain=chain)
+        return Result(
+            analyzer=name,
+            findings=tuple(route_mod.findings(routes, notes, subject, address)),
+        )
+    raise ValueError(
+        f"{name!r} is not one of the analyses this page can run. It offers the "
+        f"ones that work over the store alone --- impersonation, poisoning, "
+        f"contributors, route. The others need a provider, which spends a rate "
+        f"limit, and that is `chainscope analyze {name}` rather than a button"
+    )
 
 
 def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
@@ -378,6 +591,19 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
+            # The page itself, unauthenticated and same-origin. It carries no
+            # data --- every byte it displays comes from a request it makes back
+            # here, and those are authorised. Requiring a token to fetch the
+            # HTML would only put one in a URL somebody can copy.
+            if parsed.path in ("/", "/index.html"):
+                body = _page(options.token).encode()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if parsed.path == "/health" and self._authorised():
                 self._send(HTTPStatus.OK, handlers.health())
                 return
@@ -386,7 +612,13 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
                 return
 
             query = parse_qs(parsed.query)
-            routes = {"/resolve": handlers.resolve, "/flows": handlers.flows}
+            routes = {
+                "/resolve": handlers.resolve,
+                "/flows": handlers.flows,
+                "/graph": handlers.graph,
+                "/analyze": handlers.analyze,
+                "/leads": handlers.leads,
+            }
             route = routes.get(parsed.path)
             if route is None:
                 self._send(HTTPStatus.NOT_FOUND, {"error": f"no route {parsed.path}"})
