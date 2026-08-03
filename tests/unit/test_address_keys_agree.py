@@ -204,6 +204,10 @@ class TestTheCaseFoldDoesNotSpread:
         "attribution/ens.py",  # Ethereum-only by definition
         "attribution/sources/ofac.py",  # guarded by _key
         "attribution/sources/etherscan_dump.py",  # an Etherscan export is EVM
+        # Mainnet-only, and it *raises* for any other chain rather than
+        # returning an empty list --- so the hex fold is correct and cannot be
+        # reached by a base58 address.
+        "attribution/sources/ethlabels.py",
         "analysis/revenue.py",  # guarded by _fold
         "providers/jsonrpc.py",
         "providers/etherscan.py",

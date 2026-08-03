@@ -112,6 +112,7 @@ ofac = "chainscope.attribution.sources.ofac:OfacSource"
 explorer_nametags = "chainscope.attribution.sources.etherscan_dump:ExplorerDumpSource"
 local = "chainscope.attribution.sources.local:LocalSource"
 darklist = "chainscope.attribution.sources.darklist:DarklistSource"
+eth_labels = "chainscope.attribution.sources.ethlabels:EthLabelsSource"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chainscope"]

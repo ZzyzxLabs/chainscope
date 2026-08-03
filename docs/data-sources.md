@@ -20,6 +20,7 @@ fails the build otherwise --- see [CONTRIBUTING](../CONTRIBUTING.md).
 | `etherscan_dump` | `ExplorerDumpSource` | `HIGH` | No --- upstream terms apply |
 | `local` | `LocalSource` | `MEDIUM` | N/A --- your own data |
 | `darklist` | `DarklistSource` | `MEDIUM` | Yes --- MIT |
+| `eth_labels` | `EthLabelsSource` | `MEDIUM` | **No** --- see below |
 
 The ceilings are enforced in code (`SourceMeta.max_confidence`), not merely
 documented. A community nametag dump cannot assert `CERTAIN` even if its adapter
@@ -41,6 +42,27 @@ passes that value in.
 - **Staleness is one-directional.** The list does not un-report, so a hit is a
   statement about the past. Each entry's date travels with the attribution.
 
+## `eth_labels` --- the largest open address dump
+
+- **Canonical:** <https://github.com/dawsbot/eth-labels>
+- **Fetch:** `chainscope.attribution.sources.ethlabels.fetch()`, or the four
+  `src/mainnet/<category>/all.json` files from `raw.githubusercontent.com`
+- **Coverage:** 17,495 mainnet addresses as of August 2026 --- 11,517
+  token contracts, 5,594 `phish-hack`, 372 exchanges, 12 genesis.
+- **Ceiling:** `MEDIUM`, and the reason is provenance rather than volume. The
+  dump is **Etherscan's label data, reorganised**. Etherscan does not publish it
+  under a licence permitting that, so an entry is somebody's transcription of
+  somebody else's judgement, with no evidence attached and no way to ask who
+  decided or when.
+- **Redistributable: no.** The MIT licence covers the repository's arrangement
+  of the data, not the data. `SourceMeta.redistributable` is `False` so nothing
+  here invites shipping it.
+- **`phish-hack` is carried as `ILLICIT`, not `SCAM`.** The upstream bucket
+  mixes thefts ("Bancor Hacker") with frauds ("Fake_Phishing"), and collapsing
+  them into the narrower word would state something the data does not support.
+  A name like that in a report is an accusation; the rationale says the claim
+  rests on a community list rather than on anything this tool verified.
+
 ### Why this one and not the others
 
 The well-known recommendation lists name several scam databases. Checked, in
@@ -51,7 +73,12 @@ August 2026:
 | CryptoScamDB API | `502` — the service is down |
 | Chainabuse API | `401` — needs a key |
 | Etherscan label export | `403` to anything that is not a browser |
-| Blockscout `public_tags` | In the schema, empty in practice |
+| Blockscout `public_tags` | In the schema, empty in practice; no cross-instance dump |
+| Dune `labels.addresses` | Needs an API key; not anonymously downloadable |
+| WalletLabels | Commercial API, no open dataset |
+| OpenChain | Reachable, but it maps **function selectors**, not addresses |
+| `ethereum-lists/contracts` | Alive, ≥200k contracts --- **worth adding next**; no explicit dataset licence |
+| L2Beat / DefiLlama | Alive, but protocol registries rather than address attribution |
 
 Being on a recommendation list and being obtainable are different properties,
 and the gap is wider than the lists suggest.

@@ -178,9 +178,15 @@ class _Handlers:
             raise ValueError("address is required")
         chain = self._chain(_first(query, "chain"))
 
+        # Through the resolver, not straight to the store. Reading the store
+        # alone meant every configured source --- sanctions, the scam list, the
+        # 17,000-address label dump --- was invisible to the page, which
+        # therefore showed `unlabelled` for addresses the tool could name. The
+        # store holds what somebody *wrote*; the sources hold what is known.
+        claims = list(self._from_sources(address, chain))
         store = self._store()
         try:
-            claims = [
+            claims += [
                 c
                 for c in store.attributions(address)
                 # Chain-agnostic claims apply everywhere --- that is how
@@ -215,6 +221,39 @@ class _Handlers:
                 "that it is benign."
             ),
         }
+
+    def _from_sources(self, address: str, chain: ChainId | None) -> list[Any]:
+        """What the configured attribution sources say about an address.
+
+        Failures are swallowed *per source* and the rest still answer: one
+        missing data file should not blank the panel. What must not happen is a
+        failure being indistinguishable from "nothing known", and it is not ---
+        `Resolution.failed` carries it, and the caller reports `reliable`.
+        """
+        from ..attribution.resolver import Resolver
+        from ..attribution.sources.darklist import DarklistSource
+        from ..attribution.sources.ethlabels import EthLabelsSource
+        from ..attribution.sources.local import LocalSource
+        from ..attribution.sources.ofac import OfacSource
+
+        base = self.options.store.parent.parent / "data" / "labels"
+        resolver = Resolver()
+        # Only the ones whose data is actually present. `ready()` is the
+        # distinction that matters: a source configured but missing its file
+        # would otherwise answer "nothing known", which is the same words a
+        # clean screening uses.
+        for source in (
+            OfacSource(base / "ofac.json"),
+            DarklistSource(base / "darklist.json"),
+            EthLabelsSource(base / "eth-labels"),
+            LocalSource(base / "local.json"),
+        ):
+            if source.ready():
+                resolver.add(source)
+        if not resolver.sources:
+            return []
+        found = resolver.resolve(address, chain)
+        return list(found.entity.all_claims) if found.entity else []
 
     def flows(self, query: dict[str, list[str]]) -> dict[str, Any]:
         address = (_first(query, "address") or "").strip()
@@ -341,6 +380,10 @@ class _Handlers:
         max_nodes = max(2, min(int(_first(query, "max_nodes") or "60"), 400))
 
         fetched, complete = 0, True
+        # `Node` is frozen, so source labels are collected beside the graph
+        # rather than written into it --- and the payload prefers the store's
+        # label, because a claim somebody recorded outranks one a list asserts.
+        from_sources: dict[str, tuple[str, str]] = {}
         store = self._store()
         try:
             if not store.edges(address, chain, direction="out") and not store.edges(
@@ -370,6 +413,17 @@ class _Handlers:
             )
             for node in list(built.nodes.values()):
                 _attribute(store, built, node.address, chain)
+                # And from the sources. `_attribute` reads the store, which
+                # holds what somebody wrote --- the sources hold what is known,
+                # and a page showing `unlabelled` for an address the tool can
+                # name is the gap this whole source was added to close.
+                if not node.label:
+                    for claim in self._from_sources(node.address, chain):
+                        from_sources[node.address] = (
+                            claim.label,
+                            claim.category.value,
+                        )
+                        break
         finally:
             store.close()
 
@@ -388,8 +442,8 @@ class _Handlers:
                     "depth": depths.get(f"{chain}:{n.address}", depths.get(n.address, 0)),
                     "seed": n.is_seed,
                     "frontier": not n.expanded and not n.is_seed,
-                    "label": n.label or "",
-                    "category": n.category or "",
+                    "label": n.label or from_sources.get(n.address, ("", ""))[0],
+                    "category": n.category or from_sources.get(n.address, ("", ""))[1],
                 }
                 for n in built.nodes.values()
             ],
