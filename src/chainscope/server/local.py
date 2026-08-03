@@ -45,6 +45,7 @@ from urllib.parse import parse_qs, urlparse
 
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
+from ..providers.base import Capability, ProviderError
 from ..store.sqlite import SqliteStore
 from .webapp import page as _page
 
@@ -337,17 +338,25 @@ class _Handlers:
         depth = max(1, min(int(_first(query, "depth") or "3"), 6))
         max_nodes = max(2, min(int(_first(query, "max_nodes") or "60"), 400))
 
+        fetched = 0
         store = self._store()
         try:
             if not store.edges(address, chain, direction="out") and not store.edges(
                 address, chain, direction="in"
             ):
-                raise ValueError(
-                    f"{address} is not in this store on {chain}. Nothing is drawn, "
-                    f"because an empty graph and an unknown address look the same "
-                    f"and mean opposite things. Run `chainscope investigate "
-                    f"{address}` to fetch it"
-                )
+                # Fetch it. This used to refuse, on the grounds that spending
+                # somebody's rate limit is a decision --- which is true, and the
+                # refusal still made the tool useless the first time anybody
+                # typed an address into it. The honest form of that principle is
+                # to *say* the network was used, not to withhold the feature:
+                # `fetched` travels back and the status line reports it.
+                fetched = _fetch_into(store, address, chain)
+                if not fetched:
+                    raise ValueError(
+                        f"{address} has no transfers on {chain} --- not in the "
+                        f"store, and the providers returned none either. That is "
+                        f"an answer about the address rather than about the store"
+                    )
             built = _walk(
                 store,
                 address,
@@ -399,6 +408,7 @@ class _Handlers:
                 }
                 for e in built.edges.values()
             ],
+            "fetched": fetched,
             "truncated": built.truncated,
             "frontier": sum(
                 1 for n in built.nodes.values() if not n.expanded and not n.is_seed
@@ -492,6 +502,52 @@ class _Handlers:
             "categories": sorted(c.value for c in Category),
             "confidences": [c.name.lower() for c in Confidence],
         }
+
+
+def _fetch_into(store: SqliteStore, address: str, chain: ChainId) -> int:
+    """Pull an address's transfers from the providers and keep them.
+
+    Both directions, because half a picture drawn without saying so is the
+    failure this package is arranged against --- and inbound is where a
+    poisoning transfer lives, which the subject never acknowledged.
+
+    Returns how many were written, so the page can say the network was used.
+    A provider failure propagates: an empty graph and a failed fetch look
+    identical on screen and mean opposite things.
+    """
+    from ..providers.build import router_for
+
+    router, _skipped = router_for(chain)
+    try:
+        rows = router.enumerate(
+            chain,
+            Capability.ASSET_TRANSFERS,
+            lambda p: p.asset_transfers(chain, address, direction="all", limit=1000),
+            key=lambda t: (str(getattr(t.tx, "hash", "")), t.index),
+        ).rows
+    except ProviderError as exc:
+        # `ProviderError`, not `ResultTruncated`. The router catches each
+        # provider's failure and re-raises its own "all N providers failed",
+        # so the specific type never reaches here --- caught by testing it
+        # against a busy address rather than by reading the router.
+        if "at or above" not in str(exc):
+            raise
+        # The guard is right and is not worked around. Taking the first 1000
+        # rows would draw a graph indistinguishable from a complete one, and
+        # every total on it would be a lower bound presented as a figure.
+        #
+        # What is offered instead is the command that pages properly, because
+        # "this address is busier than one request can carry" is a fact about
+        # the address and belongs on screen.
+        raise ValueError(
+            f"{address} has more transfers than one request returns, so nothing "
+            f"is drawn --- the first thousand would look exactly like all of "
+            f"them. Bring it in with `chainscope investigate {address}`, which "
+            f"pages, then reload here ({exc})"
+        ) from None
+    if rows:
+        store.put_transfers(rows)
+    return len(rows)
 
 
 def _run_over_store(

@@ -424,6 +424,9 @@ async function load(address) {
     state.selected = graph.seed;
     draw(); roster(); select(graph.seed);
     const bits = [`${graph.nodes.length} addresses`, `${graph.edges.length} flows`];
+    // Said, not hidden. The page reads the store; when it had to go to a
+    // provider to fill it, that is a fact about where the picture came from.
+    if (graph.fetched) bits.push(`${graph.fetched} transfers fetched from a provider`);
     if (graph.frontier) bits.push(`${graph.frontier} on the frontier`);
     say(bits.join(" · ") + (graph.truncated
       ? " · TRUNCATED — a limit stopped the walk; this is not the whole case"
