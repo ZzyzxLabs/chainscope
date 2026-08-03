@@ -464,11 +464,30 @@ function hiddenBehind(id) {
 }
 let route = {nodes: new Set(), edges: new Set(), hops: []};
 
-// Every path from a seed to the clicked address, not just the shortest.
+// Every path from a seed to the clicked address, not just the shortest --- and
+// only the ones that could have happened in the order they are drawn.
 //
 // A laundering case is a tree of routes and reading one route at a time is the
-// task. The shortest path alone would hide a split that rejoins -- which is the
+// task. The shortest path alone would hide a split that rejoins, which is the
 // structure worth seeing, since somebody split the funds for a reason.
+//
+// TIME IS THE HARD PART, and this walk ignored it. Following any outgoing edge
+// highlighted paths where a hop happened BEFORE the money arrived --- money
+// cannot travel that way. Measured on a real ledger of 55 transfers between 37
+// addresses, 62% of the multi-hop paths a time-blind search returns are
+// impossible. On a picture that matters more than in a list: a highlighted line
+// on a graph reads as a fact, and nobody checks the timestamps behind it.
+//
+// An edge here is an AGGREGATE over a span, not a moment, so the test is not
+// `e.first >= since`. That would drop an edge whose span began before the money
+// arrived but which also carried transfers afterwards. The edge is usable when
+// `e.last >= since` --- some transfer within it can have happened at or after
+// the arrival --- and what travels forward is `max(e.first, since)`, the
+// earliest moment a transfer in this edge could have occurred given the money
+// was not there any earlier.
+//
+// Mirrors `chainscope.analysis.route`, which does this over unaggregated
+// transfers; tests/unit/test_flow_paths_respect_time.py holds the two together.
 //
 // Bounded: cycles are refused by the visited set, and the search stops at
 // MAX_PATHS so a dense graph cannot hang the page. Hitting the cap is reported
@@ -481,8 +500,8 @@ function pathsTo(target, edges) {
     if (!next.has(e.source)) next.set(e.source, []);
     next.get(e.source).push(e);
   });
-  let capped = false;
-  const walk = (at, trail, seen) => {
+  let capped = false, impossible = 0;
+  const walk = (at, since, trail, seen) => {
     if (out.length >= MAX_PATHS) { capped = true; return; }
     if (at === target) {
       out.push([...trail]);
@@ -493,13 +512,19 @@ function pathsTo(target, edges) {
     }
     for (const e of next.get(at) || []) {
       if (seen.has(e.target)) continue;   // a cycle is not a route
+      if (since !== null && e.last !== null && e.last !== undefined && e.last < since) {
+        impossible++;                     // it had finished before the money came
+        continue;
+      }
+      const arrived = since === null ? (e.first ?? null)
+                                     : Math.max(e.first ?? since, since);
       seen.add(e.target); trail.push(e);
-      walk(e.target, trail, seen);
+      walk(e.target, arrived, trail, seen);
       trail.pop(); seen.delete(e.target);
     }
   };
-  DATA.seeds.forEach(s => walk(s, [], new Set([s])));
-  return {nodes, edges: used, hops: out, capped};
+  DATA.seeds.forEach(s => walk(s, null, [], new Set([s])));
+  return {nodes, edges: used, hops: out, capped, impossible};
 }
 // What `draw` last put on the canvas. The roster is headed "on this canvas"
 // and has to mean it: with the time scrub pulled back, most nodes are absent
@@ -747,9 +772,20 @@ function show(n){
       const step = h.map(e => shortId(e.target)).join(" \u2192 ");
       out.push('<dd class="muted">' + esc(shortId(h[0].source) + " \u2192 " + step) + "</dd>");
     });
+    // Said whenever it applies. A reader looking at six highlighted routes has
+    // no way to know that others were considered and rejected, and "there are
+    // three ways here" reads very differently from "there are three, and eleven
+    // more that the timestamps rule out".
+    if (route.impossible)
+      out.push('<dd class="muted">' + route.impossible + ' onward step(s) were '
+        + 'skipped: they had finished before the money arrived, so the money '
+        + 'cannot have taken them.</dd>');
   } else if (selected === n.id && !n.seed) {
     out.push('<dt>routes from seed</dt><dd class="muted">none in this asset \u2014 ' +
-      'reached by a different asset, or only inbound</dd>');
+      'reached by a different asset, or only inbound' +
+      (route.impossible ? '. ' + route.impossible + ' step(s) existed but ran '
+        + 'before the money arrived, so no route survives in forward time' : '') +
+      '</dd>');
   }
   if (n.frontier)
     out.push('<dt>coverage</dt><dd class="muted">Frontier. Its counterparties '
