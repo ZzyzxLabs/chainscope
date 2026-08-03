@@ -58,6 +58,8 @@ class Bundle:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     tool_version: str = "0.1.0.dev0"
     results: list[dict[str, Any]] = field(default_factory=list)
+    has_case: bool = False
+    has_audit: bool = False
 
     # ---------------------------------------------------------------- writing
 
@@ -99,6 +101,38 @@ class Bundle:
         shutil.copy2(cache.path, target)
         return target.stat().st_size
 
+    def attach_case(self, case_db: Path | str) -> int:
+        """Copy the case record in --- notes, leads, correspondence, the log.
+
+        Separate from `attach_cache` because the two are not the same kind of
+        thing. The cache is derived and rebuildable; `case.db` is what a person
+        wrote and cannot be recovered by re-running anything. A bundle that
+        carries only the cache hands over the evidence and loses the reasoning.
+        """
+        source = Path(case_db)
+        if not source.is_file():
+            raise BundleError(
+                f"no case record at {source}. Export without one by passing "
+                f"--no-case, but the notes and leads are the part that cannot "
+                f"be rebuilt by re-running the tool"
+            )
+        target = self.path / "case.db"
+        shutil.copy2(source, target)
+        self.has_case = True
+        self._write_manifest()
+        return target.stat().st_size
+
+    def attach_audit(self, audit_log: Path | str) -> int:
+        """Copy the request log in --- what was asked, of whom, and when."""
+        source = Path(audit_log)
+        if not source.is_file():
+            raise BundleError(f"no audit log at {source}")
+        target = self.path / "audit.jsonl"
+        shutil.copy2(source, target)
+        self.has_audit = True
+        self._write_manifest()
+        return target.stat().st_size
+
     def add_report(self, markdown: str, name: str = "report.md") -> None:
         (self.path / name).write_text(markdown, encoding="utf-8")
 
@@ -113,6 +147,12 @@ class Bundle:
                     "subject": self.subject,
                     "notes": self.notes,
                     "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    # Stated, so a reader knows what is *absent* rather than
+                    # inferring it from a missing file. A bundle without a case
+                    # record is a legitimate thing to send; a bundle that lost
+                    # one silently is not.
+                    "has_case": self.has_case,
+                    "has_audit": self.has_audit,
                     "results": self.results,
                 },
                 indent=2,
@@ -164,7 +204,40 @@ class Bundle:
             ),
             tool_version=str(manifest.get("tool_version", "unknown")),
             results=list(manifest.get("results", [])),
+            has_case=bool(manifest.get("has_case", False)),
+            has_audit=bool(manifest.get("has_audit", False)),
         )
+
+    @classmethod
+    def unpack(cls, archive: Path | str, into: Path | str) -> Bundle:
+        """Extract a zipped bundle and open it. Treats the archive as hostile.
+
+        A zip is a list of names somebody else chose, and Python will happily
+        write `../../.ssh/authorized_keys` if asked. Each entry is resolved
+        against the destination and rejected if it lands outside --- the same
+        check `read_result` makes on manifest filenames, for the same reason.
+        """
+        dest = Path(into).resolve()
+        dest.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive) as zf:
+            for member in zf.infolist():
+                if member.is_dir():
+                    continue
+                target = (dest / member.filename).resolve()
+                if not target.is_relative_to(dest):
+                    raise BundleError(
+                        f"bundle entry {member.filename!r} escapes the "
+                        f"destination directory; refusing to extract it"
+                    )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member) as src, target.open("wb") as out:
+                    shutil.copyfileobj(src, out)
+        return cls.open(dest)
+
+    def case_db(self) -> Path | None:
+        """The case record inside this bundle, or None if it carries none."""
+        candidate = self.path / "case.db"
+        return candidate if candidate.is_file() else None
 
     def read_result(self, index: int) -> dict[str, Any]:
         """One recorded result, read from inside this bundle and nowhere else.

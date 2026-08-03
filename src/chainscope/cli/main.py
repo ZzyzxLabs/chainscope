@@ -90,9 +90,34 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+#: Bundle verbs. Anything else in that position is a path, per the README's
+#: documented `chainscope bundle theft.chainscope` form.
+_BUNDLE_VERBS = frozenset({"show", "export", "import", "-h", "--help"})
+
+
+def _with_bundle_default(argv: Sequence[str] | None) -> Sequence[str] | None:
+    """Insert `show` for `chainscope bundle <path>`.
+
+    argparse cannot express "optional positional, or a subcommand": the bare
+    positional binds the verb and the real argument is then rejected as an
+    invalid choice. Rewriting the one ambiguous position keeps the documented
+    form working without giving up subcommands.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    tokens = list(argv)
+    for i, token in enumerate(tokens):
+        if token == "bundle":
+            rest = tokens[i + 1 :]
+            if rest and rest[0] not in _BUNDLE_VERBS and not rest[0].startswith("-"):
+                return [*tokens[: i + 1], "show", *rest]
+            break
+    return tokens
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_with_bundle_default(argv))
     module = _COMMANDS[args.command]
     render = renderer_for(args.format, args.verbose)
     if args.no_colour and isinstance(render, TerminalRenderer):
