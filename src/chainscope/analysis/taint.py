@@ -70,7 +70,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from functools import partial
-from typing import Any, Union
+from typing import Any, ClassVar, Union
 
 from ..core.chainid import ChainId
 from ..core.result import Finding, Result, Severity
@@ -502,6 +502,12 @@ def trace_origins(
 
 class TaintAnalyzer(Analyzer):
     """Trace stolen value forward from a source address."""
+
+    #: Parameters this needs beyond an address. Read by the web UI to
+    #: render an input for each, so a reader is not asked to press a button
+    #: whose only possible outcome is an error naming what they should have
+    #: typed. Kept beside the check that enforces it.
+    REQUIRES: ClassVar[tuple[str, ...]] = ("source",)
 
     name = "taint"
     version = "1.0"

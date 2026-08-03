@@ -36,7 +36,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any
+from typing import Any, ClassVar
 
 from ..chains import fold_if_hex
 from ..core.attribution import Attribution, Category, Confidence, Method
@@ -268,6 +268,12 @@ def _history(
 
 class CommonFunderAnalyzer(Analyzer):
     """Group addresses by who first funded them."""
+
+    #: Parameters this needs beyond an address. Read by the web UI to
+    #: render an input for each, so a reader is not asked to press a button
+    #: whose only possible outcome is an error naming what they should have
+    #: typed. Kept beside the check that enforces it.
+    REQUIRES: ClassVar[tuple[str, ...]] = ("addresses",)
 
     name = "common-funder"
     version = "1.0"

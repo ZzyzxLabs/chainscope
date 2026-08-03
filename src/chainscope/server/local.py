@@ -46,6 +46,7 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from ..analysis.base import Context
 from ..chains import address_key
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
@@ -53,7 +54,7 @@ from ..providers.base import Capability, ProviderError, ResultTruncated
 from ..store.base import Query
 from ..store.sqlite import SqliteStore
 from . import ask, site
-from .static import EXPORT_DIR, StaticSite, content_type
+from .static import EXPORT_DIR, StaticSite, cache_control, content_type
 from .webapp import page as _page
 
 __all__ = ["LocalServer", "ServerOptions", "main"]
@@ -321,8 +322,16 @@ class _Handlers:
         address that never made one. So the response states what it applied and
         what it left out, and the page repeats it.
         """
-        address = (_first(query, "address") or "").strip()
-        if not address:
+        # One or several. `address` repeated, or comma-separated --- both,
+        # because a URL built by hand uses the first and one built by a page
+        # uses whichever is easier, and refusing either would be a trap.
+        raw = [
+            part.strip()
+            for value in query.get("address", [])
+            for part in value.split(",")
+            if part.strip()
+        ]
+        if not raw:
             raise ValueError("address is required")
         chain = self._chain(_first(query, "chain") or "1") or ChainId.evm(1)
 
@@ -338,44 +347,96 @@ class _Handlers:
         min_raw = (_first(query, "min_raw") or "").strip()
         limit = max(1, min(int(_first(query, "limit") or "40"), 400))
 
+        # Deduplicated, and in the order given. Asking for the same address
+        # twice in one request must not fetch it twice, and the reply is easier
+        # to read against the request when the order survives.
+        keys: list[str] = []
+        for candidate in raw:
+            folded = address_key(chain, candidate)
+            if folded not in keys:
+                keys.append(folded)
+
         store = self._store()
         try:
-            key = address_key(chain, address)
-            before = {address_key(chain, a) for a in _counterparties(store, key, chain)}
-            fetched, complete = _fetch_into(store, key, chain)
-
-            edges: list[Any] = []
-            for way in ways:
-                edges.extend(store.edges(key, chain, direction=way))
-            kept, dropped = _sift(edges, asset=asset, since=since, until=until, min_raw=min_raw)
-            kept.sort(key=lambda e: e.total_raw, reverse=True)
-            trimmed = len(kept) > limit
-            kept = kept[:limit]
-            after = {
-                address_key(
-                    chain, e.recipient if address_key(chain, e.sender) == key else e.sender
-                )
-                for e in kept
+            before = {
+                key: {address_key(chain, a) for a in _counterparties(store, key, chain)}
+                for key in keys
             }
         finally:
             store.close()
 
+        # The fetches are independent and each is a network wait, so they run
+        # together --- the same reason `Router.corroborate` does. Bounded,
+        # because the throttle enforces a per-host rate and queueing thirty
+        # requests behind it only converts latency into memory.
+        fetched_by: dict[str, tuple[int, bool, str | None]] = {}
+        width = min(len(keys), 4)
+        with ThreadPoolExecutor(max_workers=max(1, width)) as pool:
+            jobs = {key: pool.submit(self._fetch_one, key, chain) for key in keys}
+            for key, job in jobs.items():
+                fetched_by[key] = job.result()
+
+        per: list[dict[str, Any]] = []
+        store = self._store()
+        try:
+            for key in keys:
+                fetched, complete, failure = fetched_by[key]
+                edges: list[Any] = []
+                for way in ways:
+                    edges.extend(store.edges(key, chain, direction=way))
+                kept, dropped = _sift(
+                    edges, asset=asset, since=since, until=until, min_raw=min_raw
+                )
+                kept.sort(key=lambda e: e.total_raw, reverse=True)
+                trimmed = len(kept) > limit
+                kept = kept[:limit]
+                after = {
+                    address_key(
+                        chain,
+                        e.recipient if address_key(chain, e.sender) == key else e.sender,
+                    )
+                    for e in kept
+                }
+                per.append(
+                    {
+                        "address": key,
+                        "fetched": fetched,
+                        "complete": complete,
+                        # Named per address. One address failing in a batch of
+                        # ten must not read as ten addresses with nothing to
+                        # show --- which is what a bare total would say.
+                        "failed": failure,
+                        "new_addresses": sorted(after - before[key]),
+                        "kept": len(kept),
+                        "filtered_out": dropped,
+                        "truncated": trimmed,
+                    }
+                )
+        finally:
+            store.close()
+
+        new_addresses = sorted({a for row in per for a in row["new_addresses"]})
         return {
-            "address": key,
+            # Singular for a single address, so every existing caller and the
+            # documented shape keep working.
+            "address": keys[0],
+            "addresses": keys,
             "chain": str(chain),
             "directions": ways,
-            "fetched": fetched,
+            "per_address": per,
+            "fetched": sum(row["fetched"] for row in per),
             # Whether the provider had more to give. A partial fetch that reads
             # as a complete one is the difference between "this address sent
             # money to four places" and "we stopped asking after four".
-            "complete": complete,
-            "new_addresses": sorted(after - before),
-            "kept": len(kept),
+            "complete": all(row["complete"] for row in per),
+            "failed": [row["address"] for row in per if row["failed"]],
+            "new_addresses": new_addresses,
+            "kept": sum(row["kept"] for row in per),
             # Named, never inferred from a smaller number. A filter that
             # removed the interesting transfer must not look like an address
             # that never made one.
-            "filtered_out": dropped,
-            "truncated": trimmed,
+            "filtered_out": sum(row["filtered_out"] for row in per),
+            "truncated": any(row["truncated"] for row in per),
             "applied": {
                 "asset": asset or "any",
                 "since": since,
@@ -383,6 +444,76 @@ class _Handlers:
                 "min_raw": min_raw or "any",
                 "limit": limit,
             },
+        }
+
+    def _fetch_one(self, key: str, chain: ChainId) -> tuple[int, bool, str | None]:
+        """Fetch one address, in its own store connection, never raising.
+
+        Its own connection because this runs in a worker thread and a SQLite
+        connection belongs to the thread that opened it. Never raising because
+        one address failing in a batch of ten is a fact about that address ---
+        letting it take down the other nine would turn a partial answer into no
+        answer, which is the opposite of what a batch is for.
+        """
+        store = self._store()
+        try:
+            fetched, complete = _fetch_into(store, key, chain)
+            return fetched, complete, None
+        except (ProviderError, OSError) as exc:
+            return 0, False, f"{type(exc).__name__}: {exc}"
+        finally:
+            store.close()
+
+    def analyses(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """Every registered analysis, so the page does not keep its own list.
+
+        The page offered three of thirteen, hard-coded --- clustering, peel
+        chains, taint and the rest were installed, documented, reachable from
+        the CLI, and invisible here. A feature list written as a literal in a
+        template is a feature list that stops matching what is installed, and
+        the reader has no way to tell the difference between "not offered" and
+        "not built".
+
+        Reports the failures too. A plugin that will not import is the case
+        where silence costs most: somebody installed it, it is not in the list,
+        and nothing says why.
+        """
+        from ..cli.commands.analyze import _discover
+
+        found, broken = _discover()
+        chain = self._chain(_first(query, "chain") or "1") or ChainId.evm(1)
+        ctx = Context(chain=chain, router=None)  # type: ignore[arg-type]
+
+        rows: list[dict[str, Any]] = []
+        for name, cls in sorted(found.items()):
+            instance = cls()
+            # `applicable` already existed and was going unused here, so the
+            # page offered a UTXO clustering heuristic on Ethereum and answered
+            # "no walker configured for this chain". Offering a control that
+            # cannot work is worse than not offering it: the reader cannot tell
+            # a wrong chain from a real absence of the pattern.
+            try:
+                applies = bool(instance.applicable(ctx))
+            except Exception:
+                applies = True
+            rows.append(
+                {
+                    "name": name,
+                    "description": (getattr(cls, "description", "") or "").strip(),
+                    "version": getattr(cls, "version", ""),
+                    "applies": applies,
+                    # What it needs beyond an address. The page renders an input
+                    # for each rather than letting the reader press a button
+                    # whose only possible outcome is an error telling them what
+                    # they should have typed.
+                    "needs": list(getattr(instance, "REQUIRES", ()) or ()),
+                }
+            )
+
+        return {
+            "analyses": rows,
+            # Named, never omitted. See the docstring.
+            "unavailable": [{"name": n, "why": why} for n, why in sorted(broken.items())],
         }
 
     def flows(self, query: dict[str, list[str]]) -> dict[str, Any]:
@@ -1137,12 +1268,50 @@ def _run_over_store(
             analyzer=name,
             findings=tuple(route_mod.findings(routes, notes, subject, address)),
         )
-    raise ValueError(
-        f"{name!r} is not one of the analyses this page can run. It offers the "
-        f"ones that work over the store alone --- impersonation, poisoning, "
-        f"contributors, route. The others need a provider, which spends a rate "
-        f"limit, and that is `chainscope analyze {name}` rather than a button"
-    )
+    # Anything else registered, run through its own Analyzer class over the
+    # rows already in the store.
+    #
+    # The four above are special-cased because they take arguments this handler
+    # composes; the rest are ordinary analyzers and were unreachable from the
+    # page for no better reason than not being on a hand-written list. A tool
+    # whose feature list lives in a literal grows features nobody can find ---
+    # thirteen are registered and the page offered three.
+    #
+    # A provider is not passed. An analyzer that needs one raises, and the
+    # message says so and names the CLI command that has one, rather than
+    # returning an empty result that reads as "nothing found".
+    from ..cli.commands.analyze import _discover as discover
+
+    registered, _ = discover()
+    factory = registered.get(name)
+    if factory is None:
+        offered = ", ".join(sorted(registered) or ["none"])
+        raise ValueError(f"{name!r} is not a registered analysis. Installed: {offered}")
+    try:
+        instance = factory()
+        ctx = Context(chain=chain, router=None, limits={"rows": rows})  # type: ignore[arg-type]
+        return instance.run(ctx, address=address, rows=rows)
+    except AttributeError as exc:
+        # `router=None`: this handler runs analyzers over rows already in the
+        # store and has no provider to give them. An analyzer that reaches for
+        # one fails deep inside itself, and `'NoneType' has no attribute
+        # 'enumerate'` tells the reader nothing they can act on.
+        if "NoneType" in str(exc):
+            raise ValueError(
+                f"{name} needs to fetch from a chain, which this page does not "
+                f"do on a button press. Run `chainscope analyze {name} "
+                f"{address}` --- it has a provider and spends the rate limit "
+                f"deliberately"
+            ) from exc
+        raise
+    except NotImplementedError as exc:
+        raise ValueError(f"{name} is registered but not runnable here: {exc}") from exc
+    except TypeError as exc:
+        raise ValueError(
+            f"{name} needs data this page cannot supply ({exc}). Run "
+            f"`chainscope analyze {name} {address}`, which has a provider and "
+            f"can spend a rate limit deliberately"
+        ) from exc
 
 
 def _export_root() -> Path:
@@ -1230,6 +1399,7 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
                 )
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", content_type(asset))
+                self.send_header("Cache-Control", cache_control(asset))
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
@@ -1282,6 +1452,7 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
                 "/ask": handlers.ask,
                 "/graph": handlers.graph,
                 "/analyze": handlers.analyze,
+                "/analyses": handlers.analyses,
                 "/leads": handlers.leads,
                 "/notes": handlers.notes,
             }

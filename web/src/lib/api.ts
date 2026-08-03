@@ -172,8 +172,24 @@ export type ResolveReply = {
   note: string;
 };
 
+export type ExpandPerAddress = {
+  address: string;
+  fetched: number;
+  complete: boolean;
+  /** Why this one could not be fetched, or null. Never merged into a total. */
+  failed: string | null;
+  new_addresses: string[];
+  kept: number;
+  filtered_out: number;
+  truncated: boolean;
+};
+
 export type ExpandReply = {
   address: string;
+  addresses: string[];
+  per_address: ExpandPerAddress[];
+  /** Addresses that could not be fetched. Empty is not the same as untried. */
+  failed: string[];
   directions: string[];
   fetched: number;
   complete: boolean;

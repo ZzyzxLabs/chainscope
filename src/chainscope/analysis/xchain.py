@@ -33,7 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 
 from ..core.attribution import Confidence
 from ..core.hypothesis import Hypothesis, ScoreFactor, rank
@@ -120,6 +120,12 @@ def calibrate(
 
 class CrossChainMatcher(Analyzer):
     """Find the far side of a swap on another chain."""
+
+    #: Parameters this needs beyond an address. Read by the web UI to
+    #: render an input for each, so a reader is not asked to press a button
+    #: whose only possible outcome is an error naming what they should have
+    #: typed. Kept beside the check that enforces it.
+    REQUIRES: ClassVar[tuple[str, ...]] = ("amount", "asset", "at")
 
     name = "cross-chain"
     version = "1.0"

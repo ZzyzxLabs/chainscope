@@ -95,10 +95,17 @@ class JsonRpcProvider(ReadOnlyProvider):
         lookup goes through the alias table rather than CAIP-2 --- a user types
         ``eth``, and ``eip155:1`` is not a thing anybody sets in a shell profile.
 
-        Archive and trace are left off. Whether a node keeps historical state is
-        a property of that node, not of the URL, and declaring a capability the
-        endpoint does not have makes the router pick it and fail rather than
-        pick something else that works.
+        Archive is **declared, never assumed**. Whether a node keeps historical
+        state is a property of that node, not of the URL, and inferring it from
+        a hostname would make the router pick an endpoint that then fails --- so
+        it is off unless `CHAINSCOPE_RPC_<NAME>_ARCHIVE` says otherwise.
+
+        It has to be declarable, though. Without it every historical `eth_call`
+        and `eth_getCode` is refused, and those are what answer "was this an
+        EOA at block b" and "what were this token's decimals then" --- questions
+        whose present-tense answers are quietly different. Asking a live node
+        for state two years old is exactly the confident wrong answer this
+        package refuses elsewhere.
         """
         from ..core.chainid import ALIASES
 
@@ -109,7 +116,13 @@ class JsonRpcProvider(ReadOnlyProvider):
             url = settings.rpc.get(name)
             if url:
                 return [
-                    cls(url, chain, client=client, native_symbol=native_symbol(chain, "ETH"))
+                    cls(
+                        url,
+                        chain,
+                        client=client,
+                        native_symbol=native_symbol(chain, "ETH"),
+                        archive=settings.rpc_archive.get(name, False),
+                    )
                 ]
         return []
 
@@ -283,6 +296,34 @@ class JsonRpcProvider(ReadOnlyProvider):
         tag = block if isinstance(block, str) else hex(block)
         vol = Volatility.LIVE if block == "latest" else Volatility.IMMUTABLE
         return self._call("eth_call", [{"to": to, "data": data}, tag], vol) or "0x"
+
+    def code_at(self, chain: ChainId, address: str, block: int | str = "latest") -> str:
+        """``eth_getCode`` at a specific block. Historical needs ``ARCHIVE_STATE``.
+
+        `get_account` asks at ``latest``, which answers a different question.
+        Whether an address is a contract is not a fixed property: a
+        counterfactual deployment turns an EOA into a contract, and a
+        self-destruct turned one back. Asking "now" to decide what something was
+        two years ago produces a confident wrong answer with nothing to notice,
+        which is the failure mode this package exists to refuse.
+
+        Returns the raw byte string. `"0x"` means no code *at that block*, which
+        is what "EOA at block b" means and is a narrower claim than "not a
+        contract" --- an address with no code yet may still receive one.
+        """
+        if block != "latest" and not self.capabilities & Capability.ARCHIVE_STATE:
+            raise ProviderError(
+                f"{self.name} is not configured as an archive node; "
+                f"eth_getCode at block {block} needs archive state. "
+                f"Pass archive=True if this endpoint does serve history."
+            )
+        tag = block if isinstance(block, str) else hex(block)
+        vol = Volatility.LIVE if block == "latest" else Volatility.IMMUTABLE
+        return self._call("eth_getCode", [address, tag], vol) or "0x"
+
+    def is_eoa_at(self, chain: ChainId, address: str, block: int | str = "latest") -> bool:
+        """Whether ``address`` had no code at ``block``."""
+        return self.code_at(chain, address, block) == "0x"
 
     def block_at_time(self, chain: ChainId, when: datetime) -> Block:
         """Last block at or before ``when``, by binary search.

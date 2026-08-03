@@ -22,19 +22,79 @@ import { api, boot, type ExpandReply, type ResolveReply } from "@/lib/api";
 type Props = {
   address: string | null;
   chain: string;
+  /** Addresses whose counterparties were never fetched. */
+  frontier: string[];
+  /** An analyzer the reader arrived asking for, from `/case/?run=`. */
+  highlight?: string | null;
   onReload: () => void;
   say: (text: string, tone?: string) => void;
 };
 
-const ANALYZERS = ["impersonation", "poisoning", "contributors"] as const;
+type Registered = {
+  name: string;
+  description: string;
+  /** False when this analysis cannot work on this chain at all. */
+  applies: boolean;
+  /** Parameters it needs beyond an address. */
+  needs: string[];
+};
 
-export function Selected({ address, chain, onReload, say }: Props) {
+export function Selected({ address, chain, frontier, highlight, onReload, say }: Props) {
   const [found, setFound] = useState<ResolveReply | null>(null);
   const [expanding, setExpanding] = useState(false);
   const [out, setOut] = useState(true);
   const [into, setInto] = useState(true);
   const [window_, setWindow] = useState("");
+  // Asked for, never hard-coded. The page offered three of thirteen because the
+  // list lived in a literal here; the server knows what is actually installed.
+  const [registered, setRegistered] = useState<Registered[]>([]);
+  const [result, setResult] = useState<string>("");
+  const [params, setParams] = useState<Record<string, string>>({});
+  const [open, setOpen] = useState<string | null>(null);
   const writable = boot().writable;
+
+  useEffect(() => {
+    api<{ analyses: Registered[] }>("/analyses", { chain })
+      .then((reply) => setRegistered(reply.analyses))
+      .catch(() => setRegistered([]));
+  }, [chain]);
+
+  const run = useCallback(
+    async (item: Registered) => {
+      const missing = item.needs.filter((n) => !params[n]?.trim());
+      if (missing.length) {
+        // Asked for, not guessed. Running with a blank required parameter
+        // would return an error naming what should have been typed, which is a
+        // worse way to learn it than a field.
+        setOpen(item.name);
+        say(`${item.name} needs ${missing.join(" and ")}`, "warn");
+        return;
+      }
+      try {
+        const extra = Object.fromEntries(item.needs.map((n) => [n, params[n]]));
+        const r = await api<{
+          findings: { title?: string; summary?: string }[];
+          hypotheses?: unknown[];
+        }>("/analyze", { name: item.name, address: address ?? "", chain, ...extra });
+        // Findings and hypotheses counted separately: one is observed, the
+        // other inferred, and a single number merges them into a claim nobody
+        // made.
+        const parts = [`${r.findings.length} finding(s)`];
+        if (r.hypotheses?.length) parts.push(`${r.hypotheses.length} hypothesis(es)`);
+        say(`${item.name}: ${parts.join(", ")}`, "ok");
+        setResult(
+          r.findings.length || r.hypotheses?.length
+            ? r.findings.map((f) => `• ${f.title ?? f.summary ?? JSON.stringify(f)}`).join("\n")
+            : `${item.name} found nothing. That is not a clean result — it means ` +
+              `this pattern is not present in what has been fetched so far.`,
+        );
+      } catch (err) {
+        say(`${item.name}: ${(err as Error).message}`, "bad");
+        setResult((err as Error).message);
+      }
+    },
+    [address, chain, params, say],
+  );
 
   useEffect(() => {
     if (!address) {
@@ -54,8 +114,9 @@ export function Selected({ address, chain, onReload, say }: Props) {
     };
   }, [address, chain]);
 
-  const expand = useCallback(async () => {
-    if (!address) return;
+  const expand = useCallback(
+    async (targets: string[]) => {
+    if (!targets.length) return;
     const ways = [out && "out", into && "in"].filter(Boolean).join(",");
     if (!ways) {
       say("pick a direction — in, out, or both", "bad");
@@ -71,7 +132,7 @@ export function Selected({ address, chain, onReload, say }: Props) {
         ? Math.floor(Date.now() / 1000) - Number(window_)
         : undefined;
       const reply = await api<ExpandReply>("/expand", {
-        address,
+        address: targets.join(","),
         chain,
         direction: ways,
         since,
@@ -80,6 +141,10 @@ export function Selected({ address, chain, onReload, say }: Props) {
         `${reply.fetched} transfer(s) fetched`,
         `${reply.new_addresses.length} new address(es)`,
       ];
+      // Per address, because a total says nothing about which of ten failed.
+      if (reply.failed?.length) {
+        bits.push(`${reply.failed.length} address(es) could not be fetched`);
+      }
       // What it did NOT bring back. A filter that matched nothing and an
       // address that never moved money leave the same smaller graph.
       if (reply.filtered_out) bits.push(`${reply.filtered_out} flow(s) excluded by your filter`);
@@ -92,7 +157,9 @@ export function Selected({ address, chain, onReload, say }: Props) {
     } finally {
       setExpanding(false);
     }
-  }, [address, chain, out, into, window_, say, onReload]);
+    },
+    [chain, out, into, window_, say, onReload],
+  );
 
   if (!address) {
     return (
@@ -159,10 +226,17 @@ export function Selected({ address, chain, onReload, say }: Props) {
         </select>
       </div>
       <div className="ctl">
-        <button onClick={expand} disabled={expanding}>
+        <button onClick={() => expand(address ? [address] : [])} disabled={expanding}>
           {expanding ? "fetching…" : "expand one hop"}
         </button>
       </div>
+      {frontier.length > 1 ? (
+        <div className="ctl">
+          <button onClick={() => expand(frontier)} disabled={expanding}>
+            {expanding ? "fetching…" : `open the whole frontier (${frontier.length})`}
+          </button>
+        </div>
+      ) : null}
       <p className="cannot">
         <b>This is the only control that reaches a chain.</b> A filter narrows what
         is fetched, so it narrows what you will ever see — the result says how many
@@ -172,19 +246,62 @@ export function Selected({ address, chain, onReload, say }: Props) {
 
       <h2>run on this address</h2>
       <div className="ctl wrap">
-        {ANALYZERS.map((name) => (
-          <button
-            key={name}
-            onClick={() =>
-              api<{ findings: unknown[] }>("/analyze", { name, address, chain })
-                .then((r) => say(`${name}: ${r.findings.length} finding(s)`, "ok"))
-                .catch((err) => say(`${name}: ${(err as Error).message}`, "bad"))
-            }
-          >
-            {name}
-          </button>
-        ))}
+        {registered
+          // A control that cannot work on this chain is worse than no control:
+          // pressing it returns "no walker configured", and the reader cannot
+          // tell a wrong chain from a real absence of the pattern.
+          .filter((item) => item.applies)
+          .map((item) => (
+            <button
+              key={item.name}
+              title={item.description}
+              className={item.name === highlight ? "wanted" : undefined}
+              onClick={() => void run(item)}
+            >
+              {item.name}
+              {item.needs.length ? <span className="needs">·{item.needs.length}</span> : null}
+            </button>
+          ))}
       </div>
+
+      {open ? (
+        <div className="params">
+          {(registered.find((r) => r.name === open)?.needs ?? []).map((need) => (
+            <input
+              key={need}
+              className="mono"
+              placeholder={need}
+              value={params[need] ?? ""}
+              onChange={(event) =>
+                setParams((current) => ({ ...current, [need]: event.target.value }))
+              }
+            />
+          ))}
+          <button
+            onClick={() => {
+              const item = registered.find((r) => r.name === open);
+              if (item) void run(item);
+            }}
+          >
+            run {open}
+          </button>
+        </div>
+      ) : null}
+
+      {registered.some((item) => !item.applies) ? (
+        <p className="note small">
+          {registered.filter((i) => !i.applies).length} analysis(es) are installed
+          but do not apply to this chain:{" "}
+          {registered
+            .filter((i) => !i.applies)
+            .map((i) => i.name)
+            .join(", ")}
+          . Hidden rather than offered, because a button that can only answer
+          &ldquo;not configured for this chain&rdquo; reads like an absence of
+          the pattern.
+        </p>
+      ) : null}
+      {result ? <pre className="result">{result}</pre> : null}
 
       {!writable ? (
         <p className="note small">

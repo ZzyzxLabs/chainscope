@@ -49,7 +49,7 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, ClassVar
 
 from ..chains import address_key, fold_if_hex
 from ..core.result import Finding, Result, Severity
@@ -542,6 +542,12 @@ def _fetch(ctx: Context, address: str, limit: int) -> Any:
 
 class RouteAnalyzer(Analyzer):
     """How money could have got from one address to another."""
+
+    #: Parameters this needs beyond an address. Read by the web UI to
+    #: render an input for each, so a reader is not asked to press a button
+    #: whose only possible outcome is an error naming what they should have
+    #: typed. Kept beside the check that enforces it.
+    REQUIRES: ClassVar[tuple[str, ...]] = ("source", "target")
 
     name = "route"
     description = "find time-respecting routes between two addresses"

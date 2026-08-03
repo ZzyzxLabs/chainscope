@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from chainscope.server.static import StaticSite, content_type
+from chainscope.server.static import StaticSite, cache_control, content_type
 
 
 @pytest.fixture
@@ -114,3 +114,24 @@ def test_javascript_is_never_served_as_plain_text() -> None:
     assert content_type(Path("a.css")).startswith("text/css")
     assert content_type(Path("a.woff2")) == "font/woff2"
     assert content_type(Path("a.unknown")) == "application/octet-stream"
+
+
+def test_html_is_never_cached(export: Path) -> None:
+    """It carries this run's token.
+
+    A cached copy hands a stale credential to the next run, and keeps working
+    after the server that minted it is gone. It is also why a rebuilt UI would
+    otherwise not reach the reader: a cached shell loading fresh chunks is how
+    a page ends up half-updated.
+    """
+    from chainscope.server.static import cache_control
+
+    assert cache_control(export / "index.html") == "no-store"
+    assert cache_control(Path("llms.txt")) == "no-store"
+    assert cache_control(Path("agent.json")) == "no-store"
+
+
+def test_hashed_assets_may_be_cached_hard(export: Path) -> None:
+    """The build content-hashes them, so a changed file is a changed name."""
+    assert "immutable" in cache_control(Path("app-a7ba4d37.js"))
+    assert "immutable" in cache_control(Path("style-99.css"))

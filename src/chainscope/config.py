@@ -63,6 +63,11 @@ ENV_KEYS: dict[str, tuple[str, str]] = {
 #: is not a legal environment variable name.
 RPC_PREFIX = "CHAINSCOPE_RPC_"
 
+#: Appended to an RPC variable to say that endpoint serves historical state:
+#: ``CHAINSCOPE_RPC_ETHEREUM_ARCHIVE=1``. Without it, historical `eth_call` and
+#: `eth_getCode` are refused rather than silently answered about the present.
+ARCHIVE_SUFFIX = "_ARCHIVE"
+
 
 def load_dotenv(
     path: str | Path | None = None, *, search_from: Path | None = None
@@ -122,6 +127,9 @@ class Settings:
     rpc: dict[str, str] = field(default_factory=dict)
     """Chain short name (lowercased) to endpoint URL."""
 
+    rpc_archive: dict[str, bool] = field(default_factory=dict)
+    """Which of those endpoints serve historical state. See `ARCHIVE_SUFFIX`."""
+
     cache_dir: Path | None = None
     audit_log: Path | None = None
     rate_limit: float = 5.0
@@ -152,7 +160,20 @@ class Settings:
         rpc = {
             name[len(RPC_PREFIX) :].lower(): value.strip()
             for name, value in merged.items()
-            if name.startswith(RPC_PREFIX) and value.strip()
+            if name.startswith(RPC_PREFIX)
+            and value.strip()
+            and not name.endswith(ARCHIVE_SUFFIX)
+        }
+        # Declared, never guessed from the hostname. An endpoint that keeps
+        # historical state can answer "was this an EOA at block b" and "what
+        # were this token's decimals then"; one that cannot will answer those
+        # about *now*, which is a different question with a plausible-looking
+        # answer. So the capability is off unless somebody says otherwise.
+        rpc_archive = {
+            name[len(RPC_PREFIX) : -len(ARCHIVE_SUFFIX)].lower(): value.strip().lower()
+            not in ("", "0", "false", "no")
+            for name, value in merged.items()
+            if name.startswith(RPC_PREFIX) and name.endswith(ARCHIVE_SUFFIX)
         }
         # An endpoint may itself embed a credential in its path. Registering the
         # whole URL means a cassette recorded against it cannot carry the key,
@@ -163,6 +184,7 @@ class Settings:
         return cls(
             credentials=credentials,
             rpc=rpc,
+            rpc_archive=rpc_archive,
             cache_dir=_path(merged.get("CHAINSCOPE_CACHE_DIR")),
             audit_log=_path(merged.get("CHAINSCOPE_AUDIT_LOG")),
             rate_limit=_number(

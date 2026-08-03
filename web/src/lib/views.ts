@@ -217,3 +217,118 @@ export const CONTRACT: { term: string; meaning: string }[] = [
       "survives all the way into a report.",
   },
 ];
+
+export type Analysis = { name: string; what: string; cannot: string };
+
+/**
+ * The registered analyses.
+ *
+ * The server serves this list from the entry-point registry at `/analyses`, so
+ * the case view never hard-codes it. This copy exists because the landing page
+ * is statically exported and has no server to ask — and it carries the `cannot`
+ * line, which the registry has no field for and which is the part a reader most
+ * needs before deciding what a result means.
+ *
+ * `scripts/check_views_match.py` fails the build if these names drift from what
+ * is actually installed.
+ */
+export const ANALYSES: Analysis[] = [
+  {
+    name: "co_spend_cluster",
+    what:
+      "Groups addresses controlled by one party, from the fact that spending " +
+      "several inputs in one transaction requires signing for all of them.",
+    cannot:
+      "Who that party is. A cluster shows shared control, not identity, and " +
+      "cannot separate a person from a custodian holding funds for thousands. " +
+      "CoinJoin inverts the heuristic entirely, so suspected ones are excluded " +
+      "rather than down-weighted — one of them can poison a whole result.",
+  },
+  {
+    name: "common_funder",
+    what: "Groups account-model addresses by who first funded them.",
+    cannot:
+      "That they share an owner. A shared funder is often an exchange paying " +
+      "out to thousands of unrelated people.",
+  },
+  {
+    name: "consolidation",
+    what:
+      "Finds where a seed's counterparties send their funds onward, which is " +
+      "how custodial services show up in a graph.",
+    cannot:
+      "Whether the consolidation point is a service or one person collecting. " +
+      "Walking into an exchange usually ends a trace rather than advancing it.",
+  },
+  {
+    name: "contributors",
+    what: "Splits an address's inflow by who sent it and how each is linked.",
+    cannot:
+      "Ownership. Links are graded — same wallet, reachable, co-funded — and " +
+      "the weakest of those is barely a lead.",
+  },
+  {
+    name: "cross_chain",
+    what: "Matches a deposit on one chain to a payout on another.",
+    cannot:
+      "Certainty that the two are the same money. It pairs by timing and " +
+      "amount, and a busy bridge produces coincidences.",
+  },
+  {
+    name: "impersonation",
+    what: "Finds tokens whose symbol imitates a real one.",
+    cannot:
+      "Anything about a symbol with no canonical entry to compare against. " +
+      "UNLISTED is neither an accusation nor a clearance.",
+  },
+  {
+    name: "mixer",
+    what: "Pairs mixer deposits with withdrawals by timing, with the anonymity set.",
+    cannot:
+      "Which withdrawal is yours. The anonymity set size is reported because a " +
+      "pairing inside a set of 500 is not evidence.",
+  },
+  {
+    name: "peel_chain",
+    what: "Follows a UTXO peel chain, identifying the payment shed at each hop.",
+    cannot:
+      "Whether the peels are payments or self-transfers. Both look the same on " +
+      "chain.",
+  },
+  {
+    name: "poisoning",
+    what: "Finds addresses generated to be mistaken for a real counterparty.",
+    cannot:
+      "That anyone was deceived. It reports the probability the resemblance " +
+      "was chance — read that number before acting.",
+  },
+  {
+    name: "probing",
+    what: "Finds test-then-commit and escalating transfer sequences.",
+    cannot:
+      "Intent. A small transfer before a large one is also what a careful " +
+      "person does.",
+  },
+  {
+    name: "route",
+    what: "Finds time-respecting routes between two addresses.",
+    cannot:
+      "That the money took that route. A path that respects time is possible, " +
+      "not actual — 62% of naive graph paths are causally impossible, and " +
+      "these are the ones that survive that filter.",
+  },
+  {
+    name: "taint",
+    what: "Traces how much of each address's holdings came from a given source.",
+    cannot:
+      "Which specific coins. Taint is an accounting convention, and different " +
+      "conventions give different answers on the same data.",
+  },
+  {
+    name: "temporal",
+    what: "Profiles an address's operating hours from its own outbound activity.",
+    cannot:
+      "A location. It gives a plausible UTC offset band, which many places " +
+      "share, and automation defeats it entirely.",
+  },
+];

@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-__all__ = ["EXPORT_DIR", "StaticSite", "content_type"]
+__all__ = ["EXPORT_DIR", "StaticSite", "cache_control", "content_type"]
 
 #: Where `npm run build` puts the export, relative to the repository root.
 #: Shipped in the wheel as package data so an installed copy has it too.
@@ -44,6 +44,23 @@ _TYPES = {
     ".png": "image/png",
     ".txt": "text/plain; charset=utf-8",
 }
+
+
+def cache_control(path: Path) -> str:
+    """How long a built asset may be reused.
+
+    HTML is **never** cached. It carries this run's token, and a cached copy
+    would hand a stale credential to the next run --- or, worse, keep working
+    after the server that minted it has gone. It is also how a rebuilt UI
+    reaches the reader at all: a cached shell loading fresh chunks is how a
+    page ends up half-updated and blaming the server.
+
+    Everything else is content-hashed by the build (`app-a7ba4d37.js`), so a
+    changed file is a changed name and a long cache is safe.
+    """
+    if path.suffix.lower() in (".html", ".txt", ".json"):
+        return "no-store"
+    return "public, max-age=31536000, immutable"
 
 
 def content_type(path: Path) -> str:

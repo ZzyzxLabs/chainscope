@@ -45,6 +45,7 @@ export default function CasePage() {
   });
   const [busy, setBusy] = useState(false);
   const [asking, setAsking] = useState(false);
+  const [pending, setPending] = useState<string | null>(null);
 
   const say = useCallback((text: string, tone = "") => setStatus({ text, tone }), []);
 
@@ -83,7 +84,11 @@ export default function CasePage() {
     const params = new URLSearchParams(window.location.search);
     const a = params.get("a");
     const c = params.get("c");
+    // Arriving from the landing page's "run it" with no address yet: the
+    // analyzer is remembered and offered once there is something to run it on.
+    const run = params.get("run");
     if (c) setChain(c);
+    if (run) setPending(run);
     if (a) void load(a);
     // Intentionally once: this is restoring an entry point, not tracking state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -239,6 +244,8 @@ export default function CasePage() {
         <Selected
           address={selected}
           chain={`eip155:${chain}`}
+          frontier={(graph?.nodes ?? []).filter((n) => n.frontier).map((n) => n.address)}
+          highlight={pending}
           onReload={() => load(address)}
           say={say}
         />

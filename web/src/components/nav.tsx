@@ -41,6 +41,7 @@ export function Nav() {
           chainscope
         </Link>
         <div className="nav-links">
+          <Link href="/case/" className="nav-open">open a case</Link>
           <Link href="/docs">docs</Link>
           <Link href="/docs#endpoints">api</Link>
           <Link href="/docs#agents">agents</Link>
