@@ -558,3 +558,25 @@ label.asset input { accent-color: var(--cs-accent); }
   paint-order: stroke;
 }
 .callout.stark :focus-visible { outline-color: var(--cs-bg); }
+
+/* Narrow viewports.
+   The toolbar packs a form, four buttons, a slider and a text field into one
+   row. Below about 900px that row is wider than the window, and a horizontally
+   scrolling toolbar hides its own controls --- the reader cannot see that
+   `export` exists, so it may as well not. Wrapping costs a line of height and
+   keeps every control reachable.
+
+   The case view is a three-column workspace and does not become a phone app by
+   being told to stack; below 1100px it stacks, and the point is that nothing
+   is unreachable, not that it is comfortable. */
+@media (max-width: 900px) {
+  .case-bar { flex-wrap: wrap; row-gap: 8px; }
+  .case-bar form { flex: 1 1 100%; max-width: none; }
+  .case-bar .wm { max-width: none; flex: 1 1 120px; }
+  .case-bar .spacing { flex: 0 0 auto; }
+}
+@media (max-width: 1100px) {
+  /* The panel is where labelling and expansion live; capping it at 200px like
+     the left rail would put its controls behind a scrollbar. */
+  .case-main aside.right { max-height: 46vh; }
+}

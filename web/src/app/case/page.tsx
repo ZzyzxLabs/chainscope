@@ -14,7 +14,7 @@
  * which is a button somebody presses, not something a redraw can trigger.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AskDialog } from "@/components/ask-dialog";
 import { Busy } from "@/components/busy";
@@ -58,7 +58,127 @@ export default function CasePage() {
     label?: string;
   }>({ on: false });
 
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  /**
+   * Undo for the view, not for the case.
+   *
+   * What it covers is what a reader changes while looking: which assets are
+   * hidden, the spacing, the watermark. Deliberately NOT the case record ---
+   * a label or a note is append-only and authored, and an undo button that
+   * silently retracted one would be a worse thing than no undo at all.
+   *
+   * The inline page had this and the port lost it. Found by diffing the two
+   * pages' controls, not by anyone missing it, which is how a rewrite loses
+   * things: the absence reads as a decision.
+   */
+  const trail = useRef<{ past: string[]; future: string[] }>({ past: [], future: [] });
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+
+  const view = useCallback(
+    () => JSON.stringify({ hidden: [...hidden], spacing, watermark }),
+    [hidden, spacing, watermark],
+  );
+
+  const applyView = useCallback((raw: string) => {
+    const v = JSON.parse(raw) as { hidden: string[]; spacing: number; watermark: string };
+    setHidden(new Set(v.hidden));
+    setSpacing(v.spacing);
+    setWatermark(v.watermark);
+  }, []);
+
+  // Record after the change lands, so `past` holds states the reader saw.
+  useEffect(() => {
+    const now = view();
+    const t = trail.current;
+    if (t.past[t.past.length - 1] === now) return;
+    t.past.push(now);
+    if (t.past.length > 60) t.past.shift();
+    t.future.length = 0;
+    setCanUndo(t.past.length > 1);
+    setCanRedo(false);
+  }, [view]);
+
+  function undo() {
+    const t = trail.current;
+    if (t.past.length < 2) return;
+    t.future.push(t.past.pop()!);
+    applyView(t.past[t.past.length - 1]);
+    setCanUndo(t.past.length > 1);
+    setCanRedo(true);
+  }
+
+  function redo() {
+    const t = trail.current;
+    const next = t.future.pop();
+    if (!next) return;
+    t.past.push(next);
+    applyView(next);
+    setCanUndo(true);
+    setCanRedo(t.future.length > 0);
+  }
   const say = useCallback((text: string, tone = "") => setStatus({ text, tone }), []);
+
+  /**
+   * The drawing as a self-contained SVG file.
+   *
+   * Styles are inlined rather than linked, by the same rule as everything else
+   * here: a picture that fetches a stylesheet to render is a picture that
+   * stops rendering, and that tells somebody it was opened. The watermark is
+   * inside the SVG for the same reason --- one that vanishes on export is
+   * decoration.
+   *
+   * The pan and zoom are dropped and the whole graph written at its natural
+   * size, because what somebody wants in a report is the case, not the corner
+   * of it they happened to be looking at.
+   */
+  function exportSvg() {
+    const live = svgRef.current;
+    if (!live) {
+      say("nothing to export yet", "warn");
+      return;
+    }
+    const svg = live.cloneNode(true) as SVGSVGElement;
+    svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    const w = live.getAttribute("data-width");
+    const h = live.getAttribute("data-height");
+    if (w && h) {
+      svg.setAttribute("width", w);
+      svg.setAttribute("height", h);
+      svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    }
+    const g = svg.querySelector("g");
+    if (g) g.setAttribute("transform", "translate(20,20)");
+
+    const css = [...document.styleSheets]
+      .flatMap((sheet) => {
+        try {
+          return [...sheet.cssRules].map((r) => r.cssText);
+        } catch {
+          // A cross-origin sheet cannot be read. There are none here by
+          // design, but silently producing an unstyled file would be worse
+          // than skipping it.
+          return [];
+        }
+      })
+      .filter((t) => /\.card|\.edge|\.elabel|\.wm|\.eidx|\.arrow/.test(t))
+      .join("\n");
+    const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
+    style.textContent = css;
+    svg.insertBefore(style, svg.firstChild);
+
+    const blob = new Blob(
+      ['<?xml version="1.0" encoding="UTF-8"?>\n', svg.outerHTML],
+      { type: "image/svg+xml" },
+    );
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${(address || "case").slice(0, 12)}.svg`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    say("exported the graph as SVG — styles inlined, so it opens offline", "ok");
+  }
 
   const load = useCallback(
     async (target: string) => {
@@ -173,6 +293,15 @@ export default function CasePage() {
         <button onClick={share} disabled={!graph}>
           share
         </button>
+        <button onClick={exportSvg} disabled={!graph} title="download the graph as SVG">
+          export
+        </button>
+        <button onClick={undo} disabled={!canUndo} title="undo a view change">
+          undo
+        </button>
+        <button onClick={redo} disabled={!canRedo} title="redo a view change">
+          redo
+        </button>
         <label className="spacing" title="spread the columns out">
           <input
             type="range"
@@ -245,6 +374,7 @@ export default function CasePage() {
             since={since}
             spacing={spacing}
             watermark={watermark}
+            svgRef={svgRef}
           />
         ) : (
           <div className="canvas empty">

@@ -44,6 +44,8 @@ type Props = {
   since: number | null;
   spacing: number;
   watermark: string;
+  /** Lets the page serialise the drawing for export. */
+  svgRef?: React.RefObject<SVGSVGElement | null>;
 };
 
 export function Graph({
@@ -55,6 +57,7 @@ export function Graph({
   since,
   spacing,
   watermark,
+  svgRef,
 }: Props) {
   const [view, setView] = useState({ x: 0, y: 0, zoom: 1 });
   const dragging = useRef<{ x: number; y: number } | null>(null);
@@ -118,6 +121,9 @@ export function Graph({
   return (
     <div className="canvas">
       <svg
+        ref={svgRef}
+        data-width={width}
+        data-height={height}
         onWheel={onWheel}
         onMouseDown={onDown}
         onMouseMove={onMove}
