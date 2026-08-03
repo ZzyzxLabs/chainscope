@@ -53,6 +53,7 @@ from ..providers.base import Capability, ProviderError, ResultTruncated
 from ..store.base import Query
 from ..store.sqlite import SqliteStore
 from . import ask, site
+from .static import EXPORT_DIR, StaticSite, content_type
 from .webapp import page as _page
 
 __all__ = ["LocalServer", "ServerOptions", "main"]
@@ -1144,8 +1145,23 @@ def _run_over_store(
     )
 
 
+def _export_root() -> Path:
+    """Where the built front end lives.
+
+    Beside the package when installed, and at the repo root when working from a
+    checkout. Both are checked because the second is how anybody developing this
+    runs it, and a path that only works for one of them is a path that breaks
+    for whoever did not write it.
+    """
+    packaged = Path(__file__).resolve().parent.parent / EXPORT_DIR
+    if (packaged / "index.html").is_file():
+        return packaged
+    return Path(__file__).resolve().parents[3] / "web" / "out"
+
+
 def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
     options = handlers.options
+    site_files = StaticSite(_export_root())
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "chainscope"
@@ -1199,6 +1215,29 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
             # data --- every byte it displays comes from a request it makes back
             # here, and those are authorised. Requiring a token to fetch the
             # HTML would only put one in a URL somebody can copy.
+            # The built front end, if there is one. Served from this process so
+            # the page stays same-origin with its data and the token never has
+            # to travel in a URL --- see server/static.py. Unauthenticated for
+            # the same reason the inline page is: it carries no case data, only
+            # the code that will go and ask for some.
+            asset = site_files.resolve(parsed.path) if site_files.available else None
+            if asset is not None:
+                body = site_files.read(
+                    asset,
+                    token=options.token,
+                    store=str(options.store),
+                    writable=options.writable,
+                )
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_type(asset))
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            # No build present. `pip install chainscope` gets a Python package
+            # and nobody should need Node to look at their own case, so the
+            # inline page stays a complete fallback rather than a stub.
             if parsed.path in ("/", "/index.html"):
                 # The landing carries this store's real numbers. A generic
                 # "no data yet" cannot distinguish an empty store from a
