@@ -37,8 +37,9 @@ def add_parser(sub: Any, name: str) -> None:
         "action",
         nargs="?",
         default="list",
-        choices=["add", "list", "settle"],
-        help="add a lead, list them, or record what checking one found",
+        choices=["add", "list", "settle", "scan"],
+        help="add a lead, list them, record what checking one found, or scan an "
+        "address's ENS records for new ones",
     )
     p.add_argument("target", nargs="?", help="address (add/list) or lead id (settle)")
     p.add_argument("--kind", "-k", help=f"one of: {', '.join(sorted(set(TEXT_KEYS.values())))}")
@@ -63,6 +64,12 @@ def add_parser(sub: Any, name: str) -> None:
     p.add_argument("--open", action="store_true", help="list only what is still outstanding")
     p.add_argument("--case", type=Path, default=Path(".chainscope/case.db"))
     p.add_argument("--analyst", help="who is filing this; defaults to the environment")
+    p.add_argument("--chain", "-c", default="eth", help="for scan")
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="for scan: file what it finds. Without this it only shows them",
+    )
 
 
 def _err(message: str) -> None:
@@ -77,6 +84,8 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
             return _add(args, store, analyst)
         if args.action == "settle":
             return _settle(args, store, analyst)
+        if args.action == "scan":
+            return _scan(args, store, analyst)
         return _list(args, store)
     finally:
         store.close()
@@ -185,4 +194,83 @@ def _list(args: argparse.Namespace, store: LeadStore) -> int:
     )
     if counts.get("open"):
         print("  Open leads are unverified by definition. None of them is a finding.")
+    return 0
+
+
+def _scan(args: argparse.Namespace, store: LeadStore, analyst: str) -> int:
+    """Read an address's ENS entry and file what survives confirmation.
+
+    The chain this command exists to close: `attribution.ens` knew how to check
+    a name, `osint.leads` knew how to turn a confirmed one into leads, and
+    `case.leads` knew how to keep them --- and nothing had ever fetched a record,
+    so none of it ran.
+
+    Dry by default. Filing is a write into the case record, and a command that
+    wrote on first use would put somebody else's handles there before the person
+    running it had seen what was found.
+    """
+    if not args.target:
+        _err("scan needs an address")
+        return 2
+
+    from ...attribution.ens_lookup import EnsLookup
+    from ...core.chainid import resolve
+    from ...providers.base import ProviderError
+    from ...providers.build import router_for
+
+    try:
+        chain = resolve(args.chain)
+    except ValueError as exc:
+        _err(str(exc))
+        return 2
+
+    router, _skipped = router_for(chain)
+    provider = next((p for p in router.providers if hasattr(p, "call")), None)
+    if provider is None:
+        _err(
+            f"no provider for {chain} can make an eth_call, which is how ENS is "
+            f"read. Try `chainscope doctor --chain {args.chain}`"
+        )
+        return 2
+
+    try:
+        found = EnsLookup(provider, chain).look_up(args.target)
+    except ProviderError as exc:
+        _err(f"ENS lookup failed: {exc}")
+        return 1
+
+    for note in found.notes:
+        print(f"  {note}")
+
+    if not found.leads:
+        # Said explicitly. An empty result here is the common one and is the
+        # easiest thing in this command to misread as a clean bill.
+        if found.record.name and not found.confirmed:
+            print("\n  Nothing filed. An unconfirmed name's text records belong to")
+            print("  whoever owns the name, not to this address.")
+        return 1
+
+    print(f"\n{len(found.leads)} lead(s) from {found.record.name}:")
+    for lead in found.leads:
+        print(f"  {lead}")
+        print(f"      verify by: {lead.verify_by}")
+
+    if not args.apply:
+        print("\n  Nothing written. Re-run with --apply to file these.")
+        print("  They are places to look, not findings.")
+        return 0
+
+    filed = again = 0
+    for lead in found.leads:
+        lead_id, was_new = store.add(lead, analyst, str(chain))
+        if was_new:
+            filed += 1
+        else:
+            again += 1
+            existing = store.get(lead_id)
+            if not existing.is_open:
+                print(
+                    f"  lead {lead_id} was already {existing.verdict.value}: {existing.reason}"
+                )
+    print(f"\n  filed {filed}; {again} were already on file")
     return 0

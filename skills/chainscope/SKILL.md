@@ -56,6 +56,8 @@ pattern*, never *the pattern is absent*.
 ### Record somewhere to look next, and what came of it
 
 ```bash
+chainscope lead scan 0xADDR                       # read its ENS entry for leads
+chainscope lead scan 0xADDR --apply               # and file what survives
 chainscope lead add 0xADDR -k twitter -v alice -s "ENS text record on foo.eth"
 chainscope lead list --open                       # what is still outstanding
 chainscope lead settle 1 --verdict refuted --why "that account never published it"
@@ -66,6 +68,12 @@ text record reading `com.twitter = alice` does not mean the address belongs to
 @alice; it means whoever controls that name typed "alice" into a field. Every
 lead carries the specific step that would confirm it, and that step is always
 something a *person* does somewhere this tool cannot reach.
+
+`scan` reads text records **only from a forward-confirmed name** --- one that
+resolves back to the address it claims. An unconfirmed reverse record is a claim
+by whoever owns the name, about somebody else, so its text records are *their*
+handles; filing them would attach another person's identity to this address.
+They are not even fetched.
 
 Two behaviours to rely on:
 
