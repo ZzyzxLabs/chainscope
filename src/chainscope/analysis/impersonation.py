@@ -44,9 +44,11 @@ canonical check had nothing to say, and the finding says so in those words.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from ..chains import address_key
@@ -65,11 +67,13 @@ from .base import Analyzer, Context, history_of
 
 __all__ = [
     "CANONICAL",
+    "CANONICAL_FILE",
     "Impersonation",
     "ImpersonationAnalyzer",
     "Verdict",
     "canonical_for",
     "inspect_assets",
+    "load_canonical",
     "trusted_assets",
 ]
 
@@ -159,6 +163,66 @@ class Impersonation:
     @property
     def is_impersonation(self) -> bool:
         return self.verdict in (Verdict.FORGED, Verdict.LOOKALIKE, Verdict.UNKNOWN_SCRIPT)
+
+
+#: Where a user's own canonical entries are read from, if the file exists.
+#:
+#: The built-in table is fifteen names --- the ones worth forging on the chains
+#: this has been pointed at. That is deliberately not a token list, for the
+#: reason `CANONICAL` states: a general list makes every unlisted token look
+#: suspicious, which inverts the error. But fifteen is also the reason so many
+#: verdicts come back `unlisted`, and an analyst working a case on one chain
+#: knows perfectly well which contract is the real one there.
+#:
+#: So it is extensible, from a file, per case. Nothing is fetched --- a registry
+#: that quietly grew from the network would change a verdict between runs with
+#: nothing said.
+CANONICAL_FILE = "data/labels/canonical.json"
+
+
+def load_canonical(path: Path | str = CANONICAL_FILE) -> int:
+    """Merge user-supplied canonical entries. Returns how many were added.
+
+    Shape::
+
+        {"eip155:1": {"WETH": ["0xc02aaa…"], "SHIB": ["0x95ad61…"]}}
+
+    Merged, never replacing: a user file that dropped USDT would turn the real
+    USDT into an `unlisted` token, and the built-in entries are the ones whose
+    absence is most expensive.
+
+    Addresses are lower-cased on the way in, because the lookup folds hex --- a
+    checksummed entry in a user's file would never match and would report the
+    real contract as a forgery, which is the worst direction to be wrong in.
+    """
+    found = Path(path)
+    if not found.is_file():
+        return 0
+    try:
+        raw = json.loads(found.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{found} could not be read: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{found} should map a chain id to a symbol table, e.g. "
+            f'{{"eip155:1": {{"WETH": ["0x…"]}}}}'
+        )
+
+    added = 0
+    for chain, table in raw.items():
+        if not isinstance(table, dict):
+            continue
+        for symbol, contracts in table.items():
+            if isinstance(contracts, str):
+                contracts = [contracts]
+            if not isinstance(contracts, list):
+                continue
+            key = (str(chain), str(symbol).strip().upper())
+            merged = set(CANONICAL.get(key, frozenset()))
+            merged.update(str(c).strip().lower() for c in contracts if str(c).strip())
+            CANONICAL[key] = frozenset(merged)
+            added += 1
+    return added
 
 
 def canonical_for(chain: ChainId | None, symbol: str) -> frozenset[str] | None:
@@ -581,6 +645,10 @@ class ImpersonationAnalyzer(Analyzer):
         started = datetime.now(timezone.utc)
         seed = address_key(ctx.chain, address)
         limit = ctx.limit("per_node", 1000)
+        # Read here rather than at import: a case directory is chosen when the
+        # command runs, and a registry fixed at import would silently be the
+        # wrong one for every case but the first.
+        extra = load_canonical()
 
         # "all", the value the providers accept. Both directions matter here and
         # the reason is specific to this analyzer: a poisoning token is *sent
@@ -607,6 +675,13 @@ class ImpersonationAnalyzer(Analyzer):
                 f"stopped at {limit} transfers (per_node limit). Assets appearing "
                 f"only after that point were not inspected, so the share below is "
                 f"over what was read, not over what exists"
+            )
+        if extra:
+            # Said, because it changes verdicts. A reader comparing two runs
+            # needs to know the registry differed between them.
+            warnings.append(
+                f"{extra} canonical symbol(s) loaded from {CANONICAL_FILE} on top "
+                f"of the built-in table"
             )
         if rep.impersonations:
             warnings.append(rep.summary())

@@ -385,3 +385,80 @@ class TestFactsAndInferencesAreSeparated:
         from chainscope.analysis.impersonation import analyse
 
         assert analyse(_transfers([(REAL_USDC, "USDC", 2)]), ETHEREUM).hypotheses == ()
+
+
+class TestTheRegistryIsExtensible:
+    """Fifteen names is why so many verdicts come back `unlisted`.
+
+    The built-in table is deliberately not a token list --- a general one makes
+    every unlisted token look suspicious, which inverts the error this module
+    exists to prevent. But an analyst working one chain knows which contract is
+    the real one there, and had no way to tell the tool.
+
+    Nothing is fetched. A registry that quietly grew from the network would
+    change a verdict between two runs with nothing said.
+    """
+
+    SHIB = "0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE"
+
+    def _file(self, tmp_path: object, body: object) -> object:
+        import json
+
+        path = tmp_path / "canonical.json"  # type: ignore[operator]
+        path.write_text(json.dumps(body))
+        return path
+
+    def test_a_user_entry_is_merged(self, tmp_path: object) -> None:
+        from chainscope.analysis.impersonation import load_canonical
+
+        assert canonical_for(ETHEREUM, "TESTCOIN") is None
+        added = load_canonical(
+            self._file(tmp_path, {"eip155:1": {"TESTCOIN": ["0x" + "1" * 40]}})
+        )
+        assert added == 1
+        assert canonical_for(ETHEREUM, "TESTCOIN") == frozenset({"0x" + "1" * 40})
+
+    def test_the_built_ins_survive(self, tmp_path: object) -> None:
+        # Merged, never replacing. A user file that dropped USDT would turn the
+        # real USDT into an unlisted token, and the built-in entries are the
+        # ones whose absence costs most.
+        from chainscope.analysis.impersonation import load_canonical
+
+        load_canonical(self._file(tmp_path, {"eip155:1": {"OTHERCOIN": ["0x" + "2" * 40]}}))
+        assert REAL_USDT in canonical_for(ETHEREUM, "USDT")
+
+    def test_a_checksummed_entry_still_matches(self, tmp_path: object) -> None:
+        # The lookup folds hex, so a checksummed entry that was not lowered
+        # would never match and would report the real contract as a forgery.
+        from chainscope.analysis.impersonation import load_canonical
+
+        load_canonical(self._file(tmp_path, {"eip155:1": {"SHIBTEST": [self.SHIB]}}))
+        assert self.SHIB.lower() in canonical_for(ETHEREUM, "SHIBTEST")
+
+    def test_a_forgery_of_a_user_symbol_is_caught(self, tmp_path: object) -> None:
+        from chainscope.analysis.impersonation import load_canonical
+
+        load_canonical(self._file(tmp_path, {"eip155:1": {"MYCOIN": [self.SHIB]}}))
+        found = inspect_assets(_transfers([("0x" + "9" * 40, "MYCOIN", 1)]))
+        assert found[0].verdict == Verdict.FORGED
+
+    def test_a_missing_file_is_not_an_error(self, tmp_path: object) -> None:
+        # The common case: no user file. Raising would make the analyzer
+        # unusable by default.
+        from chainscope.analysis.impersonation import load_canonical
+
+        assert load_canonical(tmp_path / "absent.json") == 0  # type: ignore[operator]
+
+    def test_a_malformed_file_says_what_shape_it_wants(self, tmp_path: object) -> None:
+        from chainscope.analysis.impersonation import load_canonical
+
+        with pytest.raises(ValueError, match="eip155:1"):
+            load_canonical(self._file(tmp_path, ["not", "a", "mapping"]))
+
+    def test_a_single_string_is_accepted(self, tmp_path: object) -> None:
+        # One contract per symbol is the common shape, and requiring a list for
+        # it is the kind of friction that makes people not write the file.
+        from chainscope.analysis.impersonation import load_canonical
+
+        load_canonical(self._file(tmp_path, {"eip155:1": {"SOLOCOIN": self.SHIB}}))
+        assert canonical_for(ETHEREUM, "SOLOCOIN") == frozenset({self.SHIB.lower()})

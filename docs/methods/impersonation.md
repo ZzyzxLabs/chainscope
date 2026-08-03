@@ -71,6 +71,25 @@ look suspicious, which inverts the error this exists to prevent.
 So **`unlisted` is not a clean bill**. It means the canonical check had nothing
 to compare against, which is the ordinary state for most real tokens.
 
+### The registry is small, and extensible for that reason
+
+Fifteen names is why so many verdicts come back `unlisted`. Adding a general
+token list would be worse --- it would make every unlisted token look suspicious,
+inverting the error --- but an analyst working one chain knows which contract is
+the real one there.
+
+So `data/labels/canonical.json` is merged on top when present:
+
+```json
+{"eip155:1": {"SHIB": ["0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce"]}}
+```
+
+Merged, never replacing: a file that dropped USDT would turn the real USDT into
+an unlisted token. Nothing is fetched --- a registry that quietly grew from the
+network would change a verdict between two runs with nothing said --- and when
+entries are loaded, the result says so, because a reader comparing two runs
+needs to know the registry differed.
+
 ### The character table is partial
 
 `TO_ASCII` covers Cyrillic, Greek, Armenian, Cherokee, fullwidth forms and
