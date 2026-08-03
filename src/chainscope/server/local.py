@@ -51,7 +51,7 @@ from ..core.chainid import ChainId
 from ..providers.base import Capability, ProviderError, ResultTruncated
 from ..store.base import Query
 from ..store.sqlite import SqliteStore
-from . import site
+from . import ask, site
 from .webapp import page as _page
 
 __all__ = ["LocalServer", "ServerOptions", "main"]
@@ -270,6 +270,32 @@ class _Handlers:
         failed = [f"{name}: {why}" for name, why in found.failed]
         claims = list(found.entity.all_claims) if found.entity else []
         return claims, failed
+
+    def ask(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """Read a plain-language question and say what it would run.
+
+        Returns the plan, not the answer. Two reasons, and the second is the
+        important one.
+
+        The mechanical reason is that the caller already has the endpoints and
+        can make the call itself, so proxying would only add a hop.
+
+        The real reason is that the interpretation is the part most likely to
+        be wrong. A layer that reads "who paid this in the last week", quietly
+        decides that means something else, and returns an answer has produced a
+        confident response to a question nobody asked --- which in this domain
+        ends as a claim about a person. Showing the reading first makes that
+        disagreeable rather than invisible.
+
+        `now` is required for a relative window rather than read from the
+        clock, so the same question is recorded as the same absolute instant
+        and can be replayed.
+        """
+        question = (_first(query, "q") or "").strip()
+        chain = str(self._chain(_first(query, "chain") or "1") or ChainId.evm(1))
+        now = int(_first(query, "now") or 0)
+        plan = ask.interpret(question, chain=chain, now=now)
+        return {"question": question, **plan.to_dict()}
 
     def expand(self, query: dict[str, list[str]]) -> dict[str, Any]:
         """Fetch one hop out from a single address, on the investigator's terms.
@@ -1169,6 +1195,7 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
                 "/resolve": handlers.resolve,
                 "/flows": handlers.flows,
                 "/expand": handlers.expand,
+                "/ask": handlers.ask,
                 "/graph": handlers.graph,
                 "/analyze": handlers.analyze,
                 "/leads": handlers.leads,
