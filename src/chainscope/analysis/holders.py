@@ -24,6 +24,24 @@ alone in its group has no observed link in what was fetched. That is the same
 distinction the rest of this package draws everywhere, and it matters most
 here, because the headline number people want is "the top holder controls
 X%" and every missed link makes X too small.
+
+**Measured and rejected: gas-price fingerprinting.** The idea is that people
+set a characteristic tip and can be recognised by it. Sampled over four blocks
+on two chains: Ethereum, 1,720 transactions from 1,564 addresses, 4.74 bits of
+entropy, one tip value (0.005 gwei) carrying 30.2% of them; BSC, 205
+transactions from 171 addresses, 4.13 bits, one value carrying 33.2%. Linking
+every pair that shares a tip joins **15.5% of all possible pairs, on both
+chains independently** --- because since EIP-1559 the tip is computed by the
+wallet, so the buckets are wallet defaults rather than habits. That is not a
+weak signal to be used carefully; it is a link generator with the shape of
+evidence, which is the failure the typed `LinkKind` above exists to prevent.
+Nonce cadence measures the same thing more indirectly and was not re-tested.
+
+What discriminates instead is co-occurrence that is rare *by construction*:
+two addresses holding the same obscure token, or buying in the same block at a
+pool's launch. There the population sharing the trait is small because almost
+nobody touches that token --- not large because every wallet picked the same
+default.
 """
 
 from __future__ import annotations
