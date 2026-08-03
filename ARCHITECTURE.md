@@ -446,16 +446,32 @@ chainscope/
 ├── core/          models, chain identity, attribution, hypothesis, registry
 ├── transport/     cache, throttle, audit, http with circuit breaker
 ├── providers/     base protocol, router, concrete providers
-├── chains/        adapters per ecosystem (evm, bitcoin, solana, tron)
+├── chains/        adapters per ecosystem (evm, bitcoin, solana, sui, tron)
 ├── store/         Store protocol, sqlite backend, rebuild from cache
 ├── attribution/   sources + conflict-resolving resolver
-├── analysis/      consolidation, xchain, peel, cluster, flow, sweep
+├── analysis/      one module per technique; see `chainscope analyze --list`
+├── osint/         leads: somewhere to look next, kept apart from conclusions
 ├── watch/         Watch, predicates, evaluate(); no scheduler
 ├── pricing/       historical rate sources with local cache
-├── case/          bundles: manifest, recorded queries, results
-├── render/        terminal, markdown, json, graph export
+├── case/          append-only case log, correspondence ledger, bundles
+├── render/        terminal, markdown, json, html, graph and flow export
+├── agent/         MCP tools over the same code paths as the CLI
+├── server/        loopback-only HTTP for the browser extension
 └── cli/           thin dispatch; one module per command group
 ```
+
+This tree is checked against the source by
+`tests/unit/test_the_architecture_doc_describes_this_repo.py`. It had gone
+stale in the way a layout diagram always does: `agent/`, `osint/` and `server/`
+— three of the surfaces a reader is most likely to be looking for — were
+missing entirely, `chains/` did not mention Sui, and `analysis/` named six
+modules of the fourteen that exist while listing two (`flow`, `sweep`) that
+live elsewhere or not at all. A reader takes a layout as the map; a wrong map
+is worse than none.
+
+`analysis/` is deliberately no longer enumerated here. It is the part that grows
+fastest, so naming its members in a document guarantees this paragraph is wrong
+again by the next release. `chainscope analyze --list` reads the registry.
 
 Domain-specific output formats (e.g. competition submission encoders) live in
 separate optional packages, not in core.

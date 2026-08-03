@@ -31,16 +31,30 @@ through three tools and emerge looking like a fact.
   token-bucket throttling, credential-redacting audit log, circuit breaker
 - **Providers** — capability-based routing with cost-tier preference and
   fallback; generic EVM JSON-RPC provider
-- **Chains** — EVM, Bitcoin, Solana, Tron adapters
-- **Attribution** — OFAC sanctions, explorer nametag dumps, local labels;
-  resolver that distinguishes "nothing known" from "could not check"
-- **Analysis** — deposit-address consolidation, cross-chain matching, peel
-  chains, co-spend clustering
-- **Pricing** — Binance minute klines with a local cache
-- **Render** — terminal, Markdown, JSON
+- **Chains** — EVM, Bitcoin, Solana, Sui, Tron adapters
+- **Attribution** — OFAC sanctions, explorer nametag dumps, local labels, ENS
+  with forward confirmation; resolver that distinguishes "nothing known" from
+  "could not check", and bulk import that checks the address column
+- **Analysis** — fourteen techniques, each a module under `chainscope/analysis`
+  and each reachable through `chainscope analyze --list`. Not enumerated here:
+  the list grows, and a list in a changelog entry is a promise to be wrong
+- **OSINT** — leads, which are explicitly not attributions: every one names the
+  step that would confirm it, and that step is always something a person does
+  somewhere this tool cannot reach
+- **Case record** — an append-only log where a correction must name what it
+  supersedes, and a correspondence ledger where overdue is derived rather than
+  stored and silence is never recorded as a refusal
+- **Pricing** — Binance minute klines with a local cache, and `value`, which
+  converts at the rate that applied when the money moved and refuses when the
+  nearest rate is too far away to defend
+- **Render** — terminal, Markdown, JSON, HTML dashboard, and an interactive
+  flow graph with per-analyst annotations
 - **Case bundles** — results plus the recorded responses that produced them,
   replayable offline
-- **CLI** — `analyze`, `label`, `doctor`, `bundle`
+- **CLI** — sixteen commands; `chainscope --help` lists them
+- **MCP agent** — twelve tools, including writes, over the same code paths as
+  the CLI rather than a parallel implementation
+- **Browser extension** — MV3, talking to a loopback-only local server
 
 ### Security properties
 
@@ -83,3 +97,36 @@ of failure this project is specifically meant to avoid.
 - `ResolvedEntity.disputed` fired on every sanctioned exchange, because
   SANCTIONED was compared against service categories rather than treated as the
   overlay it is
+- `.lower()` was called on addresses in 27 places, bypassing the one function
+  that knows base58 and bech32 are case-sensitive. Measured cost: zero-row store
+  queries on three of five chains, a permanently stuck expansion frontier, every
+  revenue share computed as 0 bps, and sanctions lookups that missed listed
+  addresses. The transmission mechanism was a worked example in
+  `docs/extending.md`, which is why the count reached 27
+- The flow page's JavaScript had never parsed. Every test passed throughout,
+  because each extracted one function with a regular expression first — a
+  fragment that parses says nothing about the file it came from
+- Three providers declared `Capability.TRANSACTION` and raised
+  `NotImplementedError` when asked, so the router preferred them and the call
+  failed
+- `block_at_time` returned a block *after* the moment asked about — the exact
+  failure its docstring says it exists to prevent — because the search was
+  seeded with the lowest block. It also excluded the genesis block, and treated
+  a transient read failure as evidence that a block was too late
+- The attribution resolver cached resolutions in which a source had failed, so
+  one rate limit was remembered for the rest of the run and every later lookup
+  of that address returned the same partial answer
+- Bulk label import validated the label and the category and never the address,
+  so a column mapping off by one imported a whole file of names as addresses and
+  reported them as ready
+- The dashboard's summary table dropped `decimals` and assumed 18, showing 1,000
+  USDC as `0.000000` — beside a flows table that read the same rows correctly.
+  Both formatters also cut the fraction at a fixed position, so one wei rendered
+  as zero, which on a flow graph reads as nothing having moved
+- The network guard that keeps CI offline was installed by a function-scoped
+  fixture, so collection-time code, session- and module-scoped fixtures, and any
+  `from socket import …` binding went straight out
+- All four method documents named a `Method` that appeared nowhere in the code
+  they pointed at, and `ARCHITECTURE.md`'s package layout omitted three whole
+  packages. Both are now checked by tests, because documentation drifts exactly
+  as far as nothing stops it

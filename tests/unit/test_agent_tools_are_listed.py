@@ -112,3 +112,38 @@ class TestTheListMatchesTheServer:
         for entry in TOOLS:
             if "--writable" in entry:
                 assert entry.split(" ")[0] in write_gated()
+
+
+class TestTheReadmeCountsAreTheRealCounts:
+    """ "16 commands", "12 tools" --- numbers a reader takes on trust.
+
+    The tool count said 10 and was 12. Nobody notices: a count in prose has
+    nothing checking it, and being wrong in the *low* direction is the quiet
+    kind --- a reader concludes a capability is absent and goes looking
+    elsewhere, which is the same cost as not having built it.
+    """
+
+    def _readme(self) -> str:
+        from pathlib import Path
+
+        return (Path(__file__).resolve().parents[2] / "README.md").read_text()
+
+    def test_the_tool_count_is_right(self) -> None:
+        import re
+
+        from chainscope.agent.server import TOOLS
+
+        match = re.search(r"MCP agent \((\d+) tools", self._readme())
+        assert match, "the README no longer states a tool count"
+        assert int(match.group(1)) == len(TOOLS)
+
+    def test_the_command_count_is_right(self) -> None:
+        import pkgutil
+        import re
+
+        from chainscope.cli import commands
+
+        match = re.search(r"CLI \((\d+) commands\)", self._readme())
+        assert match, "the README no longer states a command count"
+        registered = len(list(pkgutil.iter_modules(commands.__path__)))
+        assert int(match.group(1)) == registered
