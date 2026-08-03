@@ -53,6 +53,17 @@ It exits non-zero when nothing was found, so silence is not readable as a clean
 bill of health. An empty step means *this window held no evidence of that
 pattern*, never *the pattern is absent*.
 
+### Open the case in a browser
+
+```bash
+chainscope serve                 # read-only, opens a browser
+chainscope serve --writable --analyst you@lab
+```
+
+Loopback only, and the token is minted per run and injected into the page --- it
+never travels in a URL. Writing is off by default: recording a label should be
+a decision, not the default for a command somebody ran to look at something.
+
 ### Get the naming data first
 
 ```bash
