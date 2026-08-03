@@ -143,6 +143,8 @@ aside.right textarea { margin-top: 4px; }
 .edge.lit { stroke: var(--warn); stroke-width: 2px; opacity: 1; }
 .elabel { fill: #9aa1b8; font-size: 9.5px; pointer-events: none; }
 .elabel.lit { fill: var(--warn); }
+.edge.asserted { stroke: var(--ok); stroke-dasharray: 6 4; opacity: 1; }
+.elabel.asserted { fill: var(--ok); }
 .eidx { fill: #5b62d6; }
 .vgroup {
   font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
@@ -205,7 +207,69 @@ const state = {
   view: { x: 0, y: 0, k: 1 },
   spacing: 1,
   watermark: "",
+  // Analyst-drawn edges: a connection somebody asserts, kept apart from the
+  // ones the chain shows. See `drawnEdges` below for why they are a different
+  // colour and carry a different word.
+  drawn: [],
+  linking: null,
 };
+
+// View history. Only the *view* --- what is hidden, how it is laid out, what
+// was asserted on top. Nothing that reaches the store is in here, because
+// everything that reaches the store goes to an append-only log and undoing a
+// record is not a thing this tool should offer.
+// `trail`, not `history` --- naming it that shadowed `window.history`, so
+// `writeUrl`'s `history.replaceState` called this object instead and every
+// redraw threw. Found by opening the page; nothing in the type checker or the
+// linter can see a global being covered up.
+const trail = { past: [], future: [] };
+
+function snapshot() {
+  return JSON.stringify({
+    hidden: [...state.hidden], spacing: state.spacing,
+    watermark: state.watermark, drawn: state.drawn,
+  });
+}
+
+function remember() {
+  const now = snapshot();
+  if (trail.past[trail.past.length - 1] === now) return;
+  trail.past.push(now);
+  if (trail.past.length > 60) trail.past.shift();
+  trail.future.length = 0;
+  updateHistoryButtons();
+}
+
+function restore(shot) {
+  const found = JSON.parse(shot);
+  state.hidden = new Set(found.hidden);
+  state.spacing = found.spacing;
+  state.watermark = found.watermark;
+  state.drawn = found.drawn;
+  $("#wm").value = state.watermark;
+  $("#space").value = state.spacing;
+  draw(); assets(); count(); applyView(); writeUrl();
+}
+
+function undo() {
+  if (trail.past.length < 2) return;
+  trail.future.push(trail.past.pop());
+  restore(trail.past[trail.past.length - 1]);
+  updateHistoryButtons();
+}
+
+function redo() {
+  const next = trail.future.pop();
+  if (!next) return;
+  trail.past.push(next);
+  restore(next);
+  updateHistoryButtons();
+}
+
+function updateHistoryButtons() {
+  $("#undo").disabled = trail.past.length < 2;
+  $("#redo").disabled = !trail.future.length;
+}
 
 function short(a) { return a.length > 16 ? a.slice(0, 8) + "…" + a.slice(-6) : a; }
 function esc(s) {
@@ -368,7 +432,10 @@ function draw() {
        <path d="M0,0 L8,4 L0,8z" fill="#5b62d6"/></marker>
      <marker id="arrowlit" viewBox="0 0 8 8" refX="7" refY="4"
        markerWidth="6" markerHeight="6" orient="auto">
-       <path d="M0,0 L8,4 L0,8z" fill="#e0a458"/></marker></defs>`,
+       <path d="M0,0 L8,4 L0,8z" fill="#e0a458"/></marker>
+     <marker id="arrowassert" viewBox="0 0 8 8" refX="7" refY="4"
+       markerWidth="6" markerHeight="6" orient="auto">
+       <path d="M0,0 L8,4 L0,8z" fill="#7fb069"/></marker></defs>`,
   ];
 
   graph.edges.forEach((e, i) => {
@@ -394,6 +461,20 @@ function draw() {
       `<text class="elabel${on ? " lit" : ""}" x="${b.x - 12}"` +
       ` y="${b.y + CARD_H / 2 - 6}" text-anchor="end">` +
       `<tspan class="eidx">[${i + 1}]</tspan> [${when}] ${amount}</text>`);
+  });
+
+  // Asserted edges, drawn distinctly and labelled with who said so. A line
+  // somebody drew and a line the chain shows must never look alike: the whole
+  // argument of this tool is that a claim carries its provenance, and an edge
+  // is a claim.
+  state.drawn.forEach((d) => {
+    const a = byId.get(d.source), b = byId.get(d.target);
+    if (!a || !b) return;
+    parts.push(`<path class="edge asserted" d="${edgePath(a, b)}"` +
+      ` marker-end="url(#arrowassert)"/>`);
+    parts.push(`<text class="elabel asserted" x="${b.x - 12}"` +
+      ` y="${b.y + CARD_H / 2 - 6}" text-anchor="end">` +
+      `asserted: ${esc(d.why || "no reason given")}</text>`);
   });
 
   graph.nodes.forEach((n) => {
@@ -434,6 +515,7 @@ function draw() {
   svg.querySelectorAll(".card").forEach((g) =>
     g.addEventListener("click", (ev) => {
       if (ev.target.closest(".handle")) return;
+      if (state.linking) { finishLink(g.dataset.a); return; }
       select(g.dataset.a);
     }));
   svg.querySelectorAll(".handle").forEach((h) =>
@@ -496,6 +578,38 @@ function fit() {
   applyView();
 }
 
+function startLink() {
+  if (!state.selected) { say("select the address the link starts from", "bad"); return; }
+  state.linking = state.selected;
+  say(`linking from ${short(state.linking)} — click the address it reaches`);
+}
+
+async function finishLink(target) {
+  const source = state.linking;
+  state.linking = null;
+  if (!source || source === target) return;
+  const why = prompt(
+    "Why do these belong together?\n\n" +
+    "This is recorded as a NOTE against both addresses, with your name and the " +
+    "time, because it is a claim you are making rather than something the chain " +
+    "shows. The line is drawn in a different colour for the same reason.");
+  if (!why || !why.trim()) { say("nothing drawn — an assertion needs a reason"); return; }
+  try {
+    // Written to the case log, not only to the canvas. A line that lives in a
+    // picture is lost when the picture is redrawn, and carries no author.
+    await post("/note", {
+      body: `asserted link to ${target}: ${why.trim()}`,
+      kind: "observation", subject: source, chain: state.chain,
+    });
+    state.drawn.push({ source, target, why: why.trim() });
+    remember();
+    draw();
+    say(`asserted ${short(source)} → ${short(target)}, filed as a note`);
+  } catch (err) {
+    say(err.message, "bad");
+  }
+}
+
 function exportSvg() {
   // The SVG itself, with its styles inlined. Self-contained by the same rule
   // as everything else here: a picture that fetches a stylesheet to render is
@@ -522,13 +636,21 @@ function exportSvg() {
 function wireTools() {
   $("#space").addEventListener("input", (ev) => {
     state.spacing = Number(ev.target.value);
-    draw(); applyView();
+    draw(); applyView(); remember();
   });
   $("#wm").addEventListener("input", (ev) => {
     state.watermark = ev.target.value.trim();
-    draw(); writeUrl();
+    draw(); writeUrl(); remember();
   });
   $("#export").addEventListener("click", exportSvg);
+  $("#link").addEventListener("click", startLink);
+  $("#undo").addEventListener("click", undo);
+  $("#redo").addEventListener("click", redo);
+  document.addEventListener("keydown", (ev) => {
+    if (!(ev.metaKey || ev.ctrlKey)) return;
+    if (ev.key === "z" && !ev.shiftKey) { ev.preventDefault(); undo(); }
+    if (ev.key === "z" && ev.shiftKey) { ev.preventDefault(); redo(); }
+  });
   $("#share").addEventListener("click", async () => {
     writeUrl();
     try {
@@ -840,6 +962,7 @@ async function load(address) {
       state.pendingHidden = null;
     }
     draw(); roster(); assets(); select(graph.seed); count(); fit(); writeUrl();
+    trail.past.length = 0; trail.future.length = 0; remember();
     const bits = [`${graph.nodes.length} addresses`, `${graph.edges.length} flows`];
     // Said, not hidden. The page reads the store; when it had to go to a
     // provider to fill it, that is a fact about where the picture came from.
@@ -911,6 +1034,9 @@ _TEMPLATE = """<!doctype html>
   <button id="addbtn" title="add addresses to this case">+ add</button>
   <button id="share" title="copy a link that restores this view">share</button>
   <button id="export" title="download the graph as SVG">export</button>
+  <button id="link" title="assert a link between two addresses">link</button>
+  <button id="undo" title="undo (cmd-Z)" disabled>&#8630;</button>
+  <button id="redo" title="redo (cmd-shift-Z)" disabled>&#8631;</button>
   <input id="wm" placeholder="watermark" size="10">
   <label id="spacelab" title="spacing">
     <input id="space" type="range" min="0.5" max="2.5" step="0.1" value="1">
