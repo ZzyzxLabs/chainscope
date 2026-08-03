@@ -394,6 +394,14 @@ button[disabled] { opacity: .45; cursor: default; }
 .canvas svg:active { cursor: grabbing; }
 .canvas.empty { display: grid; place-items: center; padding: 40px; }
 .canvas.empty > div { max-width: 46ch; }
+/* The first fetch of a case. The only emphasised button on the page, because
+   it is the only one that reaches a chain. */
+.canvas.empty .primary {
+  margin-top: 18px; padding: 9px 18px; cursor: pointer; display: inline-flex;
+  gap: 8px; align-items: center; background: var(--cs-ink); color: var(--cs-paper);
+  border: var(--cs-hair) solid var(--cs-ink); font-family: var(--cs-mono); font-size: 13px;
+}
+.canvas.empty .primary:disabled { opacity: .55; cursor: progress; }
 
 .card rect { fill: var(--cs-paper); stroke: var(--cs-line-soft); stroke-width: 1px; cursor: pointer; }
 .card:hover rect { stroke: var(--cs-accent); }
@@ -403,16 +411,63 @@ button[disabled] { opacity: .45; cursor: default; }
 .card.frontier rect { stroke-dasharray: 4 3; }
 .card .name { fill: var(--cs-ink); font-size: 11px; font-weight: 600; }
 .card .addr { fill: var(--cs-muted); font-size: 9.5px; font-family: var(--cs-mono); }
+/* An unlabelled node is identified by its address, so the address takes the
+   headline. Monospaced at heading size, because the eye compares hex by shape. */
+.card .addr-lead { font-family: var(--cs-mono); font-size: 10.5px; letter-spacing: -.2px; }
+.card .quiet { opacity: .72; font-family: var(--cs-sans); }
+.card .cat { fill: var(--cs-caution); font-size: 8.5px; letter-spacing: .09em;
+  text-transform: uppercase; font-weight: 600; }
 .card text { pointer-events: none; }
 
-.edge { stroke: var(--cs-accent); fill: none; stroke-width: 1.2px; opacity: .5; }
+.edge { stroke: var(--cs-accent); fill: none; stroke-width: 1.2px; opacity: .5;
+  pointer-events: none; }
 .edge.lit { stroke: var(--cs-caution); stroke-width: 2px; opacity: 1; }
+/* Invisible, wide, and the only thing on an edge that can be hovered: a 1.2px
+   stroke is not a target anyone can hit. */
+.edgehit { stroke: transparent; fill: none; stroke-width: 12px; cursor: help; }
 .arrow { fill: var(--cs-accent); }
 .arrow.lit { fill: var(--cs-caution); }
+/* Outlined in paper colour before it is filled, so a label crossing a bundle
+   of flows still reads. Without it the text dissolved into the lines it was
+   describing. */
 .elabel { fill: var(--cs-muted); font-size: 9.5px; pointer-events: none;
-  font-family: var(--cs-mono); }
+  font-family: var(--cs-mono); paint-order: stroke; stroke: var(--cs-paper);
+  stroke-width: 3px; stroke-linejoin: round; }
 .elabel.lit { fill: var(--cs-caution); }
 .eidx { fill: var(--cs-accent); }
+
+/* The key. Every shape in the drawing carries a claim, and until this existed
+   the only place any of them was written down was a source comment. */
+.key { position: absolute; left: 14px; bottom: 14px; max-width: 340px;
+  background: var(--cs-paper); border: var(--cs-hair) solid var(--cs-line); font-size: 11px; }
+.key > button { padding: 4px 10px; cursor: pointer; background: transparent;
+  color: var(--cs-muted); border: 0; font-family: var(--cs-mono); font-size: 11px;
+  letter-spacing: .06em; }
+.key.open > button { border-bottom: var(--cs-hair) solid var(--cs-line); width: 100%;
+  text-align: left; }
+.key dl { display: grid; grid-template-columns: 34px 1fr; gap: 7px 9px;
+  padding: 10px 12px 12px; margin: 0; align-items: start; line-height: 1.45; }
+.key dt { display: flex; align-items: center; height: 15px; }
+.key dd { margin: 0; color: var(--cs-muted); }
+.key dd b { color: var(--cs-ink); font-weight: 600; }
+.key .wide { grid-column: 1 / -1; }
+.key dt.wide { display: none; }
+.key .sw { width: 30px; height: 13px; display: block; background: var(--cs-paper);
+  border: 1px solid var(--cs-line-soft); }
+.key .sw.dashed { border-style: dashed; }
+.key .sw.seed { border-color: var(--cs-ink); }
+.key .ln { width: 30px; height: 0; display: block;
+  border-top: 1.4px solid var(--cs-accent); opacity: .6; }
+.key .ln.lit { border-top: 2px solid var(--cs-caution); opacity: 1; }
+
+.labelbar { position: absolute; right: 14px; top: 14px; display: flex; gap: 5px;
+  align-items: center; background: var(--cs-paper); border: var(--cs-hair) solid var(--cs-line);
+  padding: 4px 8px; font-size: 11px; max-width: calc(100% - 28px); flex-wrap: wrap; }
+.labelbar button { padding: 2px 8px; cursor: pointer; background: transparent;
+  color: var(--cs-muted); border: var(--cs-hair) solid var(--cs-line-soft);
+  font-family: var(--cs-mono); font-size: 11px; }
+.labelbar button.on { color: var(--cs-ink); border-color: var(--cs-accent); }
+.labelbar .quiet { color: var(--cs-muted); }
 .wm { fill: var(--cs-ink); opacity: .04; font-size: 74px; font-weight: 800;
   pointer-events: none; font-family: var(--cs-disp); }
 

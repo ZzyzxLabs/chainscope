@@ -55,7 +55,8 @@ def handlers(tmp_path, monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(made, "_store", lambda: Store())
+    # `**_` so the double accepts `create=True`, which the fetching paths pass.
+    monkeypatch.setattr(made, "_store", lambda **_: Store())
     monkeypatch.setattr(local, "_counterparties", lambda store, key, chain: [])
     return made
 

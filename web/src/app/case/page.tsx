@@ -36,6 +36,8 @@ export default function CasePage() {
   const [address, setAddress] = useState("");
   const [chain, setChain] = useState("1");
   const [graph, setGraph] = useState<GraphReply | null>(null);
+  /** An address that was opened and holds nothing yet. Not the same as null. */
+  const [unopened, setUnopened] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [since, setSince] = useState<number | null>(null);
@@ -189,9 +191,18 @@ export default function CasePage() {
           address: target,
           chain: `eip155:${chain}`,
         });
-        setGraph(reply);
+        // A graph with no nodes is a valid answer to "what do we hold about
+        // this address" --- the answer being "nothing" --- and it is the state
+        // every case starts in. Kept distinct from `graph === null`, which is
+        // "you have not asked yet".
+        setGraph(reply.nodes.length ? reply : null);
+        setUnopened(reply.nodes.length ? null : target);
         setSelected(reply.nodes.find((n) => n.seed)?.address ?? null);
         setAddress(target);
+        if (!reply.nodes.length) {
+          say(`nothing fetched for ${short(target)} yet`, "warn");
+          return;
+        }
         // The truncation flag is repeated in the status bar rather than left in
         // the payload: a graph that stopped at a limit and one that reached the
         // end of the money are the same picture.
@@ -202,12 +213,46 @@ export default function CasePage() {
         );
       } catch (err) {
         setGraph(null);
-        say((err as Error).message, "bad");
+        // A case file that does not exist yet is not an error to report at the
+        // reader; it is the state before the first fetch, and it has a button.
+        const message = (err as Error).message;
+        if (/no store at /.test(message)) {
+          setUnopened(target);
+          setAddress(target);
+          say(`nothing fetched for ${short(target)} yet`, "warn");
+        } else {
+          say(message, "bad");
+        }
       } finally {
         setBusy(false);
       }
     },
     [chain, say],
+  );
+
+  /**
+   * The first fetch of a case, from the empty state.
+   *
+   * Deliberately the same endpoint the selected-node panel uses: there is one
+   * way to reach the network from this page and it is `expand`, so the first
+   * hop and the fiftieth cost the same, obey the same filters, and report the
+   * same way. A separate "start a case" path would be a second network door
+   * with its own rules to get wrong.
+   */
+  const seedFetch = useCallback(
+    async (target: string) => {
+      setBusy(true);
+      try {
+        await api("/expand", { address: target, chain: `eip155:${chain}`, direction: "both" });
+        setUnopened(null);
+        await load(target);
+      } catch (err) {
+        say(`fetch failed: ${(err as Error).message}`, "bad");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [chain, load, say],
   );
 
   // Restore from the URL so a link reopens the same view. `share` writes these.
@@ -272,7 +317,7 @@ export default function CasePage() {
           <input
             value={address}
             onChange={(event) => setAddress(event.target.value)}
-            placeholder="address already in the case"
+            placeholder="address"
             spellCheck={false}
             autoComplete="off"
             className="mono"
@@ -379,12 +424,34 @@ export default function CasePage() {
         ) : (
           <div className="canvas empty">
             <div>
-              <h2 className="section">Nothing open</h2>
+              <h2 className="section">{unopened ? "Nothing here yet" : "Nothing open"}</h2>
               <p className="lede">
-                Type an address that is already in this case. Reading never reaches
-                the network; only <em>follow the money from here</em> does, and only
-                when you press it.
+                {unopened ? (
+                  <>
+                    Nothing has been fetched for <span className="mono">{short(unopened)}</span>.
+                    Reading never reaches the network — this is the one button that
+                    does, and it fetches that address&rsquo;s transfers on{" "}
+                    {CHAINS.find(([id]) => id === chain)?.[1] ?? `chain ${chain}`}.
+                  </>
+                ) : (
+                  <>
+                    Type an address to open it. Reading never reaches the network;
+                    only <em>follow the money from here</em> does, and only when you
+                    press it.
+                  </>
+                )}
               </p>
+              {/* An empty case had no first move: `open` reads the store, and the
+                  only control that fetches lives on a selected node, which an
+                  empty case has none of. Starting from nothing --- how everybody
+                  starts --- dead-ended on "Run an analysis first", naming a step
+                  that does not exist. */}
+              {unopened ? (
+                <button className="primary" onClick={() => void seedFetch(unopened)} disabled={busy}>
+                  {busy ? <Spinner /> : null}
+                  {busy ? "fetching" : `fetch ${short(unopened)}`}
+                </button>
+              ) : null}
             </div>
           </div>
         )}

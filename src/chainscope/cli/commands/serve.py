@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import secrets
+import sys
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,10 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
             # Minted per run. Asking for one gets a weak one, or the same one
             # twice, or one in a shell history.
             token=secrets.token_urlsafe(24),
+            # The same directory the banner above reported on. It used to be
+            # guessed from the store path inside the server, so the two
+            # disagreed whenever --store pointed anywhere unusual.
+            labels=args.labels,
             writable=args.writable,
             analyst=args.analyst,
         )
@@ -106,6 +111,13 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
     )
     print(f"  {mode}")
     print("  loopback only. Ctrl-C to stop.\n")
+    # The token is minted per run and written nowhere else, so this line is the
+    # only copy of it. Python block-buffers stdout when it is not a terminal,
+    # which is exactly the case for `chainscope serve > log &` or anything run
+    # under a supervisor --- the server comes up, serves correctly, and the one
+    # string needed to reach it sits in an 8KB buffer until the process exits.
+    # Found by redirecting the output and getting an empty file.
+    sys.stdout.flush()
 
     if not args.no_open:
         webbrowser.open(server.url)

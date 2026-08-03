@@ -123,6 +123,12 @@ class ServerOptions:
     machine login is not authorship, and `report` says "no analyst recorded"
     rather than signing somebody's name to it.
     """
+    labels: Path | None = None
+    """Directory of label datasets. None falls back to a guess beside the store.
+
+    See `_Handlers._labels_dir`: the guess was the only rule, and it disagreed
+    with the one the startup banner reports."""
+
     writable: bool = False
     origins: tuple[str, ...] = DEFAULT_ORIGINS
     agent_name: str = "browser-extension"
@@ -156,12 +162,29 @@ class _Handlers:
     #: The resolver, once built. See `_from_sources`.
     _resolver: Any = None
 
-    def _store(self) -> SqliteStore:
-        if not self.options.store.exists():
+    def _store(self, *, create: bool = False) -> SqliteStore:
+        """The case, opened. `create` for the paths that fetch.
+
+        A read against a store that does not exist is a real error and says so.
+        A *fetch* against one is the first fetch, and refusing it was a dead
+        end with no way out of it: `chainscope serve` prints "it will be
+        created as you fetch", the page says the money is followed only when
+        you press the button, and pressing it raised "Run an analysis first" ---
+        naming a step that does not exist, because nothing outside this server
+        writes transfers. A new user had no first move at all.
+
+        Found by starting from an empty store in a browser and trying to use
+        the tool as shipped, which is not something the tests did: every one of
+        them builds a store first.
+        """
+        if not self.options.store.exists() and not create:
             raise FileNotFoundError(
-                f"no store at {self.options.store}. Run an analysis first, or "
-                f"point --store at an existing one."
+                f"no store at {self.options.store}. Nothing has been fetched into "
+                f"this case yet --- open an address and follow the money from it, "
+                f"or point --store at an existing case."
             )
+        if create:
+            self.options.store.parent.mkdir(parents=True, exist_ok=True)
         return SqliteStore(self.options.store)
 
     @staticmethod
@@ -259,9 +282,26 @@ class _Handlers:
         from ..attribution.build import resolver_for
 
         if self._resolver is None:
-            base = self.options.store.parent.parent / "data" / "labels"
-            self._resolver = resolver_for(base)
+            self._resolver = resolver_for(self._labels_dir())
         return self._claims(self._resolver, address, chain)
+
+    def _labels_dir(self) -> Path:
+        """Where the label datasets are read from.
+
+        Configured, not derived. This used to be
+        ``store.parent.parent / "data" / "labels"``, guessed from wherever the
+        case file happened to live --- so pointing ``--store`` at a scratch
+        directory turned off every attribution source, while the startup
+        banner, which reads ``--labels``, went on reporting four of them. The
+        page then said "no attribution source is configured" about a server
+        that had just printed their names.
+
+        Two places computing the same thing by different rules, with the one
+        the operator reads being the one that is not used. Found by starting a
+        server with ``--store`` in a temporary directory and watching a known
+        exchange address come back unlabelled.
+        """
+        return self.options.labels or (self.options.store.parent.parent / "data" / "labels")
 
     @staticmethod
     def _claims(
@@ -356,7 +396,7 @@ class _Handlers:
             if folded not in keys:
                 keys.append(folded)
 
-        store = self._store()
+        store = self._store(create=True)
         try:
             before = {
                 key: {address_key(chain, a) for a in _counterparties(store, key, chain)}
@@ -377,7 +417,7 @@ class _Handlers:
                 fetched_by[key] = job.result()
 
         per: list[dict[str, Any]] = []
-        store = self._store()
+        store = self._store(create=True)
         try:
             for key in keys:
                 fetched, complete, failure = fetched_by[key]
@@ -455,7 +495,7 @@ class _Handlers:
         letting it take down the other nine would turn a partial answer into no
         answer, which is the opposite of what a batch is for.
         """
-        store = self._store()
+        store = self._store(create=True)
         try:
             fetched, complete = _fetch_into(store, key, chain)
             return fetched, complete, None
