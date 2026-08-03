@@ -91,6 +91,13 @@ svg { display: block; width: 100%; height: 100%; cursor: grab; }
   border-radius: 8px; padding: 4px 6px; font-size: 12px;
 }
 #zoombar button { padding: 2px 8px; border-radius: 5px; }
+#timebar {
+  position: absolute; left: 14px; bottom: 14px; display: flex; gap: 8px;
+  align-items: center; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 5px 10px; font-size: 11.5px;
+}
+#time { width: 210px; accent-color: var(--warn); }
+#timelab { min-width: 66px; }
 #zoom { color: var(--muted); min-width: 44px; text-align: center; }
 #addbtn { flex: none; }
 dialog {
@@ -212,6 +219,11 @@ const state = {
   // colour and carry a different word.
   drawn: [],
   linking: null,
+  // The time window in view. `flow.py` has had this since it was written and
+  // this page did not --- so our own older picture answered a question the new
+  // one could not: when did this happen, and what does the case look like
+  // before that.
+  since: null,
 };
 
 // View history. Only the *view* --- what is hidden, how it is laid out, what
@@ -442,6 +454,10 @@ function draw() {
     const a = byId.get(e.source), b = byId.get(e.target);
     if (!a || !b) return;
     if (state.hidden.has(e.asset || "")) return;
+    // An edge is an aggregate over a span, so it is in view when the span
+    // *reaches* the cursor --- testing `first` alone would hide a flow that
+    // began earlier and was still running.
+    if (state.since !== null && (e.last_seen ?? 0) > state.since) return;
     const on = lit.has(e.source + ">" + e.target);
     parts.push(
       `<path class="edge${on ? " lit" : ""}" d="${edgePath(a, b)}"` +
@@ -752,11 +768,51 @@ function assets() {
     }));
 }
 
+function timeRange() {
+  const times = (state.graph?.edges || [])
+    // `first_seen`, which is what the payload calls it. Reading `e.first` gave
+    // undefined for every edge, so the range was empty and the scrubber hid
+    // itself --- a control that silently decides it has nothing to do.
+    .map((e) => e.first_seen).filter((t) => t);
+  return times.length ? [Math.min(...times), Math.max(...times)] : null;
+}
+
+function wireTime() {
+  const scrub = $("#time"), label = $("#timelab");
+  const span = timeRange();
+  if (!span || span[0] === span[1]) {
+    // Nothing to scrub. Hidden rather than shown inert, because a control that
+    // does nothing reads as a control that is broken.
+    $("#timebar").style.display = "none";
+    return;
+  }
+  $("#timebar").style.display = "flex";
+  scrub.min = String(span[0]);
+  scrub.max = String(span[1]);
+  scrub.value = String(span[1]);
+  state.since = null;
+  label.textContent = "all";
+  scrub.oninput = () => {
+    const at = Number(scrub.value);
+    state.since = at >= span[1] ? null : at;
+    label.textContent = state.since === null
+      ? "all"
+      : new Date(at * 1000).toISOString().slice(0, 10);
+    draw(); count();
+  };
+}
+
 function count() {
   const graph = state.graph;
   if (!graph) return;
   const shown = graph.edges.filter((e) => !state.hidden.has(e.asset || "")).length;
   const bits = [`${graph.nodes.length} addresses`, `${shown} of ${graph.edges.length} flows`];
+  if (state.since !== null) {
+    // Said with a count, like the asset filter. A picture narrowed in time
+    // that does not announce it is the same defect as a truncated one.
+    const hidden = graph.edges.filter((e) => (e.last_seen ?? 0) > state.since).length;
+    bits.push(`${hidden} flow(s) after the time you set are hidden`);
+  }
   if (state.hidden.size) {
     // Said, with a number. A filtered picture that does not announce itself is
     // the same defect as a truncated one.
@@ -961,7 +1017,8 @@ async function load(address) {
       state.hidden = state.pendingHidden;
       state.pendingHidden = null;
     }
-    draw(); roster(); assets(); select(graph.seed); count(); fit(); writeUrl();
+    draw(); roster(); assets(); wireTime(); select(graph.seed); count(); fit();
+    writeUrl();
     trail.past.length = 0; trail.future.length = 0; remember();
     const bits = [`${graph.nodes.length} addresses`, `${graph.edges.length} flows`];
     // Said, not hidden. The page reads the store; when it had to go to a
@@ -1048,6 +1105,10 @@ _TEMPLATE = """<!doctype html>
     <h2>addresses in view</h2><div class="roster" id="roster"></div>
   </aside>
   <div id="canvas"><svg id="g"></svg>
+    <div id="timebar" style="display:none">
+      <span class="muted">up to</span>
+      <input id="time" type="range"><span id="timelab" class="muted">all</span>
+    </div>
     <div id="zoombar">
       <button id="zfit" title="fit to the case">⌖</button>
       <button id="zout">&minus;</button><span id="zoom">100%</span>
