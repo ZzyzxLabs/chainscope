@@ -37,6 +37,7 @@ EXPECTED = {
     "impersonation": "chainscope.analysis.impersonation",
     "address-poisoning": "chainscope.analysis.poisoning",
     "routing": "chainscope.analysis.route",
+    "contributors": "chainscope.analysis.contributors",
     "consolidation": "chainscope.analysis.consolidation",
     "change-detection": "chainscope.analysis.peel",
     "clustering": "chainscope.analysis.cluster",

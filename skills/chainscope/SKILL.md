@@ -45,7 +45,7 @@ chainscope investigate 0xSUSPECT -c eth
 ```
 
 Runs what applies, says what came back, and **names the next command with its
-arguments filled in**. Use it before reaching for a specific analyzer: twelve
+arguments filled in**. Use it before reaching for a specific analyzer: thirteen
 analyzers each need parameters somebody has to already know, and this is the
 step that produces them.
 
@@ -121,9 +121,10 @@ chainscope analyze temporal -p address=0xOP     # what hours do they work
 chainscope analyze impersonation -p address=0xV # which of these tokens are fake
 chainscope analyze poisoning -p address=0xV     # which of these addresses are traps
 chainscope analyze route -p source=0xA -p target=0xB   # how could A have reached B
+chainscope analyze contributors -p address=0xDEP -p subject=0xSEED  # whose money is in this
 ```
 
-Twelve analyzers ship. Pick by the question, and **quote the qualifier each one
+Thirteen analyzers ship. Pick by the question, and **quote the qualifier each one
 carries** --- these numbers are measured, and they are the difference between a
 finding and a coincidence.
 
@@ -140,6 +141,7 @@ finding and a coincidence.
 | `consolidation` | where counterparties send funds | — |
 | `impersonation` | which assets claim a symbol that is not theirs | "unlisted" is not clean --- most tokens are in no registry, and the check simply had nothing to compare against |
 | `poisoning` | which counterparties were ground to resemble another | refuses to nominate the real one unless a *trusted* asset shows the subject paying it |
+| `contributors` | whose money is in this address's total | `unlinked` never means unrelated --- an unexplored hop lands there too |
 | `route` | how money could have got from A to B | withholds routes through a high-degree address by default: a custodian commingles, so that link is in the ledger, not in the money |
 
 **Run `impersonation` before quoting any per-symbol total.** Measured on a real
@@ -204,6 +206,23 @@ Two things to quote whenever you show a route:
 And **no route found is not proof of no connection**: funds that crossed a
 chain, an exchange, or an address the store has never seen leave no chain
 behind.
+
+**Run `contributors` before quoting "the subject sent N to service X".** A
+deposit address is a destination, not a private channel --- anybody may pay it.
+In the case this check comes from, one deposit address had also received 3 ETH
+from a completely unrelated party, and including it inflated the figure by
+exactly that, with nothing about the number looking wrong.
+
+It splits the inflow four ways and **subtracts nothing**: `self`, `reachable`
+(a time-respecting route runs from the subject), `co_funded` (shares a first
+funder --- much weaker, see `common_funder`'s 0.7% precision without a service
+guard), and `unlinked`.
+
+**`unlinked` does not mean unrelated.** An address related through a hop nobody
+fetched lands there beside a genuine stranger, and absence cannot tell them
+apart. Backtrack before excluding: what settled it in the original case was the
+third party having 122 transactions of its own and unrelated funding, not the
+lack of a link.
 
 Four things to carry into any summary:
 
