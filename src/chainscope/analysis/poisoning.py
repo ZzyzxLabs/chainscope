@@ -302,7 +302,12 @@ def _key(address: Any) -> str:
     if address is None:
         return ""
     raw = getattr(address, "key", None) or getattr(address, "raw", None) or address
-    return str(raw).strip().lower()
+    # `_fold`, not `.lower()`. The two must agree: the search normalises the
+    # subject with `_fold` and compares it against endpoints normalised here, so
+    # lowercasing on this side alone meant a Solana, Sui or Bitcoin address
+    # never matched itself. Half-fixing a pair is worse than leaving both
+    # wrong --- `.lower()` on both sides at least agreed with itself.
+    return _fold(str(raw))
 
 
 def find_lookalikes(

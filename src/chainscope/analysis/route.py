@@ -214,7 +214,15 @@ def _key(transfer: Any, field_name: str) -> str:
     if value is None:
         return ""
     raw = getattr(value, "key", None) or getattr(value, "raw", None) or value
-    return str(raw).strip().lower()
+    # `_fold`, not `.lower()`. The two must agree: the search normalises the
+    # source and target with `_fold` and compares them against endpoints
+    # normalised here, so lowercasing on this side alone meant a Solana, Sui or
+    # Bitcoin address never matched itself --- every route missed, every
+    # contributor reported unlinked, the subject not recognised as itself.
+    #
+    # Half-fixing a pair is worse than leaving both wrong: `.lower()` on both
+    # sides at least agreed with itself.
+    return _fold(str(raw))
 
 
 def _instant(value: Any) -> float | None:

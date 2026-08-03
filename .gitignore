@@ -18,3 +18,9 @@ build/
 
 # Case data and HTTP cache from local runs. Never source.
 .chainscope/
+
+# Attribution datasets are fetched, never bundled. A committed copy silently
+# becomes "the version this package shipped with" --- and for a list whose
+# entries accuse addresses, a stale snapshot is worse than no snapshot.
+# See docs/data-sources.md for where each comes from.
+data/labels/

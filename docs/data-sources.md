@@ -19,10 +19,42 @@ fails the build otherwise --- see [CONTRIBUTING](../CONTRIBUTING.md).
 | `ofac` | `OfacSource` | `CERTAIN` | Yes --- US government work |
 | `etherscan_dump` | `ExplorerDumpSource` | `HIGH` | No --- upstream terms apply |
 | `local` | `LocalSource` | `MEDIUM` | N/A --- your own data |
+| `darklist` | `DarklistSource` | `MEDIUM` | Yes --- MIT |
 
 The ceilings are enforced in code (`SourceMeta.max_confidence`), not merely
 documented. A community nametag dump cannot assert `CERTAIN` even if its adapter
 passes that value in.
+
+## `darklist` --- community scam reports
+
+- **Canonical:** <https://github.com/MyEtherWallet/ethereum-lists>
+- **Fetch:** `src/addresses/addresses-darklist.json` from `raw.githubusercontent.com`
+- **Licence:** MIT. Redistributable, and the URL is one a reader can open to
+  check any claim made from it.
+- **Ceiling:** `MEDIUM`. Entries are submitted by people who were defrauded or
+  who investigated a fraud and reviewed by maintainers. That is real evidence
+  and it is not the published legal fact that lets `ofac` say `CERTAIN`.
+- **Coverage:** ~715 Ethereum addresses. A rounding error against the number
+  that exist, and skewed heavily towards one era's phishing campaigns.
+  **Absence is not a clean result**, and the adapter raises rather than
+  returning an unqualified empty list when asked about a non-Ethereum chain.
+- **Staleness is one-directional.** The list does not un-report, so a hit is a
+  statement about the past. Each entry's date travels with the attribution.
+
+### Why this one and not the others
+
+The well-known recommendation lists name several scam databases. Checked, in
+August 2026:
+
+| Source | Result |
+|---|---|
+| CryptoScamDB API | `502` — the service is down |
+| Chainabuse API | `401` — needs a key |
+| Etherscan label export | `403` to anything that is not a browser |
+| Blockscout `public_tags` | In the schema, empty in practice |
+
+Being on a recommendation list and being obtainable are different properties,
+and the gap is wider than the lists suggest.
 
 ---
 

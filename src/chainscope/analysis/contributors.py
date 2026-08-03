@@ -57,7 +57,7 @@ from typing import Any
 
 from ..chains import address_key, fold_if_hex
 from ..core.result import Finding, Result, Severity
-from ..providers.base import Capability
+from ..providers.base import Capability, ProviderError
 from .base import Analyzer, Context, history_of
 from .route import find_routes
 
@@ -187,7 +187,12 @@ def _key(transfer: Any, field_name: str) -> str:
     if value is None:
         return ""
     raw = getattr(value, "key", None) or getattr(value, "raw", None) or value
-    return str(raw).strip().lower()
+    # `_fold`, not `.lower()`. The two must agree: the search normalises the
+    # subject with `_fold` and compares it against endpoints normalised here, so
+    # lowercasing on this side alone meant a Solana, Sui or Bitcoin address
+    # never matched itself. Half-fixing a pair is worse than leaving both
+    # wrong --- `.lower()` on both sides at least agreed with itself.
+    return _fold(str(raw))
 
 
 def _funders(transfers: list[Any]) -> dict[str, str]:
@@ -395,6 +400,7 @@ class ContributorsAnalyzer(Analyzer):
         address: str = "",
         subject: str = "",
         max_hops: int = 4,
+        max_expand: int = 60,
         **_: Any,
     ) -> Result:
         if not address or not subject:
@@ -407,19 +413,57 @@ class ContributorsAnalyzer(Analyzer):
         origin = address_key(ctx.chain, subject)
         per_node = ctx.limit("per_node", 1000)
 
-        # Both ends, and the contributors in between. Reading only the target's
-        # history gives the payers but nothing to link them by, so the subject's
-        # own history is fetched too and the reachability search runs over the
-        # union.
+        # Both ends, then outward. Reading only the target's and subject's
+        # histories gives the payers and one hop either side --- and then
+        # `max_hops` promises to search four, over data that only covers one.
+        # A contributor two hops from the subject was reported `unlinked` while
+        # the parameter said it had been looked for, which is the worst of both:
+        # a claim about a search that did not happen.
+        #
+        # So the frontier expands until it has the depth `max_hops` claims, or
+        # until `max_expand` stops it --- and when it is stopped, that is said,
+        # because "unlinked" then means something narrower again.
         rows: list[Any] = []
         notes: list[str] = []
-        for who in (target, origin):
-            fetched, source_notes = history_of(
-                ctx,
-                _read(ctx, who, per_node),
-            )
-            rows.extend(fetched)
-            notes.extend(source_notes)
+        seen: set[str] = set()
+        frontier = [target, origin]
+        for _depth in range(max(1, max_hops)):
+            if len(seen) >= max_expand:
+                notes.append(
+                    f"stopped after reading {len(seen)} addresses (max_expand="
+                    f"{max_expand}). A contributor linked to the subject only "
+                    f"through an address beyond that is reported unlinked, "
+                    f"because nobody looked --- not because there is no link"
+                )
+                break
+            nxt: list[str] = []
+            for who in frontier:
+                if who in seen or len(seen) >= max_expand:
+                    continue
+                seen.add(who)
+                try:
+                    fetched, source_notes = history_of(ctx, _read(ctx, who, per_node))
+                except ProviderError as exc:
+                    # Too busy to page is itself the answer: a service. Recorded
+                    # rather than fatal, exactly as `route` does.
+                    notes.append(
+                        f"{who} has more history than one page holds, so it was "
+                        f"not expanded through ({exc})"
+                    )
+                    continue
+                notes.extend(source_notes)
+                rows.extend(fetched)
+                for row in fetched:
+                    for end in ("sender", "recipient"):
+                        other = _key(row, end)
+                        if other and other not in seen:
+                            nxt.append(other)
+            # Least-connected first, so the budget is spent on addresses that
+            # might be a step rather than on an exchange's counterparties.
+            counts: dict[str, int] = {}
+            for candidate in nxt:
+                counts[candidate] = counts.get(candidate, 0) + 1
+            frontier = sorted(dict.fromkeys(nxt), key=lambda a: counts.get(a, 0))
 
         inflow = contributors(rows, target, origin, max_hops=max_hops, chain=ctx.chain)
         if inflow.unlinked:
@@ -438,6 +482,8 @@ class ContributorsAnalyzer(Analyzer):
                 "subject": subject,
                 "chain": str(ctx.chain),
                 "max_hops": max_hops,
+                "max_expand": max_expand,
+                "addresses_read": len(seen),
                 "per_node": per_node,
             },
             started_at=started,

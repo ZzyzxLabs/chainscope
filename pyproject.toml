@@ -111,6 +111,7 @@ binance = "chainscope.pricing.binance:BinanceKlines"
 ofac = "chainscope.attribution.sources.ofac:OfacSource"
 explorer_nametags = "chainscope.attribution.sources.etherscan_dump:ExplorerDumpSource"
 local = "chainscope.attribution.sources.local:LocalSource"
+darklist = "chainscope.attribution.sources.darklist:DarklistSource"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chainscope"]

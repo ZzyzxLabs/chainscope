@@ -162,7 +162,30 @@ class LeadStore:
         if self.path:
             self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Replace an identity index created by an older version.
+
+        `CREATE UNIQUE INDEX IF NOT EXISTS` does nothing when an index of that
+        name already exists --- whatever columns it covers. So a case file
+        written before `chain` joined the key kept the old two-column index and
+        went on merging the same address across chains, silently, while the
+        schema in this file said otherwise. New databases were correct and
+        existing ones were not, which is the hardest version of this to notice.
+
+        Dropped and recreated rather than renamed: the definition lives in
+        `_SCHEMA` and should not exist twice.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+            ("ux_leads_identity",),
+        ).fetchone()
+        if row is None or "chain" in str(row["sql"] or ""):
+            return
+        self._conn.execute("DROP INDEX ux_leads_identity")
+        self._conn.executescript(_SCHEMA)
 
     def close(self) -> None:
         self._conn.close()

@@ -254,3 +254,132 @@ class TestTheVerificationReviewFound:
         found = hypotheses(groups, examined)
         assert found[0].alternatives
         assert impostor in " ".join(a.claim for a in found[0].alternatives)
+
+
+class TestWhatCodexFound:
+    """A third review, by a different tool. Three findings, all real.
+
+    Two of them were the *half-fix* pattern for the third time in this session:
+    one side of a pair corrected and the other left, which is worse than leaving
+    both wrong, because the two sides had at least agreed with each other.
+    """
+
+    SOLANA_A = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+    SOLANA_B = "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj"
+    SOLANA_C = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+    def _sol(self, sender: str, recipient: str, minutes: int) -> object:
+        return SimpleNamespace(
+            sender=SimpleNamespace(key=sender),
+            recipient=SimpleNamespace(key=recipient),
+            timestamp=T0 + timedelta(minutes=minutes),
+            asset=None,
+            amount=SimpleNamespace(raw=1, symbol="SOL"),
+            tx=SimpleNamespace(hash=""),
+        )
+
+    def test_a_base58_address_matches_itself(self) -> None:
+        """`_fold` preserved case and `_key` lowercased, so on Solana, Sui and
+        Bitcoin an address never matched itself: every route missed, every
+        contributor reported unlinked, the subject not recognised as the
+        subject."""
+        from chainscope.analysis.route import _fold, _key
+
+        transfer = SimpleNamespace(sender=SimpleNamespace(key=self.SOLANA_A))
+        assert _fold(self.SOLANA_A) == _key(transfer, "sender")
+
+    def test_and_a_solana_route_is_found(self) -> None:
+        from chainscope.core.chainid import SOLANA
+
+        rows = [
+            self._sol(self.SOLANA_A, self.SOLANA_B, 1),
+            self._sol(self.SOLANA_B, self.SOLANA_C, 2),
+        ]
+        routes, _ = find_routes(rows, self.SOLANA_A, self.SOLANA_C, chain=SOLANA)
+        assert routes
+        assert routes[0].addresses[0] == self.SOLANA_A
+
+    def test_the_case_is_preserved_in_the_answer(self) -> None:
+        # Not merely matched --- the address reported back must be the one that
+        # exists, not a lowercased string that does not.
+        from chainscope.core.chainid import SOLANA
+
+        rows = [self._sol(self.SOLANA_A, self.SOLANA_B, 1)]
+        routes, _ = find_routes(rows, self.SOLANA_A, self.SOLANA_B, chain=SOLANA)
+        assert routes[0].addresses == [self.SOLANA_A, self.SOLANA_B]
+
+    def test_all_three_modules_normalise_the_same_way(self) -> None:
+        """The property, rather than three separate examples of it.
+
+        `poisoning._key` takes an address and the other two take a transfer and
+        a field, so they are called differently --- but they must agree, because
+        `contributors` runs `poisoning`'s and `route`'s logic over one ledger.
+        """
+        from chainscope.analysis import contributors as c
+        from chainscope.analysis import poisoning as p
+        from chainscope.analysis import route as r
+
+        transfer = SimpleNamespace(sender=SimpleNamespace(key=self.SOLANA_A))
+        keys = {
+            r._key(transfer, "sender"),
+            c._key(transfer, "sender"),
+            p._key(SimpleNamespace(key=self.SOLANA_A)),
+        }
+        assert keys == {self.SOLANA_A}
+
+    def test_an_old_lead_index_is_migrated(self, tmp_path: object) -> None:
+        """`CREATE UNIQUE INDEX IF NOT EXISTS` does nothing when an index of
+        that name already exists, whatever columns it covers.
+
+        So a case file written before `chain` joined the key kept the old
+        two-column index and went on merging the same address across chains,
+        silently, while the schema in the source said otherwise. New databases
+        were correct and existing ones were not.
+        """
+        import sqlite3
+
+        from chainscope.case.leads import LeadStore
+        from chainscope.osint.leads import Lead
+
+        path = tmp_path / "old.db"  # type: ignore[operator]
+        con = sqlite3.connect(path)
+        con.executescript(
+            "CREATE TABLE leads (id INTEGER PRIMARY KEY, at INTEGER, analyst TEXT, "
+            "address TEXT, chain TEXT, kind TEXT, value TEXT, source TEXT, "
+            "asserted_by TEXT, verify_by TEXT, verdict TEXT DEFAULT 'open', "
+            "reason TEXT DEFAULT '', settled_at INTEGER, settled_by TEXT DEFAULT '');"
+            "CREATE UNIQUE INDEX ux_leads_identity ON leads(address, kind, value);"
+        )
+        con.commit()
+        con.close()
+
+        store = LeadStore(path)
+        try:
+            lead = Lead(
+                address="0x" + "a" * 40,
+                kind="twitter",
+                value="x",
+                source="s",
+                asserted_by="y",
+                verify_by="check it",
+            )
+            first, _ = store.add(lead, "me", "eip155:1")
+            second, was_new = store.add(lead, "me", "eip155:56")
+            assert first != second
+            assert was_new
+        finally:
+            store.close()
+
+    def test_migrating_twice_is_harmless(self, tmp_path: object) -> None:
+        from chainscope.case.leads import LeadStore
+
+        path = tmp_path / "twice.db"  # type: ignore[operator]
+        LeadStore(path).close()
+        store = LeadStore(path)
+        try:
+            row = store._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'ux_leads_identity'"
+            ).fetchone()
+            assert "chain" in row["sql"]
+        finally:
+            store.close()
