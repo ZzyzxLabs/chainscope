@@ -271,3 +271,62 @@ class TestTheResult:
     def test_a_clean_set_still_says_what_it_did_not_check(self) -> None:
         rep = report(_transfers([("0x" + "3" * 40, "SOMETOKEN", 1)]), ETHEREUM)
         assert "most tokens are in no registry" in rep.summary().lower()
+
+
+class TestTheNativeAsset:
+    """A plain ETH transfer was reported as a forgery.
+
+    `CANONICAL[("eip155:1", "ETH")]` is an empty frozenset, meaning "native, so
+    any *contract* claiming this symbol is impersonating". A genuine native
+    transfer has no contract at all, and `"" in frozenset()` is False, so it
+    fell through to the impersonation branch --- the commonest transfer on the
+    chain, reported as fake.
+
+    Every fixture in this file carried a contract, so none of them was the case
+    this is about. Found by CodeRabbit reading the branch rather than by any
+    test here.
+    """
+
+    def _verdict(self, contract: str | None, symbol: str) -> str:
+        rows = [
+            SimpleNamespace(
+                chain=ETHEREUM,
+                asset=SimpleNamespace(raw=contract, key=contract) if contract else None,
+                amount=SimpleNamespace(symbol=symbol, decimals=18),
+            )
+        ]
+        return inspect_assets(rows, ETHEREUM)[0].verdict
+
+    def test_a_native_transfer_is_genuine(self) -> None:
+        assert self._verdict(None, "ETH") == Verdict.GENUINE
+
+    def test_it_says_there_is_nothing_to_forge(self) -> None:
+        rows = [
+            SimpleNamespace(
+                chain=ETHEREUM,
+                asset=None,
+                amount=SimpleNamespace(symbol="ETH", decimals=18),
+            )
+        ]
+        assert "no contract to forge" in " ".join(inspect_assets(rows, ETHEREUM)[0].reasons)
+
+    def test_a_contract_claiming_the_native_symbol_is_still_forged(self) -> None:
+        # The case the empty frozenset exists for, which must not regress.
+        assert (
+            self._verdict("0xa4a78fe7c6b3925e9047b7a485013fe7f6fbc6a6", "ETH") == Verdict.FORGED
+        )
+
+    def test_a_native_transfer_of_an_unlisted_symbol_is_unlisted(self) -> None:
+        # Not "genuine" --- the registry has no opinion, and claiming one would
+        # be the same overreach in the other direction.
+        assert self._verdict(None, "SOMECOIN") == Verdict.UNLISTED
+
+    def test_bnb_on_bsc_works_the_same_way(self) -> None:
+        from chainscope.core.chainid import BSC
+
+        rows = [
+            SimpleNamespace(
+                chain=BSC, asset=None, amount=SimpleNamespace(symbol="BNB", decimals=18)
+            )
+        ]
+        assert inspect_assets(rows, BSC)[0].verdict == Verdict.GENUINE

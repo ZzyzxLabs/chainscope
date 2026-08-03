@@ -173,7 +173,13 @@ class Resolver:
                 failed.append((source.name, f"{type(exc).__name__}: {exc}"))
 
         for addr in pending:
-            key = (addr.lower(), str(chain) if chain else None)
+            # The same key `resolve` builds. It used `.lower()` here and
+            # `address_key` there, so on any chain where those differ --- Solana,
+            # Sui, Bitcoin --- the two never shared an entry: `resolve_many`
+            # filled a cache `resolve` could not read, and every later single
+            # lookup re-consulted every source. On EVM they agreed, which is why
+            # nothing noticed.
+            key = (address_key(chain, addr), str(chain) if chain else None)
             self._cache[key] = Resolution(
                 address=addr,
                 entity=merge(gathered.get(addr, [])),

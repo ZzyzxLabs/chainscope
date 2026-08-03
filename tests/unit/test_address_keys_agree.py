@@ -213,13 +213,45 @@ class TestTheCaseFoldDoesNotSpread:
     }
 
     #: Known and wrong on non-EVM chains. This number may only go down.
-    KNOWN_UNFIXED = 0
+    #:
+    #: **It was 0 and that was not true.** The pattern required the name and
+    #: `.lower()` to be adjacent, so `address.strip().lower()` --- which is how
+    #: anybody writes it when the input came from a CLI argument --- went
+    #: straight past. Six such sites were added in one session while this test
+    #: reported zero, which is worse than having no ratchet: it says the debt is
+    #: paid. Widening the pattern found 18.
+    #:
+    #: Nine were fixed on the spot (the agent tools, the poisoning and route
+    #: analyzers, the lead store) plus one genuine bug the widening exposed:
+    #: `Resolver.resolve_many` built its cache key with `.lower()` while
+    #: `resolve` used `address_key`, so on Solana, Sui and Bitcoin the two never
+    #: shared an entry and every single lookup re-consulted every source.
+    #:
+    #: These eight remain, and each is a `subject` or a display field rather
+    #: than a comparison key on the money path:
+    #:
+    #: * `case/log.py` and `case/correspondence.py` fold a note's subject so a
+    #:   note filed under one casing is findable under the other. On base58 that
+    #:   can attach a note to the wrong address --- unlikely, and not silent when
+    #:   it happens, since a human reads the note.
+    #: * `render/flow.py` folds edge endpoints for the emitted page's node ids.
+    #: * `watch/base.py` folds a watch subject.
+    #:
+    #: They are counted rather than excused: the point of a ratchet is that the
+    #: number is visible and can only fall.
+    KNOWN_UNFIXED = 8
 
     def _offenders(self) -> list[str]:
         import re
 
+        # `(?:\.\w+\(\))*` between the name and `.lower()`. The pattern used to
+        # require them adjacent, so `address.strip().lower()` sailed past it ---
+        # and did, six times, in the agent tools added later. The ratchet
+        # reported zero the whole time, which is worse than not having one.
         pattern = re.compile(
-            r"address\w*\.lower\(\)|\.lower\(\) for \w*address|seed\.lower\(\)"
+            r"(?:address|addr|seed|source|target|subject|sender|recipient|counterparty)"
+            r"\w*(?:\.\w+\(\))*\.lower\(\)"
+            r"|\.lower\(\) for \w*(?:address|addr)"
         )
         found = []
         for path in (self.ROOT / "src").rglob("*.py"):
@@ -227,6 +259,11 @@ class TestTheCaseFoldDoesNotSpread:
             if relative in self.EVM_ONLY:
                 continue
             for number, line in enumerate(path.read_text().splitlines(), 1):
+                # Comments are skipped: a line explaining why `.lower()` is
+                # wrong is not an instance of doing it, and counting it would
+                # push somebody towards deleting the explanation.
+                if line.lstrip().startswith("#"):
+                    continue
                 if pattern.search(line):
                     found.append(f"{relative}:{number}")
         return sorted(found)

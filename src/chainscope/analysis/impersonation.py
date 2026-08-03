@@ -203,6 +203,20 @@ def _classify(chain: ChainId | None, contract: str, symbol: str) -> tuple[str, s
     if known is not None:
         if key and key in known:
             return Verdict.GENUINE, "", [f"{contract} is the canonical {symbol} on {chain}"]
+        if not key and not known:
+            # A native transfer: the symbol belongs to the native asset and
+            # there is no contract, which is exactly what an honest one looks
+            # like. Without this the commonest transfer on the chain --- plain
+            # ETH --- was reported as a forgery, because `"" in frozenset()` is
+            # False and it fell through to the impersonation branch.
+            #
+            # Missed by every test here: each fixture carried a contract, so
+            # none of them was the case this is about.
+            return (
+                Verdict.GENUINE,
+                "",
+                [f"the native asset on {chain}, which has no contract to forge"],
+            )
         expected = (
             ", ".join(sorted(known)) if known else "no contract --- it is the native asset"
         )

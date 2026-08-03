@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
+from ..chains import fold_if_hex
 from ..osint.leads import Lead
 
 __all__ = ["LeadRecord", "LeadStore", "Verdict"]
@@ -71,6 +72,17 @@ CREATE INDEX IF NOT EXISTS ix_leads_verdict ON leads(verdict);
 -- the same enumeration doubles every count in the report.
 CREATE UNIQUE INDEX IF NOT EXISTS ux_leads_identity ON leads(address, kind, value);
 """
+
+
+def _fold(address: str) -> str:
+    """Normalise an address without knowing its chain.
+
+    `fold_if_hex` folds only what is unambiguously a 42-character `0x` hex
+    string and returns everything else exactly as given. `.lower()` here would
+    be right on EVM and would destroy a base58 or bech32 address --- silently,
+    by making two different addresses compare equal.
+    """
+    return fold_if_hex(address.strip())
 
 
 class Verdict(str, Enum):
@@ -172,7 +184,7 @@ class LeadStore:
         with self._lock:
             row = self._conn.execute(
                 "SELECT id FROM leads WHERE address = ? AND kind = ? AND value = ?",
-                (lead.address.strip().lower(), lead.kind, lead.value),
+                (_fold(lead.address), lead.kind, lead.value),
             ).fetchone()
             if row is not None:
                 return int(row["id"]), False
@@ -182,7 +194,7 @@ class LeadStore:
                 (
                     int(datetime.now(timezone.utc).timestamp()),
                     analyst,
-                    lead.address.strip().lower(),
+                    _fold(lead.address),
                     chain,
                     lead.kind,
                     lead.value,
@@ -254,7 +266,7 @@ class LeadStore:
         where, params = ["1=1"], []
         if address:
             where.append("address = ?")
-            params.append(address.strip().lower())
+            params.append(_fold(address))
         if verdict is not None:
             where.append("verdict = ?")
             params.append(verdict.value)

@@ -49,7 +49,7 @@ from ..analysis.probing import (
 from ..analysis.route import find_routes
 from ..analysis.taint import TaintPolicy, trace_origins, trace_taint
 from ..case.leads import LeadStore, Verdict
-from ..chains import address_key
+from ..chains import address_key, fold_if_hex
 from ..core.attribution import Attribution, Category, Confidence, Method
 from ..core.chainid import ChainId
 from ..store.base import Query
@@ -137,6 +137,19 @@ def _chain(raw: str | None) -> ChainId | None:
             f"CAIP-2 identifier (eip155:1, sui:mainnet)."
         )
     return ChainId(namespace, reference)
+
+
+def _address_key(chain: ChainId | None, address: str) -> str:
+    """Normalise an address the way its own chain says to.
+
+    `.lower()` is correct on EVM hex and destroys base58 and bech32 --- an
+    error that does not raise, it just makes two addresses look like one or one
+    look like two. When the caller named a chain the adapter decides; when they
+    did not, `fold_if_hex` folds only what is unambiguously 42-character hex and
+    leaves everything else exactly as typed.
+    """
+    raw = address.strip()
+    return address_key(chain, raw) if chain is not None else fold_if_hex(raw)
 
 
 def _cap(limit: int, ceiling: int) -> int:
@@ -487,7 +500,11 @@ def build_server(config: ServerConfig) -> MCPServer:
         try:
             rows = list(
                 store.transfers(
-                    Query(chain=_chain(chain), sender=address.strip().lower(), limit=capped)
+                    Query(
+                        chain=_chain(chain),
+                        sender=_address_key(_chain(chain), address),
+                        limit=capped,
+                    )
                 )
             )
         finally:
@@ -495,7 +512,7 @@ def build_server(config: ServerConfig) -> MCPServer:
 
         probes = detect_probes(rows, min_steps=min_steps, min_growth=min_growth)
         result: dict[str, Any] = {
-            "address": address.strip().lower(),
+            "address": _address_key(_chain(chain), address),
             "transfers_examined": len(rows),
             "probes": [p.to_dict() for p in probes],
         }
@@ -538,21 +555,23 @@ def build_server(config: ServerConfig) -> MCPServer:
             raise AgentError("address is required")
         capped = _cap(limit, config.max_rows)
         where = _chain(chain)
+        # `address_key`, never `.lower()`. Folding case is right on EVM hex and
+        # destroys a base58 or bech32 address --- and this tool serves every
+        # chain the store holds. The same mistake was driven out of 27 sites
+        # earlier and came straight back in here, because the ratchet's pattern
+        # did not match `address.strip().lower()`.
+        key = _address_key(where, address)
         store = _store()
         try:
             # Both directions: a poisoning token is *sent to* the subject and
             # never sent by it, so an outbound-only read misses the attack.
-            rows = list(
-                store.transfers(
-                    Query(chain=where, address=address.strip().lower(), limit=capped)
-                )
-            )
+            rows = list(store.transfers(Query(chain=where, address=key, limit=capped)))
         finally:
             store.close()
 
         rep = impersonation_report(rows, where)
         result: dict[str, Any] = {
-            "address": address.strip().lower(),
+            "address": key,
             "transfers_examined": len(rows),
             "summary": rep.summary(),
             "forged_transfers": rep.forged_transfers,
@@ -610,7 +629,7 @@ def build_server(config: ServerConfig) -> MCPServer:
             raise AgentError("address is required")
         capped = _cap(limit, config.max_rows)
         where = _chain(chain)
-        subject = address.strip().lower()
+        subject = _address_key(where, address)
         store = _store()
         try:
             rows = list(store.transfers(Query(chain=where, address=subject, limit=capped)))
@@ -684,8 +703,14 @@ def build_server(config: ServerConfig) -> MCPServer:
     ) -> dict[str, Any]:
         if not source.strip() or not target.strip():
             raise AgentError("both source and target are required")
-        capped = _cap(limit, config.max_rows)
+        # `max_corpus`, not `max_rows`. This reads the whole store rather than
+        # one address's rows, which is what the other corpus-wide tools do ---
+        # capping it at the per-address limit silently searched 500 transfers
+        # and reported "no route" over a store holding far more.
+        capped = _cap(limit, config.max_corpus)
         where = _chain(chain)
+        src = _address_key(where, source)
+        dst = _address_key(where, target)
         store = _store()
         try:
             rows = list(store.transfers(Query(chain=where, limit=capped)))
@@ -693,15 +718,11 @@ def build_server(config: ServerConfig) -> MCPServer:
             store.close()
 
         routes, notes = find_routes(
-            rows,
-            source.strip().lower(),
-            target.strip().lower(),
-            max_hops=max_hops,
-            allow_hubs=allow_hubs,
+            rows, src, dst, max_hops=max_hops, allow_hubs=allow_hubs, chain=where
         )
         result: dict[str, Any] = {
-            "source": source.strip().lower(),
-            "target": target.strip().lower(),
+            "source": src,
+            "target": dst,
             "transfers_searched": len(rows),
             "routes": [
                 {

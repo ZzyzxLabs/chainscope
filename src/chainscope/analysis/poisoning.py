@@ -56,7 +56,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from ..chains import address_key
+from ..chains import address_key, fold_if_hex
 from ..core.result import Finding, Result, Severity
 from ..providers.base import Capability
 from .base import Analyzer, Context, history_of
@@ -220,9 +220,20 @@ def chance_of_collision(count: int, edges: int = DEFAULT_EDGES) -> float:
     return float(1 - math.exp(-expected))
 
 
+def _fold(address: str) -> str:
+    """Normalise an address without knowing its chain.
+
+    `fold_if_hex` folds only what is unambiguously a 42-character `0x` hex
+    string and returns everything else exactly as given. `.lower()` here would
+    be right on EVM and would destroy a base58 or bech32 address --- silently,
+    by making two different addresses compare equal.
+    """
+    return fold_if_hex(address.strip())
+
+
 def _sightings(transfers: list[Any], subject: str, trusted: set[str]) -> dict[str, Sighting]:
     """Fold a transfer list into one record per counterparty."""
-    me = subject.strip().lower()
+    me = _fold(subject)
     sent: dict[str, int] = defaultdict(int)
     sent_bad: dict[str, int] = defaultdict(int)
     received: dict[str, int] = defaultdict(int)

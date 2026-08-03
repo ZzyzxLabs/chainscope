@@ -50,7 +50,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from ..chains import address_key
+from ..chains import address_key, fold_if_hex
 from ..core.result import Finding, Result, Severity
 from ..providers.base import Capability, ProviderError
 from .base import Analyzer, Context, history_of
@@ -238,6 +238,17 @@ def _hop(transfer: Any) -> Hop | None:
     )
 
 
+def _fold(address: str) -> str:
+    """Normalise an address without knowing its chain.
+
+    `fold_if_hex` folds only what is unambiguously a 42-character `0x` hex
+    string and returns everything else exactly as given. `.lower()` here would
+    be right on EVM and would destroy a base58 or bech32 address --- silently,
+    by making two different addresses compare equal.
+    """
+    return fold_if_hex(address.strip())
+
+
 def find_routes(
     transfers: list[Any],
     source: str,
@@ -264,7 +275,7 @@ def find_routes(
     grows quickly, and past five hops in a commingled graph the answer is
     "everything reaches everything", which is true and useless.
     """
-    src, dst = source.strip().lower(), target.strip().lower()
+    src, dst = _fold(source), _fold(target)
     hops: list[Hop] = []
     undated = 0
     for transfer in transfers:
@@ -339,7 +350,7 @@ def findings(
     routes: list[Route], notes: dict[str, Any], source: str, target: str
 ) -> list[Finding]:
     """Turn routes into findings, including the finding that there are none."""
-    src, dst = source.strip().lower(), target.strip().lower()
+    src, dst = _fold(source), _fold(target)
 
     if not routes:
         # An empty result is a result, and it is the one most easily misread.
