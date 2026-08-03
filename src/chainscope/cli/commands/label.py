@@ -29,6 +29,13 @@ def add_parser(sub: Any, name: str) -> None:
         help="the case store, consulted first. --no-store to skip it",
     )
     p.add_argument("--no-store", action="store_true", help="do not read the case store")
+    p.add_argument(
+        "--labels",
+        type=Path,
+        default=Path("data/labels"),
+        help="directory of label datasets. Everything present here is consulted; "
+        "fetch them with `chainscope labels fetch`",
+    )
 
 
 def run(args: argparse.Namespace, render: Renderer) -> int:
@@ -59,6 +66,19 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
         finally:
             store.close()
 
+    # Everything present under the case's label directory, plus anything named
+    # explicitly. Discovery was the web server's behaviour only, so the same
+    # address resolved to a name in the browser and to `unlabelled` here --- one
+    # install, one case directory, two stories about the same evidence. An
+    # inconsistency like that is worse than a missing feature: a missing feature
+    # is visible.
+    from ...attribution.build import available_sources
+
+    for found in available_sources(args.labels):
+        resolver.add(found)
+
+    # Explicit flags still win, because a path somebody typed is a decision and
+    # discovery is a convenience.
     if args.sanctions:
         resolver.add(OfacSource(args.sanctions))
     if args.nametags:

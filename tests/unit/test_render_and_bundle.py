@@ -338,7 +338,11 @@ class TestCli:
     def test_label_clean_address_exits_zero(self, tmp_path, capsys):
         sdn = tmp_path / "ofac.json"
         sdn.write_text(json.dumps({"fetched": "2026-01-01T00:00:00Z", "addresses": {}}))
-        assert main(["label", ADDR, "--sanctions", str(sdn)]) == 0
+        # `--labels` at an empty directory. Without it the command now
+        # discovers whatever datasets the developer has fetched into
+        # `data/labels`, and this address is Binance 14 in one of them --- so
+        # the test would pass or fail depending on whose machine it ran on.
+        assert main(["label", ADDR, "--sanctions", str(sdn), "--labels", str(tmp_path)]) == 0
         assert "sanctioned: no" in capsys.readouterr().out
 
     def test_bundle_inspection(self, tmp_path, capsys):

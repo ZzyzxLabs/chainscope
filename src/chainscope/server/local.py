@@ -233,36 +233,10 @@ class _Handlers:
         failure being indistinguishable from "nothing known", and it is not ---
         `Resolution.failed` carries it, and the caller reports `reliable`.
         """
-        from ..attribution.resolver import Resolver
-        from ..attribution.sources.contracts_list import ContractsListSource
-        from ..attribution.sources.darklist import DarklistSource
-        from ..attribution.sources.ethlabels import EthLabelsSource
-        from ..attribution.sources.local import LocalSource
-        from ..attribution.sources.ofac import OfacSource
-
-        # Built once and kept. Constructing it per call rebuilt every source
-        # for every node --- including the contract registry's quarter-million
-        # filename index --- which took a twenty-node graph from under a second
-        # to 8.7. Measured after wiring the sources in, not before: the cost is
-        # invisible until a source with a real index exists.
-        if self._resolver is not None:
-            return list(self._claims(self._resolver, address, chain))
+        from ..attribution.build import resolver_for
 
         base = self.options.store.parent.parent / "data" / "labels"
-        resolver = Resolver()
-        # Only the ones whose data is actually present. `ready()` is the
-        # distinction that matters: a source configured but missing its file
-        # would otherwise answer "nothing known", which is the same words a
-        # clean screening uses.
-        for source in (
-            OfacSource(base / "ofac.json"),
-            DarklistSource(base / "darklist.json"),
-            EthLabelsSource(base / "eth-labels"),
-            ContractsListSource(base / "contracts"),
-            LocalSource(base / "local.json"),
-        ):
-            if source.ready():
-                resolver.add(source)
+        resolver = resolver_for(base)
         self._resolver = resolver
         return list(self._claims(resolver, address, chain))
 

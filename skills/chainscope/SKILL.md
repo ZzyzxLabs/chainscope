@@ -53,6 +53,21 @@ It exits non-zero when nothing was found, so silence is not readable as a clean
 bill of health. An empty step means *this window held no evidence of that
 pattern*, never *the pattern is absent*.
 
+### Get the naming data first
+
+```bash
+chainscope labels            # what is present, and what each is worth
+chainscope labels fetch      # ~270,000 named addresses; nothing is bundled
+```
+
+Without it every address reads `unlabelled`, and **that is not the same as an
+address being unknown** --- it means nothing was consulted. `labels` exits
+non-zero when no dataset is present, so a script notices.
+
+Terms are printed beside each dataset because two of them may not be
+redistributed and one is a repackaging of Etherscan's data. They are fetched
+into the case directory and gitignored.
+
 ### Record somewhere to look next, and what came of it
 
 ```bash

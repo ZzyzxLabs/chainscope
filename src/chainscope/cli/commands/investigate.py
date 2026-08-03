@@ -65,6 +65,12 @@ def add_parser(sub: Any, name: str) -> None:
     p.add_argument("address")
     p.add_argument("--chain", "-c", default="eth")
     p.add_argument(
+        "--labels",
+        type=Path,
+        default=Path("data/labels"),
+        help="directory of label datasets; everything present is consulted",
+    )
+    p.add_argument(
         "--single-source",
         action="store_true",
         help="ask one provider per enumeration instead of two. Faster and "
@@ -89,7 +95,21 @@ def run(args: argparse.Namespace, render: Renderer) -> int:
     address = args.address.strip()
     chain = resolve(args.chain)
     router, skipped = router_for(chain, corroborate=not args.single_source)
-    ctx = Context(chain=chain, router=router, limits={})
+    # With a resolver. `Context.resolver` has been optional since it was
+    # written and this command passed None, so the one place that says "start
+    # here" ran every analyzer blind --- consolidation would find a hub and
+    # report it as an unlabelled address while the label sat in a dataset on
+    # disk. The analyzers already ask; nothing was answering.
+    from ...attribution.build import resolver_for
+
+    resolver = resolver_for(args.labels)
+    ctx = Context(chain=chain, router=router, resolver=resolver, limits={})
+    if not resolver.sources:
+        print(
+            "no label datasets found --- every address will read as unlabelled, "
+            "which is\nnot the same as unknown. `chainscope labels fetch` "
+            "changes that.\n"
+        )
 
     print(f"investigating {address} on {chain}\n")
 
