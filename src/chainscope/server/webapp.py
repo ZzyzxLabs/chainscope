@@ -450,6 +450,7 @@ function draw() {
        <path d="M0,0 L8,4 L0,8z" fill="#7fb069"/></marker></defs>`,
   ];
 
+  const labels = [];
   graph.edges.forEach((e, i) => {
     const a = byId.get(e.source), b = byId.get(e.target);
     if (!a || !b) return;
@@ -473,10 +474,47 @@ function draw() {
     // label there stacks twelve lines of text on top of each other --- which
     // is what the first version did, and it made the most useful thing on the
     // screen the least readable.
+    // Collected, not emitted. Anchoring to the target's row stops twelve
+    // labels stacking at a shared *source*, but two edges whose targets sit on
+    // the same row still write over each other --- which is what made rows
+    // [2] and [3] an unreadable smear of two dates. Placement needs to see all
+    // the labels at once, so they are laid out below.
+    labels.push({
+      x: b.x - 12, y: b.y + CARD_H / 2 - 6, on,
+      body: `<tspan class="eidx">[${i + 1}]</tspan> [${when}] ${amount}`,
+    });
+  });
+
+  // Push overlapping labels apart, nearest-to-its-line first.
+  //
+  // Greedy and vertical: sort by the position each label wants, walk down, and
+  // move any label that would land within LINE of the one above it. Labels are
+  // right-anchored at their target's left edge, so only ones sharing an anchor
+  // column can collide --- grouping by that column keeps a nudge in one part
+  // of the graph from cascading through an unrelated part.
+  //
+  // Not a force simulation: this has to produce the same drawing every time it
+  // runs. A label that wanders between redraws is worse than one slightly off
+  // its line, because the reader is comparing screenshots taken minutes apart.
+  const LINE = 12;
+  const columns = new Map();
+  labels.forEach((l) => {
+    const col = Math.round(l.x);
+    if (!columns.has(col)) columns.set(col, []);
+    columns.get(col).push(l);
+  });
+  columns.forEach((group) => {
+    group.sort((p, q) => p.y - q.y);
+    let floor = -Infinity;
+    group.forEach((l) => {
+      if (l.y < floor) l.y = floor;
+      floor = l.y + LINE;
+    });
+  });
+  labels.forEach((l) => {
     parts.push(
-      `<text class="elabel${on ? " lit" : ""}" x="${b.x - 12}"` +
-      ` y="${b.y + CARD_H / 2 - 6}" text-anchor="end">` +
-      `<tspan class="eidx">[${i + 1}]</tspan> [${when}] ${amount}</text>`);
+      `<text class="elabel${l.on ? " lit" : ""}" x="${l.x}"` +
+      ` y="${l.y}" text-anchor="end">${l.body}</text>`);
   });
 
   // Asserted edges, drawn distinctly and labelled with who said so. A line
