@@ -65,6 +65,12 @@ _NO_DATA = ("no transactions found", "no records found", "no internal transactio
 END_OF_CHAIN = 999_999_999
 
 
+#: Page sizes an Etherscan-compatible endpoint actually serves. A response of
+#: exactly one of these, when more was asked for, is a full page rather than a
+#: complete answer --- see `_paged`.
+_PAGE_SIZES = frozenset({100, 1000, 10000})
+
+
 def _end_block(value: int | str) -> int:
     return END_OF_CHAIN if value == "latest" else int(value)
 
@@ -278,13 +284,33 @@ class EtherscanProvider(ReadOnlyProvider):
         )
         if not isinstance(rows, list):
             raise ProviderError(f"{action}: expected a list of records")
-        if len(rows) >= effective:
+        # Two ways this comes back short, and only one of them was checked.
+        #
+        # The caller asked for `effective` and got `effective`: obvious.
+        #
+        # The caller asked for more than the endpoint will serve in one page,
+        # and got a *full page of the endpoint's size*. That looked complete,
+        # because it is smaller than what was asked for. Measured: a request
+        # for 10,000 internal transfers returned exactly 1,000, and counting
+        # from it gave 286 transfers totalling 128.4 ETH where the real answer
+        # was 747 and 352.8 --- a third of the truth, with nothing to notice.
+        #
+        # A full page at any round size is the signal, so both are caught.
+        page_full = len(rows) >= effective or (
+            len(rows) in _PAGE_SIZES and len(rows) < effective
+        )
+        if page_full:
             cap = " (the API maximum)" if effective >= MAX_RECORDS else ""
+            served = (
+                f"{len(rows)} records --- a full page, though {effective} were requested"
+                if len(rows) < effective
+                else f"{effective} records, exactly the number requested{cap}"
+            )
             raise ResultTruncated(
-                f"{action} returned {effective} records, exactly the number "
-                f"requested{cap}. There is almost certainly more. Narrow the "
-                f"block range and query again; any total from this set is a "
-                f"lower bound."
+                f"{action} returned {served}. There is almost certainly more. "
+                f"Page through with `page=`, or narrow the block range; any "
+                f"total from this set is a lower bound.",
+                rows=rows,
             )
         return rows
 
