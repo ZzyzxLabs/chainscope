@@ -151,10 +151,15 @@ def _summarise(
     #
     # `store.analytics.totals_by_asset` has grouped by (chain, asset, symbol)
     # all along and says why in a comment. This one did not.
-    totals: dict[tuple[str, str, int | None], list[int]] = {}
-    for row in conn.execute("SELECT asset, symbol, decimals, amount_raw FROM transfers"):
+    totals: dict[tuple[str, str, str, int | None], list[int]] = {}
+    for row in conn.execute("SELECT chain, asset, symbol, decimals, amount_raw FROM transfers"):
         places = row["decimals"]
+        # `chain` is in the key. A contract address is unique within a chain and
+        # nowhere else --- the same 20 bytes on Ethereum and on BSC are two
+        # different tokens, often deliberately, and they were summing into one
+        # row. Measured: 1 TKN on Ethereum plus 999 on BSC displayed as 1000.
         asset = (
+            row["chain"] or "",
             row["asset"] or "",
             row["symbol"] or "",
             int(places) if places is not None else None,
@@ -225,8 +230,8 @@ def _summarise(
         low_confidence=low_confidence,
         totals_by_asset=sorted(
             (
-                (sym, str(total), count, places, contract)
-                for (contract, sym, places), (total, count) in totals.items()
+                (sym, str(total), count, places, contract, where)
+                for (where, contract, sym, places), (total, count) in totals.items()
             ),
             key=lambda row: -row[2],
         ),

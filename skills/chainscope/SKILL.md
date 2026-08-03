@@ -138,7 +138,7 @@ finding and a coincidence.
 | `peel_chain` | follow a peel chain | halts on contested or missing hops rather than guessing |
 | `cross_chain` | the far side of a swap | **ranks a decoy first when the true payout is absent** |
 | `consolidation` | where counterparties send funds | — |
-| `impersonation` | which assets are forging another's symbol | "unlisted" is not clean --- most tokens are in no registry, and the check simply had nothing to compare against |
+| `impersonation` | which assets claim a symbol that is not theirs | "unlisted" is not clean --- most tokens are in no registry, and the check simply had nothing to compare against |
 | `poisoning` | which counterparties were ground to resemble another | refuses to nominate the real one unless a *trusted* asset shows the subject paying it |
 | `route` | how money could have got from A to B | withholds routes through a high-degree address by default: a custodian commingles, so that link is in the ledger, not in the money |
 
@@ -167,6 +167,14 @@ transfer so it lands in the history, and waits for somebody to copy it. In the
 same case, 9 of 36 counterparties fell into such a group --- against a
 coincidence probability of 1.5e-7. Quote that number: "these look similar"
 invites "coincidences happen", and they do, at a rate the finding states.
+
+**Read the `hypotheses`, not only the `findings`.** That a group exists is
+arithmetic and is reported as a finding. *Which member is genuine* is an
+inference, it is capped at MEDIUM, and its score factors are listed so you can
+disagree with one instead of with the conclusion. The same split applies to
+`impersonation`: a contract that is not the canonical one for its symbol is a
+finding --- the chain settles that --- while "this string renders like that
+string" is a hypothesis.
 
 It will often say **it cannot tell which one is real**, and that is the feature.
 A token contract emits its own transfer events, so a forged token can log a

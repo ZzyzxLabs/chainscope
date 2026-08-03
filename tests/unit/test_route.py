@@ -342,3 +342,68 @@ class TestWhatTheReviewFound:
         route_data = [f.data for f in found if "believable" in f.data]
         assert route_data and route_data[0]["believable"] is False
         assert route_data[0]["forged_hops"] == 2
+
+
+class TestTheSearchBudget:
+    """`max_routes` bounds what is returned; nothing bounded what is explored.
+
+    A dense graph where few walks reach the target searches exponentially in
+    `max_hops` and returns nothing, having spent the time anyway --- and an
+    empty result reads as "no route", not as "the search gave up".
+    """
+
+    def _dense(self) -> list:
+        # Every node points at every later node: many walks, none reaching "b".
+        names = [f"n{i}" for i in range(9)]
+        return [
+            _t(a, b, i + 1) for i, a in enumerate(names) for b in names[names.index(a) + 1 :]
+        ]
+
+    def test_a_tiny_budget_stops_the_walk(self) -> None:
+        _, notes = find_routes(self._dense(), "n0", "zzz", max_hops=8, max_steps=20)
+        assert "search_budget_exhausted" in notes
+
+    def test_and_says_the_result_is_not_all_there_is(self) -> None:
+        _, notes = find_routes(self._dense(), "n0", "zzz", max_hops=8, max_steps=20)
+        assert "not 'all there is'" in notes["search_budget_exhausted"]
+
+    def test_an_ordinary_search_does_not_trip_it(self) -> None:
+        # A warning that fires every run is one people stop reading.
+        _, notes = find_routes([_t("a", "m", 1), _t("m", "b", 2)], "a", "b")
+        assert "search_budget_exhausted" not in notes
+
+    def test_the_steps_taken_are_reported_either_way(self) -> None:
+        _, notes = find_routes([_t("a", "m", 1), _t("m", "b", 2)], "a", "b")
+        assert notes["steps"] >= 1
+
+
+class TestForgedRoutesWithoutAChain:
+    def test_a_forged_hop_is_not_detected_without_one(self) -> None:
+        """Honest about a real limit.
+
+        `trusted_assets` needs the chain to know which contract is canonical.
+        Called without one, nothing is canonical, so every contract-borne hop
+        counts as untrusted --- which errs towards disbelief rather than
+        towards believing the attacker.
+        """
+        forged = "0xa599e8c7f4bac6512e250055a96a20a72bbac75e"
+        rows = [_t("a", "m", 1, asset=forged), _t("m", "b", 2, asset=forged)]
+        routes, _ = find_routes(rows, "a", "b")
+        assert not routes[0].is_believable
+        assert "route the attacker drew" in routes[0].describe()
+
+    def test_a_real_asset_is_also_disbelieved_without_a_chain(self) -> None:
+        # The cost of the conservative default, stated so nobody is surprised:
+        # pass `chain` to get a useful answer.
+        real = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+        rows = [_t("a", "m", 1, asset=real), _t("m", "b", 2, asset=real)]
+        routes, _ = find_routes(rows, "a", "b")
+        assert not routes[0].is_believable
+
+    def test_and_believed_once_the_chain_is_given(self) -> None:
+        from chainscope.core.chainid import ETHEREUM
+
+        real = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+        rows = [_t("a", "m", 1, asset=real), _t("m", "b", 2, asset=real)]
+        routes, _ = find_routes(rows, "a", "b", chain=ETHEREUM)
+        assert routes[0].is_believable

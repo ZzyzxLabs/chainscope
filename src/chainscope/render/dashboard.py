@@ -55,8 +55,10 @@ class CaseSummary:
     has plenty --- but a reviewer will ask, and burying the count invites a
     reader to treat every label as equally solid."""
 
-    totals_by_asset: list[tuple[str, str, int, int | None, str]] = field(default_factory=list)
-    """``(symbol, raw_total, transfer_count, decimals, contract)``.
+    totals_by_asset: list[tuple[str, str, int, int | None, str, str]] = field(
+        default_factory=list
+    )
+    """``(symbol, raw_total, transfer_count, decimals, contract, chain)``.
 
     Strings because these exceed what a JSON number holds exactly, and never
     summed across assets --- that produces a figure denominated in nothing.
@@ -71,7 +73,12 @@ class CaseSummary:
     two assets --- and one of them may have chosen that ticker precisely so a
     query grouping on the string would add it to the other's total. Measured on
     a real case: 42 of 55 ERC-20 transfers belonged to impersonating tokens,
-    two of them from different contracts sharing one symbol string."""
+    two of them from different contracts sharing one symbol string.
+
+    ``chain`` is part of that identity too. A contract address is unique within
+    a chain and nowhere else, so the same 20 bytes on Ethereum and on BSC are
+    two different tokens --- often deliberately --- and they were summing into
+    a single row."""
 
     top_flows: list[dict[str, Any]] = field(default_factory=list)
     categories: list[tuple[str, int]] = field(default_factory=list)
@@ -106,8 +113,9 @@ class CaseSummary:
                     "transfers": n,
                     "decimals": d,
                     "contract": c or None,
+                    "chain": w or None,
                 }
-                for s, t, n, d, c in self.totals_by_asset
+                for s, t, n, d, c, w in self.totals_by_asset
             ],
             "top_flows": self.top_flows,
             "categories": [{"name": c, "count": n} for c, n in self.categories],
@@ -300,8 +308,9 @@ def to_dashboard(summary: CaseSummary) -> str:
             )
             + _cell(f"{count:,}", klass="n")
             + _cell(contract or "native", mono=True)
+            + _cell(where or "?")
             + "</tr>"
-            for sym, total, count, places, contract in s.totals_by_asset
+            for sym, total, count, places, contract, where in s.totals_by_asset
         )
         or '<tr><td colspan="3">nothing recorded</td></tr>'
     )
@@ -375,7 +384,8 @@ def to_dashboard(summary: CaseSummary) -> str:
     <div class="scroll"><table>
       <tr><th>asset</th><th class="n">total</th><th class="n">transfers</th>
           <th>contract &mdash; the identity; the symbol is a string anyone may
-              choose</th></tr>
+              choose</th><th>chain &mdash; the same address is a different
+              token on each</th></tr>
       {totals}
     </table></div>
     <p class="note">Exact integers, never combined across assets &mdash; a sum

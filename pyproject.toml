@@ -131,17 +131,27 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 # RUF001/2/3 flag characters that resemble ASCII --- the same UTS #39 property
 # `chainscope.core.confusable` is built on, and a good rule everywhere else in
-# this codebase. In these files the confusable characters ARE the subject:
-# the module implements the detection, the tests use real forged symbols
-# observed in a case, and the agent tool's description shows the caller what a
-# forgery looks like. Ignoring the rule repo-wide would remove a real check
-# from 100 other files to accommodate five.
+# this codebase.
+#
+# One file is exempt wholesale, because the confusable characters are its
+# entire content: `confusable.py` IS the mapping table, and seventy `noqa`
+# markers on seventy table entries would be noise around the one file where
+# nobody could mistake the intent.
+#
+# Two more carry RUF002 only, and for a reason that is a language limitation
+# rather than a preference: their confusables sit inside *docstrings* --- the
+# worked examples that explain the attack --- and Python has nowhere to put a
+# `noqa` inside a string literal. RUF001, which covers code, stays on for them.
+#
+# Everywhere a marker can actually attach --- the agent tool description, the
+# poisoning fixture --- it is per line, so an *accidental* confusable in those
+# files is still caught. That is the whole value of the rule, and a file-wide
+# ignore throws it away for the sake of one line.
 [tool.ruff.lint.per-file-ignores]
 "src/chainscope/core/confusable.py" = ["RUF001", "RUF002", "RUF003"]
-"src/chainscope/analysis/impersonation.py" = ["RUF001", "RUF002", "RUF003"]
-"src/chainscope/agent/server.py" = ["RUF001", "RUF002", "RUF003"]
-"tests/unit/test_impersonation.py" = ["RUF001", "RUF002", "RUF003"]
-"tests/unit/test_poisoning.py" = ["RUF001", "RUF002", "RUF003"]
+"src/chainscope/analysis/impersonation.py" = ["RUF002"]
+"tests/unit/test_impersonation.py" = ["RUF001", "RUF002"]
+
 
 [tool.mypy]
 python_version = "3.10"

@@ -50,6 +50,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..chains import address_key
+from ..core.attribution import Confidence
 from ..core.chainid import ChainId
 from ..core.confusable import (
     confusable,
@@ -57,6 +58,7 @@ from ..core.confusable import (
     skeleton,
     suspicious_characters,
 )
+from ..core.hypothesis import Hypothesis, ScoreFactor
 from ..core.result import Finding, Result, Severity
 from ..providers.base import Capability
 from .base import Analyzer, Context, history_of
@@ -426,12 +428,89 @@ def findings(rep: Report) -> list[Finding]:
     return out
 
 
+def hypotheses(rep: Report) -> list[Hypothesis]:
+    """The inferential verdicts, as scored candidates rather than facts.
+
+    `forged` is not here and must not be: it is contract identity --- this
+    contract is not the one that carries this symbol on this chain --- which the
+    chain settles, not an inference. Reporting it as a hypothesis would
+    *weaken* a certain statement.
+
+    `lookalike` and `unknown-script` are different. They say a string renders
+    like another string, which is a judgement about glyphs, fonts and what a
+    reader would notice. `Hypothesis` is the type this package has for exactly
+    that, it caps at MEDIUM by construction, and it makes the score's parts
+    visible so somebody can disagree with a specific one instead of with the
+    conclusion.
+    """
+    out: list[Hypothesis] = []
+    for asset in rep.impersonations:
+        if asset.verdict == Verdict.FORGED:
+            continue
+        factors = [
+            ScoreFactor(
+                name="skeleton_match",
+                weight=0.5,
+                value=bool(asset.resembles),
+                note=(
+                    f"folds to {asset.resembles!r} under UTS #39 §4"
+                    if asset.resembles
+                    else "no canonical symbol on this chain renders the same"
+                ),
+            ),
+            ScoreFactor(
+                name="mixed_script",
+                weight=0.3,
+                value=is_mixed_script(asset.symbol),
+                note="letters from more than one script in one word (UTS #39 §5)",
+            ),
+            ScoreFactor(
+                name="non_ascii",
+                weight=0.2,
+                value=bool(asset.characters),
+                note=f"{len(asset.characters)} character(s) outside ASCII",
+            ),
+            ScoreFactor(
+                name="share_of_transfers",
+                weight=0.0,
+                value=asset.transfers,
+                note=(
+                    "how much of the data this asset accounts for. Weight zero: "
+                    "volume is what makes a forgery expensive, not what makes it "
+                    "a forgery"
+                ),
+            ),
+        ]
+        out.append(
+            Hypothesis(
+                claim=(
+                    f"{asset.symbol!r} ({asset.contract or 'no contract'}) is "
+                    f"presented so as to be read as "
+                    f"{asset.resembles or 'another asset'}"
+                ),
+                factors=tuple(factors),
+                # MEDIUM is the ceiling the type enforces, and it is the right
+                # one: nothing here observes intent, only appearance.
+                confidence=Confidence.MEDIUM,
+                data={
+                    "contract": asset.contract,
+                    "symbol": asset.symbol,
+                    "resembles": asset.resembles,
+                    "transfers": asset.transfers,
+                    "characters": [list(c) for c in asset.characters],
+                },
+            )
+        )
+    return out
+
+
 def analyse(transfers: list[Any], chain: ChainId | None = None) -> Result:
     """The whole pass: inspect, count, and say how much of the data is forged."""
     rep = report(transfers, chain)
     return Result(
         analyzer="impersonation",
         findings=tuple(findings(rep)),
+        hypotheses=tuple(hypotheses(rep)),
         # The summary rides in `warnings` rather than a `summary` field, because
         # `Result` has none --- and because this *is* a warning. "48 of 55
         # transfers are forged" is not a description of the run, it is a
@@ -513,6 +592,7 @@ class ImpersonationAnalyzer(Analyzer):
         return Result(
             analyzer=self.name,
             findings=tuple(findings(rep)),
+            hypotheses=tuple(hypotheses(rep)),
             warnings=tuple(warnings),
             evidence=ctx.evidence(),
             params={

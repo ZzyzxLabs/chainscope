@@ -46,7 +46,13 @@ def _t(sender: str, recipient: str, asset: str, raw: int = 1, when: int = 1) -> 
         sender=SimpleNamespace(key=sender.lower()),
         recipient=SimpleNamespace(key=recipient.lower()),
         asset=SimpleNamespace(key=asset.lower()),
-        amount=SimpleNamespace(raw=raw, symbol="USDC" if asset == REAL_USDC else "UЅDC"),
+        # Marked per line rather than per file: the Cyrillic here is the
+        # fixture, and an *accidental* confusable elsewhere in this file should
+        # still be caught.
+        amount=SimpleNamespace(
+            raw=raw,
+            symbol="USDC" if asset == REAL_USDC else "UЅDC",  # noqa: RUF001
+        ),
         timestamp=when,
     )
 
@@ -192,3 +198,80 @@ class TestTheFindings:
         detail = findings(groups, examined)[1].detail
         assert GENUINE in detail and IMPOSTOR in detail
         assert "zero-value" in detail
+
+
+class TestTheAnalyzerNotJustTheHelper:
+    """The tests above exercise `find_lookalikes` and `findings`.
+
+    What a caller actually receives is a `Result` --- with hypotheses, params
+    and warnings --- and none of that was covered. A helper can be correct while
+    the analyzer wiring it up drops half of it on the floor.
+    """
+
+    def _report(self):
+        rows = [
+            _t(SUBJECT, GENUINE, REAL_USDC),
+            _t(IMPOSTOR, SUBJECT, REAL_USDC, raw=0),
+        ]
+        groups, examined = find_lookalikes(rows, SUBJECT, chain=ETHEREUM)
+        return groups, examined
+
+    def test_which_member_is_real_is_a_hypothesis_not_a_finding(self) -> None:
+        """The existence of a group is arithmetic. Which member was meant is an
+        inference, and it is the inference whose being wrong sends money to the
+        attacker."""
+        from chainscope.analysis.poisoning import hypotheses
+
+        groups, examined = self._report()
+        found = hypotheses(groups, examined)
+        assert found and GENUINE in found[0].claim
+
+    def test_it_shows_the_score_factors(self) -> None:
+        from chainscope.analysis.poisoning import hypotheses
+
+        groups, examined = self._report()
+        names = {f.name for f in hypotheses(groups, examined)[0].factors}
+        assert "paid_in_a_trusted_asset" in names
+        assert "only_attacker_authored_evidence" in names
+
+    def test_an_undecidable_group_still_produces_one(self) -> None:
+        # Omitting it would leave the undecidable case invisible in the
+        # structured output, which is where it most needs to be.
+        from chainscope.analysis.poisoning import hypotheses
+
+        rows = [_t(SUBJECT, GENUINE, REAL_USDC), _t(SUBJECT, IMPOSTOR, REAL_USDC)]
+        groups, examined = find_lookalikes(rows, SUBJECT, chain=ETHEREUM)
+        found = hypotheses(groups, examined)
+        assert found and "cannot be told" in found[0].claim
+
+    def test_an_undecidable_one_scores_lower(self) -> None:
+        from chainscope.analysis.poisoning import hypotheses
+
+        decidable = hypotheses(*self._report())[0]
+        rows = [_t(SUBJECT, GENUINE, REAL_USDC), _t(SUBJECT, IMPOSTOR, REAL_USDC)]
+        groups, examined = find_lookalikes(rows, SUBJECT, chain=ETHEREUM)
+        assert hypotheses(groups, examined)[0].score < decidable.score
+
+    def test_no_hypothesis_can_claim_more_than_medium(self) -> None:
+        # Enforced by the type, asserted here because it is the property the
+        # type exists for.
+        from chainscope.analysis.poisoning import hypotheses
+        from chainscope.core.attribution import Confidence
+
+        for h in hypotheses(*self._report()):
+            assert h.confidence <= Confidence.MEDIUM
+
+    def test_severity_follows_the_probability(self) -> None:
+        """A 1e-7 collision is grinding. A likely one is a coincidence, and
+        calling that CRITICAL trains the reader to skip the section."""
+        from chainscope.core.result import Severity
+
+        groups, examined = self._report()
+        assert findings(groups, examined)[0].severity == Severity.CRITICAL
+        # A huge address set makes a collision unremarkable.
+        assert findings(groups, 10**6)[0].severity != Severity.CRITICAL
+
+    def test_the_wording_changes_with_it(self) -> None:
+        groups, examined = self._report()
+        assert "not a coincidence" in findings(groups, examined)[0].detail
+        assert "candidates rather than as proof" in findings(groups, 10**6)[0].detail

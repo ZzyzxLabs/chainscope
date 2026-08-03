@@ -540,7 +540,10 @@ def build_server(config: ServerConfig) -> MCPServer:
             "and ETH, so a total grouped by symbol was mostly forgery and "
             "looked exactly like a real number. Three mechanisms are checked "
             "and no two overlap --- a symbol with a foreign letter spliced in "
-            "(UЅDC), a symbol written entirely in another script (ЕТН), and a "
+            # The examples are the point of the description: an agent reading it
+            # needs to see what a forgery looks like. Marked per line so the
+            # rest of this large file keeps the check.
+            "(UЅDC), a symbol written entirely in another script (ЕТН), and a "  # noqa: RUF001
             "plain-ASCII token simply named after a real one (ETH), which only "
             "the contract address can catch. Reports both the forgeries and "
             "the genuine assets, and never filters anything out."
@@ -1232,6 +1235,22 @@ def build_server(config: ServerConfig) -> MCPServer:
                     "verdict must be one of: "
                     + ", ".join(v.value for v in Verdict if v is not Verdict.OPEN)
                 ) from None
+            if chosen is Verdict.OPEN:
+                raise AgentError(
+                    "a lead cannot be settled as 'open'. To reopen one, record "
+                    "the correction as a note --- the record of who checked and "
+                    "what they found is not overwritten"
+                )
+            if not reason.strip():
+                # Checked here as well as in the store. The store's refusal is
+                # the guarantee; this one makes the message the agent sees name
+                # the argument it got wrong, rather than surfacing a storage
+                # error for what is an input mistake.
+                raise AgentError(
+                    "a reason is required. State what you actually observed --- "
+                    "'confirmed' with no basis reads, once you are gone, exactly "
+                    "like a guess"
+                )
             store = LeadStore(config.case)
             try:
                 record = store.settle(lead_id, chosen, reason, config.agent_name)

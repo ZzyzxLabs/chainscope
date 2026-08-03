@@ -34,6 +34,9 @@ DOCS = Path(__file__).resolve().parents[2] / "docs" / "methods"
 #: Derived from the documents themselves in `test_every_doc_is_covered`, so a
 #: new method document cannot quietly skip this file.
 EXPECTED = {
+    "impersonation": "chainscope.analysis.impersonation",
+    "address-poisoning": "chainscope.analysis.poisoning",
+    "routing": "chainscope.analysis.route",
     "consolidation": "chainscope.analysis.consolidation",
     "change-detection": "chainscope.analysis.peel",
     "clustering": "chainscope.analysis.cluster",

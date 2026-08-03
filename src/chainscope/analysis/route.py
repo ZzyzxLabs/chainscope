@@ -283,6 +283,7 @@ def find_routes(
     hub_degree: int = DEFAULT_HUB_DEGREE,
     allow_hubs: bool = False,
     chain: Any = None,
+    max_steps: int = 200_000,
 ) -> tuple[list[Route], dict[str, Any]]:
     """Every time-respecting route from ``source`` to ``target``, bounded.
 
@@ -335,12 +336,23 @@ def find_routes(
 
     routes: list[Route] = []
     hub_blocked = 0
+    steps = 0
 
     def walk(node: str, since: Any, visited: set[str], trail: list[Hop]) -> None:
-        nonlocal hub_blocked
+        nonlocal hub_blocked, steps
+        # `max_routes` bounds what is *returned*; nothing bounded what is
+        # *explored*. A dense graph where few walks reach the target searches
+        # exponentially in `max_hops` and returns nothing, having spent the time
+        # anyway --- and an empty result is read as "no route", not as "the
+        # search gave up". Hitting this appears in the notes.
+        if steps >= max_steps:
+            return
         if len(routes) >= max_routes or len(trail) >= max_hops:
             return
         for hop in outgoing.get(node, ()):
+            steps += 1
+            if steps >= max_steps:
+                return
             # The whole correction: a hop that happened before the money arrived
             # is not a way the money left. Measured on a real ledger, ignoring
             # this made 62% of returned multi-hop paths impossible.
@@ -389,7 +401,14 @@ def find_routes(
         "routes_stopped_at_a_hub": hub_blocked,
         "max_hops": max_hops,
         "truncated": len(routes) >= max_routes,
+        "steps": steps,
     }
+    if steps >= max_steps:
+        notes["search_budget_exhausted"] = (
+            f"the walk stopped after {max_steps} steps. Routes beyond that point "
+            f"were never explored, so an empty or short list here means 'as far "
+            f"as the search got', not 'all there is'"
+        )
     if undated:
         notes["undated_transfers_ignored"] = undated
     if duplicates:
@@ -551,6 +570,7 @@ class RouteAnalyzer(Analyzer):
         frontier = [src, dst]
         notes: list[str] = []
         too_busy: list[str] = []
+        exhausted = False
         _degree: dict[str, int] = {}
         # Named, not `_`: the signature's `**_` catch-all is already bound to a
         # dict in this scope, so reusing the name reassigns it to an int.
@@ -560,13 +580,18 @@ class RouteAnalyzer(Analyzer):
                 if address in seen:
                     continue
                 if len(seen) >= max_expand:
+                    # An explicit flag rather than emptying `frontier`. Clearing
+                    # it worked only because the outer loop happened to read the
+                    # variable afterwards; reordering those two statements would
+                    # have silently resumed expanding, and nothing would have
+                    # failed.
                     notes.append(
                         f"stopped after reading {len(seen)} addresses (max_expand="
                         f"{max_expand}). Any route whose middle lies outside that "
                         f"set was not searched, so 'no route' means 'none within "
                         f"what was read'"
                     )
-                    frontier = []
+                    exhausted = True
                     break
                 try:
                     rows, source_notes = history_of(ctx, _fetch(ctx, address, per_node))
@@ -596,6 +621,8 @@ class RouteAnalyzer(Analyzer):
                         _degree[other] = _degree.get(other, 0) + 1
                         if other not in seen:
                             nxt.append(other)
+            if exhausted:
+                break
             if not frontier and _depth:
                 break
             # Least-connected first. The budget should be spent on addresses

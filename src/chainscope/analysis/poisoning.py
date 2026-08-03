@@ -66,6 +66,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..chains import address_key, fold_if_hex
+from ..core.attribution import Confidence
+from ..core.hypothesis import Hypothesis, ScoreFactor
 from ..core.result import Finding, Result, Severity
 from ..providers.base import Capability
 from .base import Analyzer, Context, history_of
@@ -344,6 +346,97 @@ def find_lookalikes(
     return groups, len(seen)
 
 
+def _verdict_sentence(groups: int, probability: float) -> str:
+    """What the arithmetic entitles the report to say.
+
+    Written as a sentence rather than an adjective, because the number is the
+    argument: at 1e-7 across nine groups nothing but grinding explains it, and
+    at 0.2 a collision is unremarkable and saying otherwise trains the reader to
+    skip the section.
+    """
+    if probability < 0.01:
+        return f"Observing {groups} is therefore not a coincidence."
+    return (
+        f"At that probability a collision is not remarkable, so treat these "
+        f"{groups} as candidates rather than as proof."
+    )
+
+
+def hypotheses(
+    groups: list[LookalikeGroup], examined: int, edges: int = DEFAULT_EDGES
+) -> list[Hypothesis]:
+    """Per group: which member, if any, was the one that was meant.
+
+    The *existence* of a group is not a hypothesis --- it is arithmetic, and it
+    stays a `Finding`. Which member is genuine is an inference, and it is the
+    inference whose being wrong sends money to the attacker, so it goes through
+    the type that caps at MEDIUM and shows its working.
+
+    A group nothing distinguishes still produces a hypothesis, with a claim that
+    says so and a negative factor. Omitting it would leave the undecidable case
+    invisible in the structured output, which is where it most needs to be.
+    """
+    out: list[Hypothesis] = []
+    for group in groups:
+        paid = group.paid
+        forged = sum(m.sent_untrusted for m in group.members)
+        factors = (
+            ScoreFactor(
+                name="paid_in_a_trusted_asset",
+                weight=0.8,
+                value=len(paid) == 1,
+                note=(
+                    f"the subject paid {paid[0].address} in an asset that reports honestly"
+                    if len(paid) == 1
+                    else f"{len(paid)} members were paid; that does not single one out"
+                ),
+            ),
+            ScoreFactor(
+                name="only_attacker_authored_evidence",
+                weight=-0.6,
+                value=bool(forged) and not paid,
+                note=(
+                    f"{forged} payment claim(s) come from a token contract that "
+                    f"failed the impersonation check --- from the attacker"
+                ),
+            ),
+            ScoreFactor(
+                name="group_size",
+                weight=0.0,
+                value=len(group.members),
+                note=(
+                    "how many addresses read alike. Weight zero: a larger group "
+                    "is a bigger problem, not better evidence about which member "
+                    "is real"
+                ),
+            ),
+        )
+        claim = (
+            f"of the {len(group.members)} addresses reading 0x{group.prefix}"
+            f"…{group.suffix}, {paid[0].address} is the one the subject meant"
+            if group.is_decidable
+            else f"which of the {len(group.members)} addresses reading "
+            f"0x{group.prefix}…{group.suffix} was meant cannot be told from "
+            f"this data"
+        )
+        out.append(
+            Hypothesis(
+                claim=claim,
+                factors=factors,
+                confidence=Confidence.MEDIUM if group.is_decidable else Confidence.SPECULATIVE,
+                data={
+                    "prefix": group.prefix,
+                    "suffix": group.suffix,
+                    "decidable": group.is_decidable,
+                    "paid_by_subject": [m.address for m in paid],
+                    "suspects": [m.address for m in group.suspects],
+                    "attacker_authored_claims": forged,
+                },
+            )
+        )
+    return out
+
+
 def findings(
     groups: list[LookalikeGroup], examined: int, edges: int = DEFAULT_EDGES
 ) -> list[Finding]:
@@ -358,17 +451,25 @@ def findings(
                 f"{len(groups)} group(s) of addresses share a {edges}-character "
                 f"prefix and suffix"
             ),
-            # CRITICAL because the consequence is a payment to the wrong party.
-            # This is not a note about the case; it is a warning about an action
-            # the reader is about to take.
-            severity=Severity.CRITICAL,
+            # Severity from the arithmetic, not asserted. A collision
+            # probability of 1e-7 across nine groups is a generated address and
+            # nothing else; at 0.2 --- which a large enough address set or a
+            # short enough window produces --- it is a coincidence, and calling
+            # that CRITICAL trains the reader to skip the section.
+            severity=(
+                Severity.CRITICAL
+                if probability < 0.01
+                else Severity.IMPORTANT
+                if probability < 0.5
+                else Severity.NOTABLE
+            ),
             detail=(
                 f"Across {examined} counterparties. Matching {edges} hex characters "
                 f"at each end is {8 * edges} bits, so the chance that any two of "
                 f"{examined} unrelated addresses collide is {probability:.2e}.\n"
                 f"\n"
-                f"Observing {len(groups)} is therefore not a coincidence --- these "
-                f"addresses were generated to be mistaken for each other. Copying "
+                f"{_verdict_sentence(len(groups), probability)} These "
+                f"addresses may have been generated to be mistaken for each other. Copying "
                 f"one from a transaction list, which is where the first and last "
                 f"four characters are all anybody reads, is the attack."
             ),
@@ -477,6 +578,7 @@ class PoisoningAnalyzer(Analyzer):
         return Result(
             analyzer=self.name,
             findings=tuple(findings(groups, examined, edges)),
+            hypotheses=tuple(hypotheses(groups, examined, edges)),
             warnings=tuple(warnings),
             evidence=ctx.evidence(),
             params={

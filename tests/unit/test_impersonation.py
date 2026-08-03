@@ -330,3 +330,58 @@ class TestTheNativeAsset:
             )
         ]
         assert inspect_assets(rows, BSC)[0].verdict == Verdict.GENUINE
+
+
+class TestFactsAndInferencesAreSeparated:
+    """Which verdicts are settled by the chain, and which are judgements.
+
+    `forged` is contract identity --- this contract is not the one that carries
+    this symbol on this chain --- which the chain settles. Reporting it as a
+    hypothesis would *weaken* a certain statement.
+
+    `lookalike` and `unknown-script` say a string renders like another string,
+    which is a judgement about glyphs and what a reader would notice. Those go
+    through `Hypothesis`, which caps at MEDIUM by construction and shows the
+    score's parts so somebody can disagree with a specific one.
+    """
+
+    def _result(self):
+        from chainscope.analysis.impersonation import analyse
+
+        return analyse(_transfers(), ETHEREUM)
+
+    def test_a_lookalike_is_a_hypothesis(self) -> None:
+        claims = " ".join(h.claim for h in self._result().hypotheses)
+        assert "UЅDC" in claims
+
+    def test_an_ascii_forgery_is_not(self) -> None:
+        # It is settled by the contract address, not inferred from characters.
+        for h in self._result().hypotheses:
+            assert "0xa4a78fe7c6b3925e9047b7a485013fe7f6fbc6a6" not in h.claim
+
+    def test_but_it_is_still_a_finding(self) -> None:
+        titles = " ".join(f.title for f in self._result().findings)
+        assert "'ETH' (2 transfers)" in titles
+
+    def test_the_factors_are_named_and_weighted(self) -> None:
+        h = self._result().hypotheses[0]
+        names = {f.name for f in h.factors}
+        assert {"skeleton_match", "mixed_script", "non_ascii"} <= names
+
+    def test_volume_carries_no_weight(self) -> None:
+        # What makes a forgery expensive is not what makes it a forgery.
+        h = self._result().hypotheses[0]
+        share = next(f for f in h.factors if f.name == "share_of_transfers")
+        assert share.weight == 0.0
+        assert share.contribution == 0.0
+
+    def test_nothing_claims_more_than_medium(self) -> None:
+        from chainscope.core.attribution import Confidence
+
+        for h in self._result().hypotheses:
+            assert h.confidence <= Confidence.MEDIUM
+
+    def test_a_clean_set_produces_no_hypotheses(self) -> None:
+        from chainscope.analysis.impersonation import analyse
+
+        assert analyse(_transfers([(REAL_USDC, "USDC", 2)]), ETHEREUM).hypotheses == ()
