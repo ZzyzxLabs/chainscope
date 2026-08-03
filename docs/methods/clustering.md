@@ -1,7 +1,17 @@
 # Common-input-ownership clustering
 
-**Confidence produced:** `MEDIUM` (`Method.HEURISTIC`)
+**Confidence produced:** none. This analyzer states no confidence at all — it
+reports the clusters it found and leaves the judgement to the reader and to
+"When this fails" below.
 **Implemented by:** `chainscope.analysis.cluster.CoSpendClusterAnalyzer`
+
+> **On this header.** It used to name a `Confidence` *and* a `Method`. The
+> method was never true of any of these four documents: `Method` describes how
+> an `Attribution` was arrived at, and none of these analyzers writes one. They
+> emit findings and hypotheses. `tests/unit/test_method_docs_match_the_code.py`
+> now checks each claim below against the module it names, so a header that
+> stops being true fails the suite rather than misleading a reader.
+
 
 ---
 

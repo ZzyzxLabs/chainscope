@@ -62,8 +62,11 @@ jobs:
       - run: ruff check src tests
       - run: ruff format --check src tests
       - run: mypy
-      # Note the absence of --network. The suite blocks sockets at the fixture
-      # level (tests/conftest.py); this is the second line of defence.
+      # Note the absence of --network. The suite blocks sockets from the moment
+      # tests/conftest.py is imported --- before collection, so module-level
+      # code and every fixture scope are covered too. This is the second line
+      # of defence, and the reason a green run here means something: a test
+      # that quietly fell back to a live fetch would pass on a laptop.
       - run: pytest -q --tb=short
 
   # ------------------------------------------------------------------ on demand

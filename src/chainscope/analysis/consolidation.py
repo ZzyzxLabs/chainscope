@@ -63,7 +63,15 @@ class Cluster:
     transfer_count: int = 0
     label: str = ""
     category: str = ""
-    confidence: Confidence | None = None
+    label_confidence: Confidence | None = None
+    """How sure the attribution layer is that the **hub** is what it says.
+
+    Not how sure this clustering is. It was called `confidence` and emitted
+    under that name, so a consumer reading `{"fan_in": 12, "confidence":
+    "CERTAIN"}` had every reason to read it as certainty that the twelve
+    addresses form a deposit cluster --- which is the exact over-claim the whole
+    of `docs/methods/consolidation.md` is written to prevent. Structure shows
+    addresses are related; it never shows to whom, and it is never certain."""
 
     @property
     def fan_in(self) -> int:
@@ -226,7 +234,7 @@ class ConsolidationAnalyzer(Analyzer):
                 if res.found and res.entity:
                     c.label = res.entity.label
                     c.category = res.entity.category.value
-                    c.confidence = res.entity.confidence
+                    c.label_confidence = res.entity.confidence
                 if not res.reliable:
                     warnings.append(
                         f"attribution lookup for {hub} was incomplete; "
@@ -269,7 +277,19 @@ class ConsolidationAnalyzer(Analyzer):
                         "transfers": c.transfer_count,
                         "label": c.label or None,
                         "category": c.category or None,
-                        "confidence": c.confidence.name if c.confidence else None,
+                        # Named for what it is. See `Cluster.label_confidence`.
+                        "label_confidence": (
+                            c.label_confidence.name if c.label_confidence else None
+                        ),
+                        # And said outright, because the absence of a statement
+                        # about the clustering is what let the label's
+                        # confidence be read as one.
+                        "clustering": (
+                            "structural: these addresses share a next hop. "
+                            "Self-custody and shared infrastructure produce the "
+                            "same shape. This is never better than a medium-"
+                            "confidence inference on its own"
+                        ),
                     },
                     evidence=ctx.evidence(),
                 )

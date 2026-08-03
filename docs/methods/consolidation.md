@@ -1,7 +1,23 @@
 # Deposit-address consolidation
 
-**Confidence produced:** `MEDIUM` (`Method.HEURISTIC`)
 **Implemented by:** `chainscope.analysis.consolidation.ConsolidationAnalyzer`
+
+**Confidence produced:** none of its own.
+
+This header used to read *"Confidence produced: `MEDIUM` (`Method.HEURISTIC`)"*.
+It was not true: the analyzer writes no `Attribution` at all, so it produces no
+confidence and no method. What it emits is findings, and the only confidence in
+them belonged to the *hub's existing label* — under the field name `confidence`,
+on a cluster object, where it read as confidence in the cluster. That field is
+now `label_confidence`, and every finding carries a `clustering` note saying
+what the structure alone supports.
+
+> **On this header.** All four method documents named a `Method` that was never
+> true of them: `Method` describes how an `Attribution` was arrived at, and none
+> of these analyzers writes one.
+> `tests/unit/test_method_docs_match_the_code.py` now checks each claim against
+> the module it names, so a header that stops being true fails the suite rather
+> than misleading a reader.
 
 ---
 
@@ -83,13 +99,19 @@ where the search stopped.
 
 | Situation | What you may say |
 |---|---|
-| Hub has a `HIGH`-confidence label | "Funds reached *Service X*" |
+| Hub has a `HIGH`-confidence `label_confidence` | "Funds reached *Service X*" |
 | Hub is unlabelled, fan-in ≥ 3 | "These N addresses belong to one unidentified service" |
 | Fan-in is 2 | Say nothing; note it as a lead |
 | Warnings mention truncation or incompleteness | State the limit alongside the number |
 
-The analyzer never asserts attribution above `MEDIUM` from structure alone.
-Structure shows that addresses are related; it does not show *to whom*.
+The analyzer asserts no attribution at all. Structure shows that addresses are
+related; it does not show *to whom*, and the analyzer has no way to find out —
+so it reports the grouping and quotes whatever the attribution layer already
+knew about the hub, keeping the two clearly apart.
+
+`label_confidence` is about the hub's label and nothing else. A cluster with a
+`CERTAIN` hub label is a certain identification of *the hub*, not a certain
+deposit cluster: everything in "When this fails" above still applies.
 
 ## References
 

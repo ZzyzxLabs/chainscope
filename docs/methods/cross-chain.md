@@ -1,7 +1,16 @@
 # Cross-chain matching
 
-**Confidence produced:** `LOW` (`Method.INFERENCE`) — capped, never higher
+**Confidence produced:** `LOW` — capped, never higher. It is the only
+confidence the module names.
 **Implemented by:** `chainscope.analysis.xchain.CrossChainMatcher`
+
+> **On this header.** It used to name a `Confidence` *and* a `Method`. The
+> method was never true of any of these four documents: `Method` describes how
+> an `Attribution` was arrived at, and none of these analyzers writes one. They
+> emit findings and hypotheses. `tests/unit/test_method_docs_match_the_code.py`
+> now checks each claim below against the module it names, so a header that
+> stops being true fails the suite rather than misleading a reader.
+
 
 ---
 
