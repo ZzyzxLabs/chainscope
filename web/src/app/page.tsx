@@ -59,8 +59,10 @@ export default function Home() {
       <section className="band frame" id="views">
         <h2 className="section">What it shows you</h2>
         <p className="lede">
-          Eight views. Each one listed with what it is for, and with what an
-          answer from it does not settle.
+          {/* Counted, not written down. A ninth view would otherwise leave the
+              prose saying eight, and the number is the first thing read. */}
+          {VIEWS.length} views. Each one listed with what it is for, and with
+          what an answer from it does not settle.
         </p>
         <div className="grid">
           {VIEWS.map((view, i) => (

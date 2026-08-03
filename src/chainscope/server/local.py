@@ -830,7 +830,17 @@ class _Handlers:
         chain = self._chain(_first(query, "chain") or "1") or ChainId.evm(1)
 
         rows = self._transfers(address, chain)
-        found = _run_over_store(name, rows, address, chain, _first(query, "subject") or address)
+        # Everything else on the query is a candidate analyzer argument. Which
+        # of them are actually passed is decided by the analyzer's own
+        # `REQUIRES`, in `_run_over_store`.
+        extra = {
+            key: values[0]
+            for key, values in query.items()
+            if key not in {"name", "address", "chain", "subject"} and values
+        }
+        found = _run_over_store(
+            name, rows, address, chain, _first(query, "subject") or address, extra
+        )
         return {
             "analyzer": name,
             "address": address,
@@ -1349,7 +1359,12 @@ def _asset_provider(chain: ChainId) -> Any:
 
 
 def _run_over_store(
-    name: str, rows: list[Any], address: str, chain: ChainId, subject: str
+    name: str,
+    rows: list[Any],
+    address: str,
+    chain: ChainId,
+    subject: str,
+    extra: dict[str, str] | None = None,
 ) -> Any:
     """Dispatch to an analyzer that works over transfers already in the store.
 
@@ -1400,6 +1415,7 @@ def _run_over_store(
     # returning an empty result that reads as "nothing found".
     from ..cli.commands.analyze import _discover as discover
 
+    extra = extra or {}
     registered, _ = discover()
     factory = registered.get(name)
     if factory is None:
@@ -1408,7 +1424,21 @@ def _run_over_store(
     try:
         instance = factory()
         ctx = Context(chain=chain, router=None, limits={"rows": rows})  # type: ignore[arg-type]
-        return instance.run(ctx, address=address, rows=rows)
+        # What the analyzer declared it needs, taken from the request.
+        #
+        # These were collected by the page --- it renders an input per
+        # `REQUIRES` and sends them --- and then dropped here, so every
+        # analyzer with a required argument answered "linked_holders needs
+        # `addresses`" about the addresses you had just typed into the field it
+        # asked for. Seven of the fourteen on offer: common_funder,
+        # cross_chain, linked_holders, mixer, peel_chain, route, taint. Found
+        # by filling the form in a browser and pressing the button.
+        #
+        # Only the declared names are forwarded. Passing the whole query would
+        # let a URL set keyword arguments the analyzer never advertised.
+        wanted = tuple(getattr(instance, "REQUIRES", ()) or ())
+        supplied = {name: extra[name] for name in wanted if name in extra}
+        return instance.run(ctx, address=address, rows=rows, **supplied)
     except AttributeError as exc:
         # `router=None`: this handler runs analyzers over rows already in the
         # store and has no provider to give them. An analyzer that reaches for

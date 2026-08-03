@@ -14,10 +14,12 @@
  * server, against a fixed vocabulary, and refuses rather than guesses.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Spinner } from "@/components/spinner";
 import { api, type AskReply } from "@/lib/api";
+
+const FOCUSABLE = "a[href], button:not([disabled]), input, select, textarea, [tabindex]";
 
 type Props = {
   chain: string;
@@ -30,6 +32,48 @@ export function AskDialog({ chain, onClose, onRun }: Props) {
   const [plan, setPlan] = useState<AskReply | null>(null);
   const [error, setError] = useState("");
   const [reading, setReading] = useState(false);
+  const sheet = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Escape closes, Tab stays inside, and focus goes back where it was.
+   *
+   * None of these held. Escape did nothing, so the only way out was finding
+   * the close button with a mouse; Tab walked straight out of the dialog into
+   * the page behind it, which is still there and still reachable, so somebody
+   * navigating by keyboard or screen reader ends up operating a graph they
+   * were told was covered by a modal. Verified by pressing Escape with the
+   * dialog open and reading back `document.activeElement`, which was `BODY`.
+   */
+  useEffect(() => {
+    const returnTo = document.activeElement as HTMLElement | null;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !sheet.current) return;
+      const stops = [...sheet.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+        (el) => el.offsetParent !== null,
+      );
+      if (!stops.length) return;
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      const at = document.activeElement;
+      if (event.shiftKey && (at === first || !sheet.current.contains(at))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && at === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      returnTo?.focus?.();
+    };
+  }, [onClose]);
 
   async function read() {
     if (!question.trim()) return;
@@ -55,8 +99,15 @@ export function AskDialog({ chain, onClose, onRun }: Props) {
 
   return (
     <div className="scrim" onClick={onClose} role="presentation">
-      <div className="sheet" onClick={(event) => event.stopPropagation()}>
-        <h3>Ask in plain language</h3>
+      <div
+        className="sheet"
+        ref={sheet}
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ask-title"
+      >
+        <h3 id="ask-title">Ask in plain language</h3>
         <p className="note small">
           Nothing is sent anywhere. The question is read on your own machine,
           against a fixed vocabulary, and you are shown what it would run before

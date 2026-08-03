@@ -437,11 +437,18 @@ export function Graph({
         <button onClick={fit} title="fit the whole case on screen" aria-label="fit the whole case on screen">
           ⌖
         </button>
-        <button onClick={() => setView((v) => ({ ...v, zoom: Math.max(0.15, v.zoom * 0.85) }))}>
+        {/* "minus" is what a screen reader reads off a bare glyph. */}
+        <button
+          aria-label="zoom out"
+          onClick={() => setView((v) => ({ ...v, zoom: Math.max(0.15, v.zoom * 0.85) }))}
+        >
           −
         </button>
         <span className="mono">{Math.round(view.zoom * 100)}%</span>
-        <button onClick={() => setView((v) => ({ ...v, zoom: Math.min(3, v.zoom * 1.15) }))}>
+        <button
+          aria-label="zoom in"
+          onClick={() => setView((v) => ({ ...v, zoom: Math.min(3, v.zoom * 1.15) }))}
+        >
           +
         </button>
       </div>

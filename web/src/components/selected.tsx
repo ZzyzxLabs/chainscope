@@ -15,7 +15,7 @@
  * "unlabelled" the second state gets.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Spinner } from "@/components/spinner";
 import { api, boot, type ExpandReply, type ResolveReply } from "@/lib/api";
@@ -60,6 +60,9 @@ export function Selected({
   // list lived in a literal here; the server knows what is actually installed.
   const [registered, setRegistered] = useState<Registered[]>([]);
   const [result, setResult] = useState<string>("");
+  const paramsBox = useRef<HTMLDivElement | null>(null);
+  const firstParam = useRef<HTMLInputElement | null>(null);
+  const resultBox = useRef<HTMLPreElement | null>(null);
   const [params, setParams] = useState<Record<string, string>>({});
   const [open, setOpen] = useState<string | null>(null);
   const writable = boot().writable;
@@ -69,6 +72,29 @@ export function Selected({
       .then((reply) => setRegistered(reply.analyses))
       .catch(() => setRegistered([]));
   }, [chain]);
+
+  /**
+   * Bring what just appeared into view, and put the cursor in it.
+   *
+   * This panel is taller than the window, so both the parameter form and the
+   * result render below the fold: pressing an analyser that needs an argument
+   * produced a field nobody could see and a status line at the far corner of
+   * the screen, which reads exactly like a button that does nothing. Found by
+   * pressing `common_funder` and watching the page not change.
+   *
+   * `block: "nearest"` rather than `"center"`, so a result already on screen
+   * does not jump.
+   */
+  useEffect(() => {
+    if (!open) return;
+    paramsBox.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    firstParam.current?.focus();
+  }, [open]);
+
+  useEffect(() => {
+    if (!result) return;
+    resultBox.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [result]);
 
   const run = useCallback(
     async (item: Registered) => {
@@ -291,10 +317,11 @@ export function Selected({
       </div>
 
       {open ? (
-        <div className="params">
-          {(registered.find((r) => r.name === open)?.needs ?? []).map((need) => (
+        <div className="params" ref={paramsBox}>
+          {(registered.find((r) => r.name === open)?.needs ?? []).map((need, i) => (
             <input
               key={need}
+              ref={i === 0 ? firstParam : undefined}
               className="mono"
               placeholder={need}
               value={params[need] ?? ""}
@@ -327,7 +354,11 @@ export function Selected({
           the pattern.
         </p>
       ) : null}
-      {result ? <pre className="result">{result}</pre> : null}
+      {result ? (
+        <pre className="result" ref={resultBox} tabIndex={-1}>
+          {result}
+        </pre>
+      ) : null}
 
       {!writable ? (
         <p className="note small">
