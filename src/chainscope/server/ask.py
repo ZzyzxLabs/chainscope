@@ -122,7 +122,9 @@ def interpret(question: str, *, chain: str = "eip155:1", now: int = 0) -> Plan:
             continue
         plan = build(address, chain, since, match, text)
         if window_said and "since" not in plan.params:
-            unknowns.append(f"the time window ({window_said}) --- this view has no time filter")
+            unknowns.append(
+                f"the time window ({window_said}) \u2014 this view has no time filter"
+            )
         plan.unknowns = unknowns
         return plan
 

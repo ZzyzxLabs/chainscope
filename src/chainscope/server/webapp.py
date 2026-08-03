@@ -123,6 +123,9 @@ textarea {
   resize: vertical;
 }
 #addout { max-height: 180px; overflow-y: auto; font-size: 11.5px; margin-top: 6px; }
+#askout { font-size: 12px; margin: 10px 0; }
+#askout .mono { display: block; overflow-x: auto; white-space: pre-wrap;
+  word-break: break-all; background: #1d2029; padding: 6px 8px; border-radius: 4px; }
 #addout p { margin: 2px 0; }
 .noterow {
   font-size: 11.5px; border-left: 2px solid var(--line); padding: 3px 0 3px 8px;
@@ -727,6 +730,62 @@ function exportSvg() {
   URL.revokeObjectURL(link.href);
 }
 
+// The plain-language box.
+//
+// Two steps on purpose: "read it" shows the interpretation, "run it" acts on
+// it. Collapsing them into one press would hide the only part likely to be
+// wrong, and this is a tool where answering a subtly different question than
+// the one asked ends in a claim about a person.
+function wireAsk() {
+  const dlg = $("#askdlg"), out = $("#askout"), run = $("#askrun");
+  let plan = null;
+
+  $("#askbtn").addEventListener("click", () => {
+    out.innerHTML = ""; run.disabled = true; plan = null;
+    dlg.showModal(); $("#askq").focus();
+  });
+  $("#askclose").addEventListener("click", () => dlg.close());
+
+  async function read() {
+    const q = $("#askq").value.trim();
+    if (!q) return;
+    out.innerHTML = '<p class="note">reading\u2026</p>';
+    run.disabled = true; plan = null;
+    try {
+      // `now` travels with the question so a relative window becomes a fixed
+      // instant here, not on the server. The same question replays the same.
+      const now = Math.floor(Date.now() / 1000);
+      const r = await api("/ask", { q, chain: state.chain, now });
+      plan = r;
+      const ignored = (r.ignored || []).length
+        ? `<p class="note bad">Not honoured: ${r.ignored.map(esc).join("; ")}</p>` : "";
+      out.innerHTML =
+        `<p><b>Reading:</b> ${esc(r.reading)}</p>` +
+        `<p class="note mono">${esc(r.endpoint)} ${esc(JSON.stringify(r.params))}</p>` +
+        ignored +
+        `<p class="note">${esc(r.caveat)}</p>`;
+      run.disabled = false;
+    } catch (err) {
+      // The refusal text lists the vocabulary, so it is the useful part.
+      out.innerHTML = `<p class="note bad">${esc(err.message)}</p>`;
+    }
+  }
+
+  $("#askgo").addEventListener("click", read);
+  $("#askq").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); read(); }
+  });
+
+  run.addEventListener("click", async () => {
+    if (!plan) return;
+    dlg.close();
+    const addr = plan.params.address;
+    if (plan.endpoint === "/analyze") { await load(addr); runAnalysis(plan.params.name, addr); }
+    else if (addr) { $("#address").value = addr; await load(addr); }
+    else { say(plan.reading, "ok"); }
+  });
+}
+
 function wireTools() {
   $("#space").addEventListener("input", (ev) => {
     state.spacing = Number(ev.target.value);
@@ -1218,6 +1277,7 @@ window.addEventListener("resize", () => { draw(); applyView(); });
 wireViewport();
 wireAdd();
 wireTools();
+  wireAsk();
 
 const fromUrl = readUrl();
 if (fromUrl) {
@@ -1258,6 +1318,7 @@ _TEMPLATE = """<!doctype html>
     </select>
     <button type="submit">open</button>
   </form>
+  <button id="askbtn" title="ask in plain language">ask</button>
   <button id="addbtn" title="add addresses to this case">+ add</button>
   <button id="share" title="copy a link that restores this view">share</button>
   <button id="export" title="download the graph as SVG">export</button>
@@ -1299,6 +1360,17 @@ _TEMPLATE = """<!doctype html>
       button and not something a redraw does for you.</p>
   </div></aside>
 </main>
+<dialog id="askdlg">
+  <h3>Ask in plain language</h3>
+  <p class="note">Nothing is sent anywhere. The question is read here, against
+    a fixed vocabulary, and you are shown what it would run before it runs.</p>
+  <input id="askq" placeholder="who paid 0x… in the last week" spellcheck="false"
+         autocomplete="off" style="width:100%;margin:8px 0">
+  <div id="askout"></div>
+  <div class="ctl"><button id="askgo">read it</button>
+    <button id="askrun" disabled>run it</button>
+    <button id="askclose">close</button></div>
+</dialog>
 <dialog id="adddlg">
   <h3>Add to this case</h3>
   <p class="note">One per line. Each is fetched and merged into the store, so
