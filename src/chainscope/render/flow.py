@@ -77,10 +77,19 @@ def layer_nodes(graph: Graph) -> dict[str, int]:
     *in* --- and a flow view that silently omits them shows an address that only
     ever sent.
     """
-    seeds = [s.split(":", 2)[-1].lower() if ":" in s else s.lower() for s in graph.seeds]
+    # Keyed by `address_key`, matching `_node_payload`'s ids. These were
+    # `.lower()`, which on Solana, Sui or Bitcoin produced depth keys that
+    # matched no node --- so `depth.get(...)` below missed every time and the
+    # whole graph rendered in column zero, hop distance silently erased.
+    seeds = [
+        address_key(s.rsplit(":", 1)[0], s.rsplit(":", 1)[-1]) if ":" in s else s
+        for s in graph.seeds
+    ]
     outgoing: dict[str, list[str]] = defaultdict(list)
     for edge in graph.edges.values():
-        outgoing[edge.source.lower()].append(edge.target.lower())
+        outgoing[address_key(edge.chain, edge.source)].append(
+            address_key(edge.chain, edge.target)
+        )
 
     depth: dict[str, int] = {}
     queue: deque[tuple[str, int]] = deque()
@@ -127,9 +136,17 @@ def _node_payload(node: Node, depth: int, visible_depth: int) -> dict[str, Any]:
 
 
 def _edge_payload(edge: Edge) -> dict[str, Any]:
+    # `address_key`, not `.lower()`. Nodes are keyed by `address_key` a few
+    # lines up, so lowercasing here is wrong twice over: on Solana, Sui and
+    # Bitcoin it can fold two distinct addresses into one, and it produces an
+    # endpoint that matches no node id at all, so the edge attaches to nothing
+    # and the drawn topology quietly stops matching the stored one.
+    #
+    # The same mistake as the `_fold`/`_key` mismatch fixed in the resolver:
+    # a normalisation rule applied on one side of a pair and not the other.
     return {
-        "source": edge.source.lower(),
-        "target": edge.target.lower(),
+        "source": address_key(edge.chain, edge.source),
+        "target": address_key(edge.chain, edge.target),
         "asset": edge.asset or "",
         "symbol": edge.symbol or "",
         "decimals": edge.decimals,

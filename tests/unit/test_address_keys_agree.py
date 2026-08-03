@@ -246,7 +246,7 @@ class TestTheCaseFoldDoesNotSpread:
     #:
     #: They are counted rather than excused: the point of a ratchet is that the
     #: number is visible and can only fall.
-    KNOWN_UNFIXED = 8
+    KNOWN_UNFIXED = 5
 
     def _offenders(self) -> list[str]:
         import re

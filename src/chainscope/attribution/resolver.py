@@ -187,13 +187,19 @@ class Resolver:
                 failed.append((source.name, f"{type(exc).__name__}: {exc}"))
 
         for addr in pending:
-            key = _cache_key(chain, addr)
-            self._cache[key] = Resolution(
+            resolution = Resolution(
                 address=addr,
                 entity=merge(gathered.get(addr, [])),
                 consulted=tuple(consulted),
                 failed=tuple(failed),
             )
+            # Only cache a complete answer. `resolve` already refuses to cache a
+            # failed one, and caching it here defeated that: a source that was
+            # briefly unreadable would pin its own absence for the rest of the
+            # run, so every later address inherited a gap that no longer
+            # existed and nothing would retry.
+            if not failed:
+                self._cache[_cache_key(chain, addr)] = resolution
 
         return {a: self.resolve(a, chain) for a in wanted}
 
