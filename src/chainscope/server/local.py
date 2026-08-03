@@ -186,7 +186,7 @@ class _Handlers:
         # 17,000-address label dump --- was invisible to the page, which
         # therefore showed `unlabelled` for addresses the tool could name. The
         # store holds what somebody *wrote*; the sources hold what is known.
-        claims = list(self._from_sources(address, chain))
+        claims, unreachable = self._from_sources(address, chain)
         store = self._store()
         try:
             claims += [
@@ -216,36 +216,51 @@ class _Handlers:
                 }
                 for c in claims
             ],
-            "note": (
-                ""
-                if claims
-                else "Nothing recorded for this address in this store. That is "
-                "not evidence it is unlabelled elsewhere, and certainly not "
-                "that it is benign."
-            ),
+            # Named, not implied by an empty claim list. A source that could
+            # not be read produces the same empty list as an address nobody has
+            # ever labelled, and only one of those two is a finding.
+            "unreachable_sources": unreachable,
+            "reliable": not unreachable,
+            "note": _note(bool(claims), unreachable),
         }
 
-    def _from_sources(self, address: str, chain: ChainId | None) -> list[Any]:
-        """What the configured attribution sources say about an address.
+    def _from_sources(self, address: str, chain: ChainId | None) -> tuple[list[Any], list[str]]:
+        """Claims, and the sources that could not answer.
 
-        Failures are swallowed *per source* and the rest still answer: one
-        missing data file should not blank the panel. What must not happen is a
-        failure being indistinguishable from "nothing known", and it is not ---
-        `Resolution.failed` carries it, and the caller reports `reliable`.
+        Returns both, and the second is the point. A failure is swallowed *per
+        source* so one missing data file does not blank the panel --- but a
+        swallowed failure that is never reported arrives on screen as "no
+        attribution", in the same words an honest empty result uses.
+
+        This docstring used to claim the caller reported it. It did not:
+        `_claims` discarded `Resolution.failed` and nothing in the response
+        carried it. The fifth time in this codebase that prose described a
+        property the code lacked, and the same shape every time --- an absence
+        rendered as a result.
+
+        The resolver is built once. Constructing it per call rebuilt every
+        source for every node, including the contract registry's
+        quarter-million filename index: 8.7 seconds for a twenty-node graph
+        against 0.51 cached. That fix was lost when this method was rewritten
+        to use `resolver_for` and is restored here.
         """
         from ..attribution.build import resolver_for
 
-        base = self.options.store.parent.parent / "data" / "labels"
-        resolver = resolver_for(base)
-        self._resolver = resolver
-        return list(self._claims(resolver, address, chain))
+        if self._resolver is None:
+            base = self.options.store.parent.parent / "data" / "labels"
+            self._resolver = resolver_for(base)
+        return self._claims(self._resolver, address, chain)
 
     @staticmethod
-    def _claims(resolver: Any, address: str, chain: ChainId | None) -> list[Any]:
+    def _claims(
+        resolver: Any, address: str, chain: ChainId | None
+    ) -> tuple[list[Any], list[str]]:
         if not resolver.sources:
-            return []
+            return [], ["no attribution source is configured, so nothing was consulted"]
         found = resolver.resolve(address, chain)
-        return list(found.entity.all_claims) if found.entity else []
+        failed = [f"{name}: {why}" for name, why in found.failed]
+        claims = list(found.entity.all_claims) if found.entity else []
+        return claims, failed
 
     def flows(self, query: dict[str, list[str]]) -> dict[str, Any]:
         address = (_first(query, "address") or "").strip()
@@ -410,7 +425,8 @@ class _Handlers:
                 # and a page showing `unlabelled` for an address the tool can
                 # name is the gap this whole source was added to close.
                 if not node.label:
-                    for claim in self._from_sources(node.address, chain):
+                    node_claims, _ = self._from_sources(node.address, chain)
+                    for claim in node_claims:
                         from_sources[node.address] = (
                             claim.label,
                             claim.category.value,
@@ -1079,3 +1095,29 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
+
+def _note(found: bool, unreachable: list[str]) -> str:
+    """The sentence under the attribution panel.
+
+    Three states, not two. "Nothing is recorded" and "a source could not be
+    consulted" are different claims about the world, and collapsing them is the
+    failure this module is most able to cause: a missing data file becomes a
+    clean screening result phrased in the tool's own confident voice.
+    """
+    if unreachable:
+        which = "; ".join(unreachable)
+        head = (
+            "Some sources could not be consulted, so this is incomplete"
+            if found
+            else "Nothing was found, but some sources could not be consulted --- "
+            "this is not a clean result"
+        )
+        return f"{head}: {which}."
+    if found:
+        return ""
+    return (
+        "Nothing recorded for this address, and every configured source "
+        "answered. That is not evidence it is unlabelled elsewhere, and "
+        "certainly not that it is benign."
+    )

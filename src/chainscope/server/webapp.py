@@ -849,9 +849,14 @@ async function select(address) {
     const rows = [
       ["address", `<span class="mono">${esc(address)}</span>`],
       ["hop", node.depth ?? "—"],
+      // Three states. "Unlabelled" is a finding; "we could not ask" is not,
+      // and rendering both as the same grey word is how a missing data file
+      // becomes a clean screening result.
       ["label", found.claims.length
         ? esc(found.claims[0].label)
-        : '<span class="muted">none — unlabelled, not unimportant</span>'],
+        : (found.reliable === false
+            ? '<span class="bad">unknown — a source failed, see below</span>'
+            : '<span class="muted">none — unlabelled, not unimportant</span>')],
     ];
     if (found.claims.length) {
       rows.push(["category", esc(found.claims[0].category)]);
@@ -860,6 +865,11 @@ async function select(address) {
     }
     const pairs = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
     let html = `<dl class="kv">${pairs}</dl>`;
+    if (found.reliable === false) {
+      html += '<p class="note bad">Incomplete: ' +
+        (found.unreachable_sources || []).map(esc).join("; ") +
+        '. An empty result here is not a clean one.</p>';
+    }
     if (node.frontier) {
       html += '<p class="note">Frontier. Its counterparties were never fetched — ' +
               'the picture stops here because nobody looked, not because there is nothing.</p>';
