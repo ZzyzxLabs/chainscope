@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import pathlib
 import tempfile
+from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -15,6 +17,7 @@ from chainscope.core.chainid import ETHEREUM
 from chainscope.core.models import Address, Transfer, TransferKind, TxRef
 from chainscope.core.units import Amount
 from chainscope.pricing.binance import BinanceKlines
+from chainscope.providers.base import ProviderError
 from chainscope.providers.etherscan import _row_index
 from chainscope.store.sqlite import SqliteStore
 
@@ -1002,3 +1005,76 @@ class TestDataCannotAbsorbTheNextPlaceholder:
                 f"containing a placeholder is still there when the next "
                 f"replacement runs"
             )
+
+
+class TestABlockForAMomentThatHasOne:
+    """`block_at_time` exists to avoid returning a block *after* the moment.
+
+    Its own docstring says so: "it is easy to return the block after the
+    timestamp and quietly include a transaction that had not happened yet."
+    The search was seeded with `best = low` --- block 1 --- so a moment before
+    the chain existed never updated it and the function returned exactly the
+    thing it was written to prevent. Measured on Ethereum's real genesis:
+    asked for 2010-01-01, returned block 1, timestamped July 2015.
+    """
+
+    GENESIS = 1_438_269_973
+
+    def _node(self, fail_at: set[int] | None = None) -> Any:
+        from chainscope.core.models import Block
+        from chainscope.providers.jsonrpc import JsonRpcProvider
+
+        genesis, bad = self.GENESIS, fail_at or set()
+
+        class Node(JsonRpcProvider):
+            def block_number(self) -> int:
+                return 1000
+
+            def get_block(self, chain: Any, number: int) -> Block:
+                if number in bad:
+                    raise ProviderError(f"block {number} unavailable")
+                return Block(
+                    chain=chain,
+                    number=number,
+                    hash=f"0x{number:064x}",
+                    timestamp=datetime.fromtimestamp(genesis + number * 13, tz=timezone.utc),
+                )
+
+        return Node(chain=ETHEREUM, url="http://localhost", client=None)
+
+    def test_a_moment_before_the_chain_is_refused(self) -> None:
+        with pytest.raises(ProviderError, match="before the first block"):
+            self._node().block_at_time(ETHEREUM, datetime(2010, 1, 1, tzinfo=timezone.utc))
+
+    def test_the_refusal_says_why_it_is_not_block_one(self) -> None:
+        # Because the tempting fix is to return the earliest block, and that is
+        # the defect. The message has to argue against it.
+        with pytest.raises(ProviderError, match="after the one asked about"):
+            self._node().block_at_time(ETHEREUM, datetime(2010, 1, 1, tzinfo=timezone.utc))
+
+    def test_an_ordinary_moment_still_resolves(self) -> None:
+        want = datetime.fromtimestamp(self.GENESIS + 500 * 13, tz=timezone.utc)
+        assert self._node().block_at_time(ETHEREUM, want).number == 500
+
+    def test_the_block_returned_is_never_after_the_moment(self) -> None:
+        # The property, checked across the range rather than at one point.
+        node = self._node()
+        for offset in (1, 137, 4_444, 12_000):
+            want = datetime.fromtimestamp(self.GENESIS + offset, tz=timezone.utc)
+            assert node.block_at_time(ETHEREUM, want).timestamp <= want
+
+    def test_the_genesis_block_is_reachable(self) -> None:
+        # The search started at block 1, so every moment between genesis and
+        # the first block came back as "before the chain existed". Found by
+        # the property test above, not by reading the code.
+        want = datetime.fromtimestamp(self.GENESIS + 1, tz=timezone.utc)
+        assert self._node().block_at_time(ETHEREUM, want).number == 0
+
+    def test_a_read_failure_is_raised_not_treated_as_too_late(self) -> None:
+        # `except ProviderError: high = mid - 1` read a transient failure as
+        # evidence that mid was past the target and kept searching downward. A
+        # flaky endpoint then produced a wrong block instead of an error --- and
+        # here the block *is* the entire answer.
+        want = datetime.fromtimestamp(self.GENESIS + 500 * 13, tz=timezone.utc)
+        with pytest.raises(ProviderError, match="unavailable"):
+            self._node(fail_at={500}).block_at_time(ETHEREUM, want)

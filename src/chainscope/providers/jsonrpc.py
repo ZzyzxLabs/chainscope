@@ -296,20 +296,35 @@ class JsonRpcProvider(ReadOnlyProvider):
         if when.tzinfo is None:
             raise ValueError("timestamp must be timezone-aware")
         target = int(when.timestamp())
-        low, high = 1, self.block_number()
-        best = low
+        # From 0, not 1. The genesis block is a block, and starting at 1 made
+        # every moment between genesis and the first block unanswerable ---
+        # reported as "before the chain existed" when the chain plainly did.
+        low, high = 0, self.block_number()
+        # `None`, not 1. Seeded with the lowest block, a timestamp *before* the
+        # chain existed never updated it and the search returned block 1 ---
+        # timestamped after the moment asked about, which is precisely the
+        # failure this docstring says it exists to prevent. Measured: asking
+        # for 2010-01-01 on Ethereum returned block 1, July 2015.
+        best: int | None = None
         while low <= high:
             mid = (low + high) // 2
-            try:
-                block = self.get_block(chain, mid)
-            except ProviderError:
-                high = mid - 1
-                continue
+            # A provider failure is not evidence about which half to search.
+            # Treating it as "mid is too late" silently biased the search
+            # downward, so a flaky endpoint produced a wrong block rather than
+            # an error --- and the wrong block here is the whole answer.
+            block = self.get_block(chain, mid)
             if int(block.timestamp.timestamp()) <= target:
                 best = mid
                 low = mid + 1
             else:
                 high = mid - 1
+        if best is None:
+            raise ProviderError(
+                f"{when.isoformat()} is before the first block on {chain}. "
+                f"There is no state as of that moment, and returning the "
+                f"earliest block would answer with a time after the one asked "
+                f"about."
+            )
         return self.get_block(chain, best)
 
 

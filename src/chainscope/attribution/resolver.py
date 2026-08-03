@@ -134,7 +134,16 @@ class Resolver:
             consulted=tuple(consulted),
             failed=tuple(failed),
         )
-        self._cache[key] = res
+        # Only a complete resolution is cached. A source that failed --- a
+        # rate limit, a file being rewritten, a network blip --- would otherwise
+        # have its failure remembered for the rest of the run: every later
+        # lookup of that address returns the same partial answer, and the
+        # `failed` list is the only sign, in a field most callers read once.
+        #
+        # Re-consulting costs a repeat lookup. Serving a partial answer as
+        # though it were settled costs an address that looks unlabelled.
+        if not failed:
+            self._cache[key] = res
         return res
 
     def resolve_many(
