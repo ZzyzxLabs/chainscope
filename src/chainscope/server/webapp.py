@@ -81,9 +81,17 @@ h2:first-child { margin-top: 0; }
 #canvas { position: relative; min-width: 0; }
 svg { width: 100%; height: 100%; display: block; cursor: grab; }
 svg:active { cursor: grabbing; }
-#canvas { overflow: auto; background:
+#canvas { position: relative; overflow: hidden; touch-action: none; background:
   radial-gradient(circle at 1px 1px, #1b1e27 1px, transparent 0) 0 0/26px 26px; }
-svg { display: block; }
+svg { display: block; width: 100%; height: 100%; cursor: grab; }
+#canvas:active svg { cursor: grabbing; }
+#zoombar {
+  position: absolute; right: 14px; bottom: 14px; display: flex; gap: 4px;
+  align-items: center; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px 6px; font-size: 12px;
+}
+#zoombar button { padding: 2px 8px; border-radius: 5px; }
+#zoom { color: var(--muted); min-width: 44px; text-align: center; }
 .card rect { fill: #22252f; stroke: #333846; stroke-width: 1px; cursor: pointer; }
 .card:hover rect { stroke: #47506a; }
 .card.on rect { stroke: var(--warn); stroke-width: 2px; }
@@ -149,6 +157,8 @@ label.asset input { margin: 0; accent-color: var(--accent); }
 .row + .sub { color: var(--muted); font-size: 10.5px; margin-top: -3px; }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .actions button { font-size: 12px; padding: 4px 9px; }
+.actions select { font-size: 12px; padding: 4px 6px; flex: 1; }
+aside.right input { width: 100%; margin: 4px 0; font-size: 12px; }
 #out { white-space: pre-wrap; font-size: 11.5px; margin-top: 8px; }
 #status { padding: 6px 16px; border-top: 1px solid var(--line); background: var(--panel);
           font-size: 11.5px; color: var(--muted); flex: none; }
@@ -162,6 +172,9 @@ const state = {
   // whose edges are mostly a forger's own log entries is not the case --- but
   // they are switched off *visibly*, with a count, never dropped.
   hidden: new Set(),
+  // Viewport. A fixed picture is fine for a screenshot and useless for a case
+  // that does not fit one --- which is every case past about twenty addresses.
+  view: { x: 0, y: 0, k: 1 },
 };
 
 function short(a) { return a.length > 16 ? a.slice(0, 8) + "…" + a.slice(-6) : a; }
@@ -187,6 +200,18 @@ function human(raw, decimals) {
   }
   return (neg ? "-" : "") + whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",") +
          (frac ? "." + frac : "");
+}
+
+async function post(path, body) {
+  const reply = await fetch(new URL(path, location.origin), {
+    method: "POST",
+    headers: { "content-type": "application/json",
+               authorization: "Bearer " + TOKEN },
+    body: JSON.stringify(body),
+  });
+  const found = await reply.json().catch(() => ({}));
+  if (!reply.ok) throw new Error(found.error || `HTTP ${reply.status}`);
+  return found;
 }
 
 function say(text, kind) {
@@ -345,7 +370,8 @@ function draw() {
       `</g>`);
   });
 
-  svg.innerHTML = parts.join("");
+  svg.innerHTML = `<g id="vp" transform="translate(${state.view.x},${state.view.y})` +
+    ` scale(${state.view.k})">${parts.join("")}</g>`;
   svg.querySelectorAll(".card").forEach((g) =>
     g.addEventListener("click", (ev) => {
       if (ev.target.closest(".handle")) return;
@@ -372,6 +398,72 @@ const VERDICT_NOTE = {
   "unknown-script": "built from characters outside ASCII",
   unlisted: "no canonical entry --- says nothing either way",
 };
+
+function applyView() {
+  const vp = document.getElementById("vp");
+  if (vp) {
+    vp.setAttribute("transform",
+      `translate(${state.view.x},${state.view.y}) scale(${state.view.k})`);
+  }
+  $("#zoom").textContent = Math.round(state.view.k * 100) + "%";
+}
+
+function zoomBy(factor, cx, cy) {
+  // Around the cursor, not the origin. Zooming to a corner makes the reader
+  // chase the thing they were looking at, which is most of what makes a graph
+  // tool feel broken.
+  const k = Math.min(4, Math.max(0.15, state.view.k * factor));
+  const box = $("#canvas").getBoundingClientRect();
+  const px = (cx ?? box.width / 2) - box.left;
+  const py = (cy ?? box.height / 2) - box.top;
+  state.view.x = px - ((px - state.view.x) * k) / state.view.k;
+  state.view.y = py - ((py - state.view.y) * k) / state.view.k;
+  state.view.k = k;
+  applyView();
+}
+
+function fit() {
+  const graph = state.graph;
+  if (!graph || !graph.nodes.length) return;
+  const size = layout(graph);
+  const box = $("#canvas").getBoundingClientRect();
+  const k = Math.min(1, Math.min(box.width / (size.width + 60),
+                                 box.height / (size.height + 60)));
+  state.view = {
+    k,
+    x: (box.width - size.width * k) / 2,
+    y: (box.height - size.height * k) / 2,
+  };
+  applyView();
+}
+
+function wireViewport() {
+  const canvas = $("#canvas");
+  canvas.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    zoomBy(ev.deltaY < 0 ? 1.12 : 1 / 1.12, ev.clientX, ev.clientY);
+  }, { passive: false });
+
+  let dragging = null;
+  canvas.addEventListener("pointerdown", (ev) => {
+    // Only on empty canvas --- dragging from a card would fight the click that
+    // selects it.
+    if (ev.target.closest(".card")) return;
+    dragging = { x: ev.clientX - state.view.x, y: ev.clientY - state.view.y };
+    canvas.setPointerCapture(ev.pointerId);
+  });
+  canvas.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    state.view.x = ev.clientX - dragging.x;
+    state.view.y = ev.clientY - dragging.y;
+    applyView();
+  });
+  canvas.addEventListener("pointerup", () => { dragging = null; });
+
+  $("#zin").addEventListener("click", () => zoomBy(1.2));
+  $("#zout").addEventListener("click", () => zoomBy(1 / 1.2));
+  $("#zfit").addEventListener("click", fit);
+}
 
 function assets() {
   const rows = (state.graph && state.graph.assets) || [];
@@ -461,12 +553,60 @@ async function select(address) {
       html += '<p class="note">Frontier. Its counterparties were never fetched — ' +
               'the picture stops here because nobody looked, not because there is nothing.</p>';
     }
-    html += '<h2>run on this address</h2><div class="actions">' +
+    // Labelling is the point of the tool, and it lived only in the CLI. The
+    // form states what the store will record rather than only what was typed:
+    // a claim carries a source and a confidence whether or not the person
+    // filling it in thinks about them, so it should say which.
+    html += '<h2>label it</h2>' +
+      `<input id="lab" placeholder="what this address is" value="${
+        esc(found.claims.length ? found.claims[0].label : "")}">` +
+      '<div class="actions">' +
+      '<select id="cat">' +
+      ["service", "cex", "dex", "bridge", "mixer", "scam", "illicit",
+       "sanctioned", "contract", "token", "suspect", "unknown"]
+        .map((c) => `<option>${c}</option>`).join("") +
+      '</select>' +
+      '<select id="conf">' +
+      ["medium", "high", "low", "certain", "speculative"]
+        .map((c) => `<option>${c}</option>`).join("") +
+      '</select>' +
+      '<button id="save">record</button></div>' +
+      '<input id="why" placeholder="why — required below medium">' +
+      '<p class="note">Recorded with this browser named as the source. A claim ' +
+      'that picks its own provenance is worse than one carrying none, so the ' +
+      'store will always say a browser wrote it.</p>' +
+      '<h2>run on this address</h2><div class="actions">' +
       ["impersonation", "poisoning", "contributors"].map((a) =>
         `<button data-run="${a}">${a}</button>`).join("") + "</div><div id='out'></div>";
     panel.innerHTML = html;
     panel.querySelectorAll("[data-run]").forEach((b) =>
       b.addEventListener("click", () => runAnalysis(b.dataset.run, address)));
+    const save = $("#save");
+    if (save) {
+      save.addEventListener("click", async () => {
+        const label = $("#lab").value.trim();
+        if (!label) { say("a label needs text", "bad"); return; }
+        save.disabled = true;
+        try {
+          await post("/tag", {
+            address,
+            label,
+            category: $("#cat").value,
+            confidence: $("#conf").value,
+            rationale: $("#why").value.trim(),
+            chain: state.chain,
+          });
+          say(`recorded "${label}" for ${short(address)}`);
+          // Redraw: the label belongs on the card, and seeing it appear there
+          // is the confirmation that it was written.
+          await load(state.graph.seed);
+        } catch (err) {
+          say(err.message, "bad");
+        } finally {
+          save.disabled = false;
+        }
+      });
+    }
   } catch (err) {
     panel.innerHTML = `<p class="bad">${esc(err.message)}</p>`;
   }
@@ -510,7 +650,7 @@ async function load(address) {
       (graph.assets || [])
         .filter((a) => ["forged", "lookalike", "unknown-script"].includes(a.verdict))
         .map((a) => a.asset));
-    draw(); roster(); assets(); select(graph.seed); count();
+    draw(); roster(); assets(); select(graph.seed); count(); fit();
     const bits = [`${graph.nodes.length} addresses`, `${graph.edges.length} flows`];
     // Said, not hidden. The page reads the store; when it had to go to a
     // provider to fill it, that is a fact about where the picture came from.
@@ -535,7 +675,8 @@ $("#find").addEventListener("submit", (e) => {
   const address = $("#address").value.trim();
   if (address) load(address);
 });
-window.addEventListener("resize", draw);
+window.addEventListener("resize", () => { draw(); applyView(); });
+wireViewport();
 
 api("/health").then((h) => {
   say(`${h.transfers ?? 0} transfers in ${h.store || "the store"} · ` +
@@ -574,7 +715,13 @@ _TEMPLATE = """<!doctype html>
     <h2>assets</h2><div id="assets"></div>
     <h2>addresses in view</h2><div class="roster" id="roster"></div>
   </aside>
-  <div id="canvas"><svg id="g"></svg></div>
+  <div id="canvas"><svg id="g"></svg>
+    <div id="zoombar">
+      <button id="zfit" title="fit to the case">⌖</button>
+      <button id="zout">&minus;</button><span id="zoom">100%</span>
+      <button id="zin">+</button>
+    </div>
+  </div>
   <aside class="right"><h2>selected</h2><div id="detail">
     <p class="muted">Enter an address that is already in the case.</p>
     <p class="note">This page reads the store. It never fetches from a chain &mdash;
