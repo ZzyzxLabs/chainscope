@@ -171,6 +171,8 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 # Same reason: its fixtures are three real counterfeit tickers from the LpdFi
 # case, in the docstring that explains them and in the table that tests them.
 "tests/unit/test_invisible_characters_in_a_ticker.py" = ["RUF001", "RUF002"]
+# Its fixture is a counterfeit ticker from the same case, in code.
+"tests/unit/test_the_trail_folds_noise_without_deleting_it.py" = ["RUF001"]
 
 
 [tool.mypy]
