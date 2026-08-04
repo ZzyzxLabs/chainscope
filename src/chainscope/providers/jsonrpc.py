@@ -68,6 +68,16 @@ TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523
 _SPAN_START = 5_000
 _SPAN_FLOOR = 500
 
+#: How wide a chunk may grow once the endpoint has proved it can take it.
+#:
+#: Starting narrow and widening on *success* costs nothing when it fails to
+#: widen, where starting wide and narrowing on failure costs a failed request
+#: per step --- and a failed request that is a timeout is indistinguishable
+#: from an unwell host, which is what opened the circuit breaker mid-fetch.
+#: So the first chunk is cheap and cautious and the rest ride on what it
+#: learned.
+_SPAN_CEILING = 40_000
+
 #: How far back a scan reaches when the caller does not say.
 #:
 #: Not genesis. A full-history scan is hundreds of thousands of requests, and
@@ -75,16 +85,20 @@ _SPAN_FLOOR = 500
 #: do quietly. The window is stated in the truncation message whenever it does
 #: not reach the requested start, so a short answer is never mistaken for a
 #: complete one.
-#: Roughly a day and a half of BSC, and a few days of a slower chain.
+#: How far back a scan reaches when the caller does not say.
 #:
-#: Halved from 400,000 after measuring what it costs: at 5,000 blocks a
-#: request and four in flight, 400,000 blocks in both directions is 160 round
-#: trips and several minutes of somebody watching a spinner. The window is
-#: named in the `ResultTruncated` message whenever it does not reach the
-#: requested start, so a short answer still says how short --- which is the
-#: part that matters. Somebody who needs deeper history passes `start_block`
-#: and accepts the wait deliberately.
-_DEFAULT_WINDOW = 120_000
+#: Briefly 120,000, which was a mistake made while chasing timeouts: the
+#: address it was being tested against had its whole history 300,000 blocks
+#: back, so the shallower window returned three address-poisoning dust
+#: transfers and none of the case. It said so --- `capped`, with the range ---
+#: which is the difference between a wrong answer and a short one, but short
+#: was still useless. The span now widens on success instead, so the deeper
+#: window costs round trips rather than minutes.
+#:
+#: Still not genesis. A full-history scan is hundreds of thousands of
+#: requests, and the window is named in the `ResultTruncated` message whenever
+#: it does not reach the requested start.
+_DEFAULT_WINDOW = 400_000
 
 #: Chunks in flight at once. Small on purpose --- see `_scan`.
 _SCAN_WORKERS = 4
@@ -144,10 +158,26 @@ class JsonRpcProvider(ReadOnlyProvider):
         #: Token contract to (symbol, decimals). Per instance, so a scan asks
         #: each contract once however many transfers it produced.
         self._meta: dict[str, tuple[str, int]] = {}
+        #: Block span this endpoint has proved it will serve. Starts cautious,
+        #: doubles on success, halves on refusal. Shared across the chunks of a
+        #: scan so the limit is discovered once rather than per chunk.
+        self._span = _SPAN_START
+        #: Widest span this endpoint has been *seen to refuse*, minus room.
+        #:
+        #: Without it, widening undoes narrowing: succeed at 1,250, double to
+        #: 2,500, get refused, halve to 1,250, succeed, double again --- a
+        #: wasted failed request every other round, for ever. A refusal is
+        #: information about the endpoint's limit and has to be remembered as
+        #: such, not just reacted to.
+        self._span_cap = _SPAN_CEILING
 
     @classmethod
     def from_settings(cls, settings: Any, chain: ChainId, client: Any = None) -> list[Provider]:
-        """The configured endpoint for this chain, if there is one.
+        """The configured endpoints for this chain, in preference order.
+
+        ``CHAINSCOPE_RPC_<NAME>`` accepts a comma-separated list. One endpoint
+        was the original design and it made a single flaky public node a single
+        point of failure for a whole chain.
 
         Endpoints are keyed by short name (``CHAINSCOPE_RPC_ETHEREUM``), so the
         lookup goes through the alias table rather than CAIP-2 --- a user types
@@ -171,17 +201,36 @@ class JsonRpcProvider(ReadOnlyProvider):
             return []
         names = [n for n, c in ALIASES.items() if c == chain]
         for name in sorted(names, key=len, reverse=True):
-            url = settings.rpc.get(name)
-            if url:
-                return [
-                    cls(
-                        url,
-                        chain,
-                        client=client,
-                        native_symbol=native_symbol(chain, "ETH"),
-                        archive=settings.rpc_archive.get(name, False),
-                    )
-                ]
+            configured = settings.rpc.get(name)
+            if not configured:
+                continue
+            # Comma-separated, and each one becomes its own provider.
+            #
+            # A single endpoint per chain means one flaky free public node is
+            # the difference between the tool working and not working at all.
+            # Measured while chasing exactly that: of eleven public BSC
+            # endpoints, one served `eth_getLogs` over 5,000 blocks, five
+            # capped at a smaller range, two refused the method, two returned
+            # 401/403 and one was gone --- and the one that worked timed out
+            # under load an hour later, which took the whole capability down
+            # because there was nothing behind it.
+            #
+            # The router already falls over between providers and the circuit
+            # breaker already skips an unwell host. Neither could help while
+            # there was only ever one. Order is preference order: the first is
+            # tried first, and the rest exist for when it is not answering.
+            urls = [u.strip() for u in str(configured).split(",") if u.strip()]
+            archive = settings.rpc_archive.get(name, False)
+            return [
+                cls(
+                    url,
+                    chain,
+                    client=client,
+                    native_symbol=native_symbol(chain, "ETH"),
+                    archive=archive,
+                )
+                for url in urls
+            ]
         return []
 
     @property
@@ -417,14 +466,21 @@ class JsonRpcProvider(ReadOnlyProvider):
         # The cap is on the total because that is what the endpoint sees.
         order = sorted(ways)
         with ThreadPoolExecutor(max_workers=_SCAN_WORKERS) as pool:
-            plans = [
-                (way, lo_, min(lo_ + _SPAN_START - 1, hi))
-                for way in order
-                for lo_ in range(lo, hi + 1, _SPAN_START)
-            ]
+            # Chunked at the ceiling and let `_chunk` narrow to whatever the
+            # endpoint will actually take. Planning at `_SPAN_START` instead
+            # would fix the request count at the cautious width and never
+            # benefit from an endpoint that turns out to be generous.
+            plans = [(way, lo_) for way in order for lo_ in range(lo, hi + 1, _SPAN_CEILING)]
             jobs = [
-                pool.submit(self._chunk, chain, lo_, hi_, topics_for(way), contract)
-                for way, lo_, hi_ in plans
+                pool.submit(
+                    self._chunk,
+                    chain,
+                    lo_,
+                    min(lo_ + _SPAN_CEILING - 1, hi),
+                    topics_for(way),
+                    contract,
+                )
+                for way, lo_ in plans
             ]
             found = [job.result() for job in jobs]
 
@@ -467,7 +523,13 @@ class JsonRpcProvider(ReadOnlyProvider):
         topics: list[Any],
         contract: str | None,
     ) -> list[dict[str, Any]]:
-        """One block range, narrowing itself until the endpoint accepts it.
+        """One block range, covered in whatever width the endpoint will take.
+
+        **Covers the whole range it was given.** An earlier version fetched a
+        single `span`-wide request and returned, silently dropping the rest of
+        its assignment --- a gap in the middle of a scan that nothing
+        downstream could have detected, since fewer logs is exactly what an
+        address with less activity looks like.
 
         Endpoints cap `eth_getLogs` by range, by result count, or by wall
         clock, and report each differently --- measured against four BSC nodes,
@@ -480,20 +542,38 @@ class JsonRpcProvider(ReadOnlyProvider):
         both directions: a pool here as well as there multiplied the
         concurrency and tripped the circuit breaker on a healthy node.
         """
-        span = hi - lo + 1
-        while True:
+        out: list[dict[str, Any]] = []
+        at = lo
+        while at <= hi:
+            # Re-read each time round: another chunk running concurrently may
+            # have already learned that this endpoint is more or less generous
+            # than we thought.
+            span = max(_SPAN_FLOOR, min(self._span, hi - at + 1))
             try:
-                return self.get_logs(
-                    chain,
-                    address=contract,
-                    topics=topics,
-                    from_block=lo,
-                    to_block=min(lo + span - 1, hi),
+                out.extend(
+                    self.get_logs(
+                        chain,
+                        address=contract,
+                        topics=topics,
+                        from_block=at,
+                        to_block=min(at + span - 1, hi),
+                    )
                 )
             except ProviderError:
                 if span <= _SPAN_FLOOR:
                     raise
-                span = max(_SPAN_FLOOR, span // 2)
+                # Narrower for everyone from here on. Rediscovering the same
+                # limit on every chunk is what made narrowing expensive.
+                narrower = max(_SPAN_FLOOR, span // 2)
+                self._span_cap = min(self._span_cap, narrower)
+                self._span = narrower
+                continue
+            at += span
+            # It worked, so try more next time. Doubling rather than jumping
+            # to the ceiling, so an endpoint that is merely slow gets to refuse
+            # once rather than being asked for eight times what it just served.
+            self._span = min(self._span_cap, max(self._span, span * 2))
+        return out
 
     def _token_meta(self, token: str) -> tuple[str, int]:
         """``(symbol, decimals)`` for a token contract, asked once each.
