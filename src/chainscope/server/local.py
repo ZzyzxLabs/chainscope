@@ -1203,8 +1203,17 @@ def _sift(
 
 def _fetch_page(
     provider: Any, chain: ChainId, address: str, page: int
-) -> tuple[list[Any], bool]:
+) -> tuple[list[Any], bool, bool]:
     """One page. Returns ``(rows, ended)`` and never raises for an empty listing.
+
+    Returns ``(rows, ended, short_window)``.
+
+    ``short_window`` is the third value because the second cannot carry it. A
+    pager treats a short page as the end of the data, which is right --- and a
+    short *window* is not that. A log-scanning provider reading the last
+    120,000 blocks of a million-block history returns three rows, three is
+    fewer than a page, and the pager concluded the read was complete. It was
+    complete of the window and silent about the rest.
 
     ``ended`` means the provider said there is nothing beyond here --- which
     Blockscout reports as an error rather than an empty list, so the check has
@@ -1242,21 +1251,22 @@ def _fetch_page(
             provider.asset_transfers(chain, address, direction="all", limit=1000, page=page)
         )
         note("ok" if rows else "empty", len(rows))
-        return rows, False
+        return rows, False, False
     except ResultTruncated as exc:
         # A full page is the expected outcome when paging, not a failure. The
         # signal still means "there is more", which is what the loop is for;
         # the rows it carries are this page.
         carried = list(exc.rows)
-        note("more", len(carried))
-        return carried, False
+        short = getattr(exc, "window_short", False)
+        note("capped" if short else "more", len(carried), str(exc) if short else "")
+        return carried, False, short
     except ProviderError as exc:
         if "not found" in str(exc).lower() or "no token transfers" in str(exc).lower():
             # The provider answered. "Nothing here" is a result, not a failure,
             # and recording it as one would put a red row against every address
             # that simply has no history.
             note("empty", 0, str(exc))
-            return [], True
+            return [], True, False
         # A paging ceiling is not a fault. Blockscout stops at ten thousand
         # rows and raises to say so; what came back is real and there is more
         # it will not serve, which is a truncated answer rather than a broken
@@ -1331,7 +1341,7 @@ def _fetch_into(
     refused: Exception | None = None
     for candidate in providers:
         try:
-            first, ended = _fetch_page(candidate, chain, address, 1)
+            first, ended, short = _fetch_page(candidate, chain, address, 1)
             provider = candidate
             break
         except ProviderError as exc:
@@ -1339,7 +1349,11 @@ def _fetch_into(
     if provider is None:
         raise refused if refused else ValueError(f"no transfer source for {chain}")
     fresh = absorb(first)
-    if ended or len(first) < 1000 or fresh == 0:
+    # `short` wins over every other signal: the window did not reach the range
+    # that was asked for, so nothing about this page says the read is done.
+    if short:
+        complete = False
+    elif ended or len(first) < 1000 or fresh == 0:
         complete = True
     else:
         page = 2
@@ -1360,8 +1374,11 @@ def _fetch_into(
                 # rows land in the same sequence a serial read would produce
                 # and `seen` resolves duplicates the same way every run.
                 for n in window:
-                    batch, page_ended = jobs[n].result()
+                    batch, page_ended, page_short = jobs[n].result()
                     fresh = absorb(batch)
+                    if page_short:
+                        complete = False
+                        break
                     if page_ended or len(batch) < 1000 or fresh == 0:
                         # A short page is the end. Zero *new* rows on a full
                         # page means the provider ignored `page` and served the

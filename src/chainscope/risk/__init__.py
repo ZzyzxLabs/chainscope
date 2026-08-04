@@ -8,6 +8,7 @@ records --- and none of the three is allowed to collapse into a score.
 from .agreement import Agreement, ModelOutcome, compare_taint_models
 from .decision import Action, Counterfactual, Decision, DecisionError
 from .exposure import Directness, Exposure, ExposureError, Screen, Signal, StopReason
+from .policy import Match, Policy, PolicyError, Rule, When
 
 __all__ = [
     "Action",
@@ -18,9 +19,14 @@ __all__ = [
     "Directness",
     "Exposure",
     "ExposureError",
+    "Match",
     "ModelOutcome",
+    "Policy",
+    "PolicyError",
+    "Rule",
     "Screen",
     "Signal",
     "StopReason",
+    "When",
     "compare_taint_models",
 ]

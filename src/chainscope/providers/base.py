@@ -60,9 +60,26 @@ class ResultTruncated(ProviderError):
     is that completing the set is now possible without another round trip.
     """
 
-    def __init__(self, message: str, rows: list[Any] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        rows: list[Any] | None = None,
+        *,
+        window_short: bool = False,
+    ) -> None:
         super().__init__(message)
         self.rows = rows or []
+        self.window_short = window_short
+        """Whether the *range asked for* was not covered, as opposed to a full
+        page with more behind it.
+
+        The two need separating because a pager treats a short page as the end
+        of the data --- correctly --- and a short *window* is not that. A
+        log-scanning provider that reads the last 120,000 blocks of a
+        million-block history returns three rows, and three is fewer than a
+        page, so the pager concluded the read was complete. It was complete of
+        the window and silent about the rest, which is the one thing this
+        package exists to refuse."""
 
 
 class Capability(Flag):

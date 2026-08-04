@@ -56,7 +56,16 @@ TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523
 #: than carry a table of per-host limits that goes stale, the scan starts wide
 #: and halves on refusal --- measured against four BSC endpoints, the working
 #: span ranged from 1,000 to over 20,000 blocks for the same query.
-_SPAN_START = 20_000
+#: Start conservative and stay there, rather than starting wide and narrowing.
+#:
+#: Narrowing costs a *failure* per step, and a failure that is a timeout is
+#: indistinguishable from an unwell host --- so four concurrent chunks each
+#: halving once spent the circuit breaker's five lives before converging, and
+#: the fetch died reporting "circuit open" about a node that was answering.
+#: Measured against one BSC endpoint on two different days: 20,000 blocks
+#: returned in 7s and later timed out at 30s, while 5,000 held at ~10s
+#: throughout. The wide value is only faster when it works.
+_SPAN_START = 5_000
 _SPAN_FLOOR = 500
 
 #: How far back a scan reaches when the caller does not say.
@@ -66,7 +75,16 @@ _SPAN_FLOOR = 500
 #: do quietly. The window is stated in the truncation message whenever it does
 #: not reach the requested start, so a short answer is never mistaken for a
 #: complete one.
-_DEFAULT_WINDOW = 400_000
+#: Roughly a day and a half of BSC, and a few days of a slower chain.
+#:
+#: Halved from 400,000 after measuring what it costs: at 5,000 blocks a
+#: request and four in flight, 400,000 blocks in both directions is 160 round
+#: trips and several minutes of somebody watching a spinner. The window is
+#: named in the `ResultTruncated` message whenever it does not reach the
+#: requested start, so a short answer still says how short --- which is the
+#: part that matters. Somebody who needs deeper history passes `start_block`
+#: and accepts the wait deliberately.
+_DEFAULT_WINDOW = 120_000
 
 #: Chunks in flight at once. Small on purpose --- see `_scan`.
 _SCAN_WORKERS = 4
@@ -387,11 +405,28 @@ class JsonRpcProvider(ReadOnlyProvider):
             topics[1 if way == "out" else 2] = padded
             return topics
 
+        # One pool for both directions, not one each.
+        #
+        # Nesting them multiplied the concurrency: `_scan` already runs
+        # `_SCAN_WORKERS` chunks at a time, so a pool per direction put eight
+        # requests in flight against a free public endpoint. It timed out, the
+        # timeouts counted as host failures, and the circuit breaker opened
+        # mid-fetch --- which the page reported as "circuit open" about a node
+        # that had been answering a moment earlier.
+        #
+        # The cap is on the total because that is what the endpoint sees.
         order = sorted(ways)
-        with ThreadPoolExecutor(max_workers=len(order)) as pool:
-            found = list(
-                pool.map(lambda w: self._scan(chain, lo, hi, topics_for(w), contract), order)
-            )
+        with ThreadPoolExecutor(max_workers=_SCAN_WORKERS) as pool:
+            plans = [
+                (way, lo_, min(lo_ + _SPAN_START - 1, hi))
+                for way in order
+                for lo_ in range(lo, hi + 1, _SPAN_START)
+            ]
+            jobs = [
+                pool.submit(self._chunk, chain, lo_, hi_, topics_for(way), contract)
+                for way, lo_, hi_ in plans
+            ]
+            found = [job.result() for job in jobs]
 
         for logs in found:
             for log in logs:
@@ -413,6 +448,7 @@ class JsonRpcProvider(ReadOnlyProvider):
                 f"Native and internal transfers are never included: they emit "
                 f"no log.",
                 rows=window,
+                window_short=True,
             )
         if len(window) == limit and len(rows) > page * limit:
             raise ResultTruncated(
@@ -423,7 +459,7 @@ class JsonRpcProvider(ReadOnlyProvider):
     def _head(self) -> int:
         return _hexint(self._call("eth_blockNumber", [], Volatility.LIVE))
 
-    def _scan(
+    def _chunk(
         self,
         chain: ChainId,
         lo: int,
@@ -431,49 +467,33 @@ class JsonRpcProvider(ReadOnlyProvider):
         topics: list[Any],
         contract: str | None,
     ) -> list[dict[str, Any]]:
-        """`eth_getLogs` over a range, halving the span whenever it is refused.
+        """One block range, narrowing itself until the endpoint accepts it.
 
-        Endpoints cap this by range, by result count, or by wall clock, and
-        report each differently. Halving on any refusal converges on whatever
-        the limit actually is without a table of per-host rules to maintain,
-        and the floor stops a genuinely broken endpoint from turning one query
-        into thousands.
+        Endpoints cap `eth_getLogs` by range, by result count, or by wall
+        clock, and report each differently --- measured against four BSC nodes,
+        the workable span ran from 10 blocks to over 20,000 for the same query.
+        Halving on any refusal converges on whatever the limit actually is
+        without a table of per-host rules to maintain, and the floor stops a
+        genuinely broken endpoint from turning one query into thousands.
+
+        The fan-out lives in `asset_transfers`, which holds a single pool for
+        both directions: a pool here as well as there multiplied the
+        concurrency and tripped the circuit breaker on a healthy node.
         """
-
-        def one(lo_: int, hi_: int, span: int) -> list[dict[str, Any]]:
-            """One chunk, narrowing itself until the endpoint accepts it."""
-            while True:
-                try:
-                    return self.get_logs(
-                        chain,
-                        address=contract,
-                        topics=topics,
-                        from_block=lo_,
-                        to_block=min(lo_ + span - 1, hi_),
-                    )
-                except ProviderError:
-                    if span <= _SPAN_FLOOR:
-                        raise
-                    span = max(_SPAN_FLOOR, span // 2)
-
-        # Concurrent, because the wall clock here is round trips and not work.
-        # Sequentially this was twenty requests of about seven seconds for a
-        # 400,000-block window --- three minutes staring at a spinner, which is
-        # what a reader reported as "it does not fetch". `_fetch_into` already
-        # overlaps its pages; this is the same reasoning one layer down.
-        #
-        # The cap is deliberately small. These are other people's free public
-        # endpoints, and the difference between four in flight and forty is
-        # measured entirely in how quickly they start refusing.
-        edges = list(range(lo, hi + 1, _SPAN_START))
-        out: list[dict[str, Any]] = []
-        with ThreadPoolExecutor(max_workers=min(_SCAN_WORKERS, len(edges) or 1)) as pool:
-            jobs = [pool.submit(one, start, hi, _SPAN_START) for start in edges]
-            # Absorbed in range order regardless of completion order, so the
-            # rows land in the sequence a serial scan would have produced.
-            for job in jobs:
-                out.extend(job.result())
-        return out
+        span = hi - lo + 1
+        while True:
+            try:
+                return self.get_logs(
+                    chain,
+                    address=contract,
+                    topics=topics,
+                    from_block=lo,
+                    to_block=min(lo + span - 1, hi),
+                )
+            except ProviderError:
+                if span <= _SPAN_FLOOR:
+                    raise
+                span = max(_SPAN_FLOOR, span // 2)
 
     def _token_meta(self, token: str) -> tuple[str, int]:
         """``(symbol, decimals)`` for a token contract, asked once each.

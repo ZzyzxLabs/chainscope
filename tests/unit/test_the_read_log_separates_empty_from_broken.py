@@ -179,3 +179,36 @@ def test_a_token_only_provider_says_so_in_the_log(fresh_log: Log) -> None:
 
     local._fetch_page(_LogsOnly([]), CHAIN, ADDRESS, 1)
     assert fresh_log.recent()[0]["what"] == "token transfers (logs) page 1"
+
+
+def test_a_short_window_is_not_a_short_page(fresh_log: Log) -> None:
+    """The bug this distinction exists for.
+
+    A log-scanning provider reading the last 120,000 blocks of a
+    million-block history returned three rows. Three is fewer than a page, so
+    the pager concluded the read was complete --- complete of the window, and
+    silent about the rest. Measured live: 3 transfers reported complete for an
+    address holding 85.
+    """
+    truncated = ResultTruncated(
+        "scanned blocks 113780000..113900000 of the requested 0..113900000",
+        rows=[object(), object(), object()],
+        window_short=True,
+    )
+    rows, ended, short = local._fetch_page(_Provider(truncated), CHAIN, ADDRESS, 1)
+    assert len(rows) == 3
+    assert not ended
+    assert short, "a window that did not reach the requested range must say so"
+    event = fresh_log.recent()[0]
+    assert event["outcome"] == "capped"
+    assert "113780000" in event["detail"]
+
+
+def test_a_full_page_is_still_just_a_full_page(fresh_log: Log) -> None:
+    """`more` and `capped` must not collapse: one means keep paging, the other
+    means the range was never covered."""
+    _rows, _ended, short = local._fetch_page(
+        _Provider(ResultTruncated("full page", rows=[object()])), CHAIN, ADDRESS, 1
+    )
+    assert not short
+    assert fresh_log.recent()[0]["outcome"] == "more"
