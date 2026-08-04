@@ -173,6 +173,20 @@ def assert_payload_read_only(payload: Any) -> None:
             assert_payload_read_only(value)
 
 
+def _is_refusal(exc: BaseException) -> bool:
+    """Whether a failure is the server declining this request rather than
+    failing.
+
+    4xx other than 429 and 408: the request was understood and rejected, so
+    repeating it unchanged is pointless and *changing* it is exactly what a
+    caller should do. Neither says anything about the host's health.
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    code = exc.response.status_code
+    return 400 <= code < 500 and code not in (408, 429)
+
+
 @dataclass
 class CircuitBreaker:
     """Skip a host that keeps failing, then let it prove itself again.
@@ -445,7 +459,25 @@ class Client:
                     cache_key=key,
                     error=type(exc).__name__,
                 )
-                self.breaker.record_failure(host)
+                # A refused *request* is not an unwell *host*.
+                #
+                # The breaker exists to stop hammering an endpoint that is
+                # down. A clean 4xx is the opposite of down: the server read
+                # the request, understood it, and said no --- "that block range
+                # is too large", "this chain is not on your plan". Counting
+                # those opened the breaker on a healthy endpoint, and it did it
+                # fastest for the caller doing the most careful thing.
+                #
+                # `asset_transfers` narrows its block span whenever a range is
+                # refused, which is a deliberate probe. Four concurrent chunks
+                # each halving once spent the breaker's five lives before a
+                # single real failure, and the scan then died reporting
+                # "circuit open" about a node that was answering perfectly.
+                #
+                # 429 still counts. That one *is* the host asking to be left
+                # alone, and it already has its own backoff above.
+                if not _is_refusal(exc):
+                    self.breaker.record_failure(host)
                 time.sleep(0.5 * (attempt + 1))
 
         # The body, when there was one.

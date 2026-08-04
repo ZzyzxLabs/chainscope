@@ -14,6 +14,7 @@ query.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -66,6 +67,9 @@ _SPAN_FLOOR = 500
 #: not reach the requested start, so a short answer is never mistaken for a
 #: complete one.
 _DEFAULT_WINDOW = 400_000
+
+#: Chunks in flight at once. Small on purpose --- see `_scan`.
+_SCAN_WORKERS = 4
 
 
 def _hexint(value: Any) -> int:
@@ -374,10 +378,23 @@ class JsonRpcProvider(ReadOnlyProvider):
         padded = "0x" + "0" * 24 + address.lower().removeprefix("0x")
         rows: list[Transfer] = []
         seen: set[tuple[str, int]] = set()
-        for way in sorted(ways):
+
+        def topics_for(way: str) -> list[Any]:
+            # `eth_getLogs` ORs within a topic position and ANDs across them,
+            # so "sent by X or received by X" cannot be one request. Two scans
+            # are structural; running them one after the other was not.
             topics: list[Any] = [TRANSFER_TOPIC, None, None]
             topics[1 if way == "out" else 2] = padded
-            for log in self._scan(chain, lo, hi, topics, contract):
+            return topics
+
+        order = sorted(ways)
+        with ThreadPoolExecutor(max_workers=len(order)) as pool:
+            found = list(
+                pool.map(lambda w: self._scan(chain, lo, hi, topics_for(w), contract), order)
+            )
+
+        for logs in found:
+            for log in logs:
                 key = (str(log.get("transactionHash", "")), _hexint(log.get("logIndex")))
                 if key in seen:
                     continue
@@ -422,27 +439,40 @@ class JsonRpcProvider(ReadOnlyProvider):
         and the floor stops a genuinely broken endpoint from turning one query
         into thousands.
         """
-        out: list[dict[str, Any]] = []
-        span = _SPAN_START
-        at = lo
-        while at <= hi:
-            until = min(at + span - 1, hi)
-            try:
-                out.extend(
-                    self.get_logs(
+
+        def one(lo_: int, hi_: int, span: int) -> list[dict[str, Any]]:
+            """One chunk, narrowing itself until the endpoint accepts it."""
+            while True:
+                try:
+                    return self.get_logs(
                         chain,
                         address=contract,
                         topics=topics,
-                        from_block=at,
-                        to_block=until,
+                        from_block=lo_,
+                        to_block=min(lo_ + span - 1, hi_),
                     )
-                )
-            except ProviderError:
-                if span > _SPAN_FLOOR:
+                except ProviderError:
+                    if span <= _SPAN_FLOOR:
+                        raise
                     span = max(_SPAN_FLOOR, span // 2)
-                    continue
-                raise
-            at = until + 1
+
+        # Concurrent, because the wall clock here is round trips and not work.
+        # Sequentially this was twenty requests of about seven seconds for a
+        # 400,000-block window --- three minutes staring at a spinner, which is
+        # what a reader reported as "it does not fetch". `_fetch_into` already
+        # overlaps its pages; this is the same reasoning one layer down.
+        #
+        # The cap is deliberately small. These are other people's free public
+        # endpoints, and the difference between four in flight and forty is
+        # measured entirely in how quickly they start refusing.
+        edges = list(range(lo, hi + 1, _SPAN_START))
+        out: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=min(_SCAN_WORKERS, len(edges) or 1)) as pool:
+            jobs = [pool.submit(one, start, hi, _SPAN_START) for start in edges]
+            # Absorbed in range order regardless of completion order, so the
+            # rows land in the sequence a serial scan would have produced.
+            for job in jobs:
+                out.extend(job.result())
         return out
 
     def _token_meta(self, token: str) -> tuple[str, int]:
