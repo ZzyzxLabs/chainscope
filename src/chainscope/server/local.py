@@ -729,11 +729,7 @@ class _Handlers:
                 # `fetched` travels back and the status line reports it.
                 fetched, complete = _fetch_into(store, address, chain)
                 if not fetched:
-                    raise ValueError(
-                        f"{address} has no transfers on {chain} --- not in the "
-                        f"store, and the providers returned none either. That is "
-                        f"an answer about the address rather than about the store"
-                    )
+                    raise ValueError(_nothing_found(address, chain))
             built = _walk(
                 store,
                 address,
@@ -1222,12 +1218,18 @@ def _fetch_page(
     """
     started = time.monotonic()
     name = getattr(provider, "name", provider.__class__.__name__)
+    # What this provider can see, recorded with the read rather than inferred
+    # later. A log-scanning RPC returns tokens only --- no native sends, no
+    # internal calls --- and an empty result from one means something different
+    # from an empty result from an indexer.
+    caps = getattr(provider, "capabilities", Capability.NONE)
+    scope = "asset_transfers" if caps & Capability.ASSET_TRANSFERS else "token transfers (logs)"
 
     def note(outcome: Any, rows: int, detail: str = "") -> None:
         LOG.record(
             provider=name,
             chain=str(chain),
-            what=f"asset_transfers page {page}",
+            what=f"{scope} page {page}",
             address=address,
             outcome=outcome,
             rows=rows,
@@ -1421,6 +1423,68 @@ def _assets_in(graph: Any, chain: ChainId) -> list[dict[str, Any]]:
         row["resembles"] = found.resembles if found else ""
         row["why"] = " ".join(found.reasons) if found else ""
     return sorted(seen.values(), key=lambda r: (-r["transfers"], r["symbol"]))
+
+
+def _nothing_found(address: str, chain: ChainId) -> str:
+    """Why a fetch came back empty, built from what the reads actually did.
+
+    This used to be a single sentence asserting that the emptiness "is an
+    answer about the address rather than about the store". It is that only when
+    a source that can see everything looked at the whole history and found
+    nothing. Zero rows also comes back when:
+
+    * the provider serves **tokens only** --- a log scan sees no native send and
+      no internal call, so an address that moved nothing but BNB reads as
+      inactive;
+    * the scan covered a **window** rather than all of history;
+    * a provider hit a **paging ceiling** partway.
+
+    Each of those is a fact about the *looking*. Stating them as a fact about
+    the address is precisely the confusion this package exists to prevent, and
+    the sentence was making it in the tool's own voice --- which is worse than a
+    missing feature, because a reader has no way to tell.
+
+    The read log already holds what happened, so this reads it rather than
+    threading a second return value through the fetch path.
+    """
+    # `address_key`, not `.lower()`. Folding case is right for EVM and destroys
+    # a base58 or bech32 address, and this file is not EVM-only --- there is a
+    # test that counts hand-rolled folds and it caught this one being added.
+    wanted = address_key(chain, address)
+    recent = [e for e in LOG.recent(80) if address_key(chain, e["address"]) == wanted]
+    if not recent:
+        return (
+            f"nothing was fetched for {address} on {chain} and no read was "
+            f"recorded, which should not happen --- treat this as a bug rather "
+            f"than as an empty address"
+        )
+
+    providers = sorted({e["provider"] for e in recent})
+    token_only = all("token transfers" in e["what"] for e in recent)
+    capped = [e for e in recent if e["outcome"] == "capped"]
+    failed = [e for e in recent if e["outcome"] == "failed"]
+
+    lines = [f"no transfers found for {address} on {chain}."]
+    lines.append(f"Read by: {', '.join(providers)} ({len(recent)} request(s)).")
+    if token_only:
+        lines.append(
+            "That source reads ERC-20 Transfer logs only. Native sends and "
+            "internal calls emit no log, so this is not evidence the address "
+            "was inactive --- only that it moved no tokens in the range read."
+        )
+    if capped:
+        lines.append(
+            f"{len(capped)} read(s) hit a provider ceiling: {capped[0]['detail'][:160]}"
+        )
+    if failed:
+        lines.append(f"{len(failed)} read(s) failed: {failed[0]['detail'][:160]}")
+    if not token_only and not capped and not failed:
+        lines.append(
+            "A source that can see native, internal and token movement read the "
+            "requested range and returned nothing. That is an answer about the "
+            "address."
+        )
+    return " ".join(lines)
 
 
 def _asset_provider(chain: ChainId) -> list[Any]:

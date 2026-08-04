@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 from chainscope.core.chainid import ChainId
-from chainscope.providers.base import ProviderError, ResultTruncated
+from chainscope.providers.base import Capability, ProviderError, ResultTruncated
 from chainscope.server import local
 from chainscope.server.activity import Log, is_ceiling
 
@@ -33,9 +33,15 @@ ADDRESS = "0x" + "ab" * 20
 
 
 class _Provider:
-    """Answers one way, whichever way the test asked for."""
+    """Answers one way, whichever way the test asked for.
+
+    Declares ASSET_TRANSFERS so the log labels its reads as such. A provider
+    that declares nothing is recorded as token-only, which is the conservative
+    reading and has its own test below.
+    """
 
     name = "stub"
+    capabilities = Capability.ASSET_TRANSFERS
 
     def __init__(self, answer: Any) -> None:
         self.answer = answer
@@ -160,3 +166,16 @@ def test_the_detail_cannot_grow_without_bound() -> None:
         detail="x" * 5000,
     )
     assert len(log.recent()[0]["detail"]) <= 300
+
+
+def test_a_token_only_provider_says_so_in_the_log(fresh_log: Log) -> None:
+    """What a source can see is recorded with the read, because an empty result
+    from a log scan means something different from an empty result from an
+    indexer."""
+
+    class _LogsOnly(_Provider):
+        name = "rpc"
+        capabilities = Capability.TOKEN_TRANSFERS
+
+    local._fetch_page(_LogsOnly([]), CHAIN, ADDRESS, 1)
+    assert fresh_log.recent()[0]["what"] == "token transfers (logs) page 1"
