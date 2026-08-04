@@ -63,11 +63,32 @@ SUI_MAINNET_RPC = "https://fullnode.mainnet.sui.io:443"
 
 #: Public fullnode per network. Keyed by the CAIP-2 reference, which for Sui is
 #: the network name rather than a chain number.
+#: Foundation fullnodes, kept for a self-hosted or provider node that still
+#: serves JSON-RPC --- **not** used as a default. See `from_settings`.
+#:
+#: The Sui Foundation disabled JSON-RPC on its public fullnodes in the week of
+#: 27 July 2026, with the code slated for removal that October. Every method
+#: this provider calls now answers:
+#:
+#:     Method not found. JSON-RPC on public fullnodes has been deprecated.
+#:     Please migrate to gRPC or GraphQL endpoints.
+#:
+#: The protocol is deprecated in the node software rather than removed, so an
+#: operator may still serve it and a configured endpoint may still work. What
+#: cannot work is the Foundation's public one, and defaulting to it produced a
+#: provider that was registered, selected, and certain to fail --- which is the
+#: capability-overstatement `Capability` warns about, in the form of a URL.
 NETWORK_RPC = {
     "mainnet": SUI_MAINNET_RPC,
     "testnet": "https://fullnode.testnet.sui.io:443",
     "devnet": "https://fullnode.devnet.sui.io:443",
 }
+
+#: Endpoints known to have stopped serving JSON-RPC. Registering a provider
+#: against one is worse than registering none: the router selects it, every
+#: call fails, and the failure looks like an outage rather than a decision
+#: somebody made about the protocol.
+RETIRED = frozenset(NETWORK_RPC.values())
 
 #: Page size the public fullnodes accept. Asking for more is refused rather
 #: than silently reduced.
@@ -147,9 +168,23 @@ class SuiProvider(ReadOnlyProvider):
         """
         if not cls.serves(chain):
             return []
-        url = settings.rpc.get("sui") or NETWORK_RPC.get(chain.reference)
+        url = settings.rpc.get("sui")
         if not url:
+            # No default. There is no public endpoint left that serves this
+            # protocol, so a default here is a promise the provider cannot
+            # keep. `doctor` reports the chain as unconfigured, which is true
+            # and actionable, rather than reporting a provider that fails on
+            # every call.
             return []
+        if url.rstrip("/") in RETIRED:
+            raise ProviderError(
+                f"{url} no longer serves JSON-RPC --- the Sui Foundation "
+                f"disabled it on its public fullnodes in July 2026. Point "
+                f"CHAINSCOPE_RPC_SUI at a provider or self-hosted node that "
+                f"still serves it, or wait for the GraphQL provider. Leaving "
+                f"this configured would register a source that fails every "
+                f"call and looks like an outage"
+            )
         return [cls(url, client=client, chain=chain)]
 
     # ---------------------------------------------------------------- request
