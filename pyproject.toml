@@ -59,6 +59,13 @@ dev = [
     "hypothesis>=6.100",
     "mypy>=1.11",
     "ruff>=0.6",
+    # Stubs for the optional extras that `all` pulls in, so `mypy` sees the
+    # same thing in CI as on a machine where somebody happened to install them
+    # once. Without this every push failed on
+    # `Library stubs not installed for "yaml"` --- an error nobody could
+    # reproduce locally, because a local venv that has ever installed the stub
+    # keeps it.
+    "types-PyYAML>=6.0",
 ]
 
 [project.urls]

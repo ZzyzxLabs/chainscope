@@ -184,13 +184,23 @@ export default function CasePage() {
   }
 
   const load = useCallback(
-    async (target: string) => {
+    async (target: string, onChain?: string) => {
       if (!target) return;
       setBusy(true);
+      // `onChain` overrides the state, because the one caller that needs it
+      // sets the chain in the same effect that opens the address --- and a
+      // `useCallback` closes over the render it was created in, so `chain` is
+      // still whatever it was before `setChain` was called.
+      //
+      // The symptom was silent and total: every `?a=…&c=56` link queried
+      // Ethereum, reported "no transfers found ... on eip155:1", and showed
+      // BSC in the dropdown while doing it. Correct, honest, and about the
+      // wrong chain.
+      const on = onChain ?? chain;
       try {
         const reply = await api<GraphReply>("/graph", {
           address: target,
-          chain: `eip155:${chain}`,
+          chain: `eip155:${on}`,
         });
         // A graph with no nodes is a valid answer to "what do we hold about
         // this address" --- the answer being "nothing" --- and it is the state
@@ -266,7 +276,9 @@ export default function CasePage() {
     const run = params.get("run");
     if (c) setChain(c);
     if (run) setPending(run);
-    if (a) void load(a);
+    // `c` passed explicitly: `setChain` above does not reach `load`'s closure
+    // until the next render.
+    if (a) void load(a, c ?? undefined);
     // Intentionally once: this is restoring an entry point, not tracking state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
