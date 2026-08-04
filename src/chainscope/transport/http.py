@@ -23,7 +23,7 @@ import httpx
 
 from .audit import AuditLog
 from .cache import CacheBackend, Volatility, cache_key
-from .credentials import endpoint_identity, redact_headers, scrub_params
+from .credentials import endpoint_identity, redact_headers, scrub_params, scrub_value
 from .throttle import Throttle
 
 __all__ = ["Cacheable", "CircuitBreaker", "Client", "ReadOnlyViolation", "TransportError"]
@@ -464,8 +464,17 @@ class Client:
                 body = ""
             if body:
                 detail = f"\n  the server said: {body[:400]}"
+        # Scrubbed. `str(httpx.HTTPStatusError)` carries the full request URL,
+        # and an RPC endpoint routinely keeps its credential in the path ---
+        # `.../v2/<key>` for Alchemy, `.../eth/<key>` for Ankr. That string was
+        # travelling into `ProviderError`, into the read log, and onto the case
+        # page, where it is rendered for anyone the page is shown to.
+        #
+        # Seen for real: an Alchemy key in the `detail` column of the activity
+        # table while diagnosing a 400 on BSC. The scrubber already existed for
+        # exactly this and simply was not reached from here.
         raise TransportError(
-            f"{host}: failed after {self.max_retries} attempts: {last}{detail}"
+            scrub_value(f"{host}: failed after {self.max_retries} attempts: {last}{detail}")
         )
 
     def close(self) -> None:

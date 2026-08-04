@@ -386,6 +386,7 @@ class EtherscanProvider(ReadOnlyProvider):
         end = _end_block(end_block)
         start = 0 if start_block == "latest" else int(start_block)
         out: list[Transfer] = []
+        refused: list[str] = []
 
         token_params: dict[str, Any] = {}
         if contract:
@@ -411,10 +412,11 @@ class EtherscanProvider(ReadOnlyProvider):
                 )
             except ResultTruncated:
                 raise
-            except ProviderError:
+            except ProviderError as exc:
                 # One endpoint failing should not lose the other two, but the
                 # gap is real; callers see it as a shorter list. Analyzers that
                 # need completeness use the nonce check instead.
+                refused.append(f"{action}: {exc}")
                 continue
 
             for r in rows:
@@ -461,6 +463,27 @@ class EtherscanProvider(ReadOnlyProvider):
                         index=_row_index(action, r),
                     )
                 )
+
+        # Every source refused, and nothing was collected. Returning `[]` here
+        # said "this address has no transfers" about an address nobody managed
+        # to look at --- which is the one claim this package exists to refuse,
+        # and it was being made in the provider layer, below everything built
+        # to catch it.
+        #
+        # Seen on BSC: Etherscan's free tier does not cover the chain, so
+        # `txlist`, `txlistinternal` and `tokentx` all returned "Free API
+        # access is not supported for this chain". Each raised, each was
+        # swallowed by the `continue` above, and the call returned an empty
+        # list in 1.3 seconds. The address was a live exploiter holding
+        # 689,429.79 USDC.
+        #
+        # A *partial* refusal still degrades quietly, as the comment above
+        # says. That is a real gap and a smaller one: the caller has rows, and
+        # a short list is visibly a list. Nothing is not.
+        if refused and not out:
+            raise ProviderError(
+                f"no transfer source answered for {address} on {chain}: " + "; ".join(refused)
+            )
 
         key = address.lower()
         if direction == "out":

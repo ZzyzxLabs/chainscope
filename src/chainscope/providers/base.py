@@ -96,6 +96,27 @@ class Capability(Flag):
     swap proceeds and withdrawal payouts live, and reconstructing them from
     traces is slow and error-prone."""
 
+    TOKEN_TRANSFERS = auto()
+    """ERC-20 ``Transfer`` logs for an address. **Tokens only.**
+
+    Deliberately not `ASSET_TRANSFERS`, which promises native and internal
+    movement as well. A log scan cannot see either: a plain value send emits no
+    event, and a contract-to-contract call emits nothing either --- so an
+    address that only ever moved BNB comes back from this empty, which looks
+    exactly like an address that never moved anything.
+
+    Declared separately so the router keeps preferring a real indexer, and so a
+    caller that falls back to this knows to say what it did not look at. That
+    sentence is the whole reason the capability is split rather than merged:
+    the tempting version of this change was to add ASSET_TRANSFERS to the
+    JSON-RPC provider, and it would have quietly converted "nobody indexes this
+    chain" into "this address has no history".
+
+    Reachable from any endpoint serving ``eth_getLogs``, which is every EVM RPC
+    --- and that is the point. Before this, a chain with no explorer key was a
+    chain the tool could say nothing about at all.
+    """
+
     ARCHIVE_STATE = auto()
     """State at an arbitrary historical block.
 

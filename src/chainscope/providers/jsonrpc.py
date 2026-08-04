@@ -18,11 +18,18 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..core.chainid import ChainId, native_symbol
-from ..core.models import Account, Address, Block, Transaction, TxRef
+from ..core.models import Account, Address, Block, Transaction, Transfer, TransferKind, TxRef
 from ..core.units import Amount
 from ..transport.cache import Volatility
 from ..transport.http import Client, TransportError
-from .base import Capability, CostTier, Provider, ProviderError, ReadOnlyProvider
+from .base import (
+    Capability,
+    CostTier,
+    Provider,
+    ProviderError,
+    ReadOnlyProvider,
+    ResultTruncated,
+)
 
 __all__ = ["JsonRpcProvider"]
 
@@ -32,7 +39,33 @@ _BASE_CAPS = (
     | Capability.RECEIPT
     | Capability.LOGS
     | Capability.BALANCE
+    # Every EVM endpoint serves eth_getLogs, so every one of them can enumerate
+    # token movement. See `asset_transfers` for what that does and does not
+    # cover, and `Capability.TOKEN_TRANSFERS` for why it is not ASSET_TRANSFERS.
+    | Capability.TOKEN_TRANSFERS
 )
+
+#: ``keccak256("Transfer(address,address,uint256)")``.
+TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+#: How many blocks to ask for at once, and how far down to back off.
+#:
+#: Public endpoints cap `eth_getLogs` by range, by result count, or by wall
+#: clock, and they disagree about which and say so in incompatible ways. Rather
+#: than carry a table of per-host limits that goes stale, the scan starts wide
+#: and halves on refusal --- measured against four BSC endpoints, the working
+#: span ranged from 1,000 to over 20,000 blocks for the same query.
+_SPAN_START = 20_000
+_SPAN_FLOOR = 500
+
+#: How far back a scan reaches when the caller does not say.
+#:
+#: Not genesis. A full-history scan is hundreds of thousands of requests, and
+#: issuing it because somebody left a default alone is not a thing this should
+#: do quietly. The window is stated in the truncation message whenever it does
+#: not reach the requested start, so a short answer is never mistaken for a
+#: complete one.
+_DEFAULT_WINDOW = 400_000
 
 
 def _hexint(value: Any) -> int:
@@ -284,6 +317,163 @@ class JsonRpcProvider(ReadOnlyProvider):
             f["topics"] = topics
         vol = Volatility.SETTLED if to_block != "latest" else Volatility.LIVE
         return self._call("eth_getLogs", [f], vol) or []
+
+    def asset_transfers(
+        self,
+        chain: ChainId,
+        address: str,
+        *,
+        direction: str = "out",
+        start_block: int | str = 0,
+        end_block: int | str = "latest",
+        contract: str | None = None,
+        limit: int = 1000,
+        page: int = 1,
+    ) -> list[Transfer]:
+        """Token movement for an address, reconstructed from ``Transfer`` logs.
+
+        **Tokens only, and the caller has to be told.** A native send emits no
+        event and a contract-to-contract call emits no event, so neither is
+        here. An address that only ever moved the chain's own coin comes back
+        from this empty --- identical, at the call site, to an address that
+        never did anything. That is why this declares
+        `Capability.TOKEN_TRANSFERS` and not `ASSET_TRANSFERS`: the router keeps
+        preferring a real indexer, and a caller that lands here knows the answer
+        has a shape.
+
+        This exists because of a case it could not touch. Tracing the LpdFi
+        exploit on BSC, every provider refused --- Etherscan's free tier
+        excludes the chain and the configured RPC could not enumerate --- so
+        `chainscope investigate` reported "could not run" for every analysis
+        that needed history. The work got done in ad-hoc scripts calling
+        `eth_getLogs`, which is a thing the tool should have been doing.
+
+        **The window is bounded and says so.** Scanning to genesis is hundreds
+        of thousands of requests. Absent an explicit ``start_block`` this reads
+        back `_DEFAULT_WINDOW` blocks, and if that does not reach what was asked
+        for it raises `ResultTruncated` carrying the rows *and naming the range
+        it covered* --- because a short answer that does not announce itself is
+        the failure this package exists to refuse.
+
+        Ordering is oldest-first, and paging slices that. Logs come back in
+        block order per request, and the requests are issued in order, so the
+        sequence is stable between runs on the same range.
+        """
+        head = self._head()
+        hi = head if end_block == "latest" else int(end_block)
+        want_from = 0 if start_block == "latest" else int(start_block)
+        lo = max(want_from, hi - _DEFAULT_WINDOW + 1, 0)
+
+        ways = {"out", "in"} if direction in ("all", "both") else {direction}
+        if not ways <= {"out", "in"}:
+            raise ProviderError("direction must be 'out', 'in', 'all', or 'both'")
+
+        padded = "0x" + "0" * 24 + address.lower().removeprefix("0x")
+        rows: list[Transfer] = []
+        seen: set[tuple[str, int]] = set()
+        for way in sorted(ways):
+            topics: list[Any] = [TRANSFER_TOPIC, None, None]
+            topics[1 if way == "out" else 2] = padded
+            for log in self._scan(chain, lo, hi, topics, contract):
+                key = (str(log.get("transactionHash", "")), _hexint(log.get("logIndex")))
+                if key in seen:
+                    continue
+                seen.add(key)
+                made = self._transfer_from_log(chain, log)
+                if made is not None:
+                    rows.append(made)
+
+        rows.sort(key=lambda t: (t.block or 0, t.index))
+        window = rows[(page - 1) * limit : page * limit]
+        if lo > want_from:
+            raise ResultTruncated(
+                f"{self.name} scanned blocks {lo}..{hi} of the requested "
+                f"{want_from}..{hi}. Reading further back means more requests, "
+                f"not a different answer --- pass start_block to widen it. "
+                f"Native and internal transfers are never included: they emit "
+                f"no log.",
+                rows=window,
+            )
+        if len(window) == limit and len(rows) > page * limit:
+            raise ResultTruncated(
+                f"{self.name}: page {page} is full and there is more", rows=window
+            )
+        return window
+
+    def _head(self) -> int:
+        return _hexint(self._call("eth_blockNumber", [], Volatility.LIVE))
+
+    def _scan(
+        self,
+        chain: ChainId,
+        lo: int,
+        hi: int,
+        topics: list[Any],
+        contract: str | None,
+    ) -> list[dict[str, Any]]:
+        """`eth_getLogs` over a range, halving the span whenever it is refused.
+
+        Endpoints cap this by range, by result count, or by wall clock, and
+        report each differently. Halving on any refusal converges on whatever
+        the limit actually is without a table of per-host rules to maintain,
+        and the floor stops a genuinely broken endpoint from turning one query
+        into thousands.
+        """
+        out: list[dict[str, Any]] = []
+        span = _SPAN_START
+        at = lo
+        while at <= hi:
+            until = min(at + span - 1, hi)
+            try:
+                out.extend(
+                    self.get_logs(
+                        chain,
+                        address=contract,
+                        topics=topics,
+                        from_block=at,
+                        to_block=until,
+                    )
+                )
+            except ProviderError:
+                if span > _SPAN_FLOOR:
+                    span = max(_SPAN_FLOOR, span // 2)
+                    continue
+                raise
+            at = until + 1
+        return out
+
+    def _transfer_from_log(self, chain: ChainId, log: dict[str, Any]) -> Transfer | None:
+        """One log as a `Transfer`, or None when it is not one.
+
+        An ERC-721 ``Transfer`` carries the token id as a fourth *topic* and an
+        empty data field, which decodes as an amount of zero. Returning those
+        as fungible movement would put a nonexistent quantity into every total,
+        so they are dropped here rather than corrected downstream.
+
+        The token's decimals are not fetched. One `eth_call` per distinct
+        contract on a scan that may touch hundreds is a cost the caller has not
+        agreed to, and `Amount` carries the raw value either way --- what is
+        lost is the display scaling, not the number.
+        """
+        topics = log.get("topics") or []
+        if len(topics) != 3:
+            return None
+        try:
+            raw = int(log.get("data") or "0x0", 16)
+        except ValueError:
+            return None
+        token = str(log.get("address") or "").lower()
+        return Transfer(
+            chain=chain,
+            tx=TxRef(chain, str(log.get("transactionHash") or "").lower()),
+            sender=self._addr("0x" + topics[1][-40:]),
+            recipient=self._addr("0x" + topics[2][-40:]),
+            amount=Amount(raw, 18, ""),
+            kind=TransferKind.TOKEN,
+            block=_hexint(log.get("blockNumber")),
+            index=_hexint(log.get("logIndex")),
+            asset=self._addr(token),
+        )
 
     def call(self, chain: ChainId, to: str, data: str, block: int | str = "latest") -> str:
         """``eth_call``. Historical blocks need ``ARCHIVE_STATE``."""

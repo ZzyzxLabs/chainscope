@@ -1296,7 +1296,7 @@ def _fetch_into(
     an address that has already proved it has more pays for the guess. The
     window is what turns fifteen sequential round trips into four.
     """
-    provider = _asset_provider(chain)
+    providers = _asset_provider(chain)
     rows: list[Any] = []
     seen: set[tuple[str, int]] = set()
     complete = False
@@ -1312,7 +1312,30 @@ def _fetch_into(
             fresh += 1
         return fresh
 
-    first, ended = _fetch_page(provider, chain, address, 1)
+    # The first page is also the audition. Whichever provider serves it is the
+    # one the rest of the paging uses.
+    #
+    # A separate probe request was the obvious way to write this and the wrong
+    # one: almost every address is a single page, so probing doubled the cost
+    # of the common case. There is a test measuring exactly that budget, and it
+    # caught it.
+    #
+    # Trying the next provider matters because the best-declared one is not
+    # always a working one --- Etherscan declares ASSET_TRANSFERS for every EVM
+    # chain and then refuses BSC outright. Each attempt lands in the read log
+    # separately, so "etherscan refused, the RPC answered" stays visible
+    # instead of being flattened into one outcome.
+    provider = None
+    refused: Exception | None = None
+    for candidate in providers:
+        try:
+            first, ended = _fetch_page(candidate, chain, address, 1)
+            provider = candidate
+            break
+        except ProviderError as exc:
+            refused = exc
+    if provider is None:
+        raise refused if refused else ValueError(f"no transfer source for {chain}")
     fresh = absorb(first)
     if ended or len(first) < 1000 or fresh == 0:
         complete = True
@@ -1400,19 +1423,39 @@ def _assets_in(graph: Any, chain: ChainId) -> list[dict[str, Any]]:
     return sorted(seen.values(), key=lambda r: (-r["transfers"], r["symbol"]))
 
 
-def _asset_provider(chain: ChainId) -> Any:
-    """The first provider that can enumerate transfers, asked directly.
+def _asset_provider(chain: ChainId) -> list[Any]:
+    """Providers that can enumerate transfers, best first, asked directly.
 
     Not through `Router.enumerate`. Corroboration is the right default and the
     wrong tool here: it re-raises a truncation as "all providers failed", which
     is precisely the signal this function exists to page past.
+
+    A **list**, because the best candidate is not always a working one. On BSC
+    the router picks Etherscan --- it declares ASSET_TRANSFERS for every EVM
+    chain --- and Etherscan's free tier does not serve BSC at all. Returning
+    only that meant the caller had one provider, it always failed, and the
+    log-reading fallback below was never reached.
     """
     from ..providers.build import router_for
 
     router, _skipped = router_for(chain)
-    for candidate in router.candidates(chain, Capability.ASSET_TRANSFERS):
-        return candidate
-    raise ValueError(f"no provider can enumerate transfers on {chain}")
+    ordered = list(router.candidates(chain, Capability.ASSET_TRANSFERS))
+    # Nobody indexes this chain. A plain RPC can still read `Transfer` logs,
+    # which is tokens only --- no native sends, no internal calls. That is a
+    # worse answer than an indexer and an enormously better one than the
+    # `ValueError` that used to be raised here: on BSC, where Etherscan's free
+    # tier does not reach, every history-based analysis reported "could not
+    # run" and the tool had nothing to say about a live exploit.
+    #
+    # The caller is told which it got. `_fetch_into` puts it in the read log
+    # and the page repeats it, because "no native transfers were looked at" and
+    # "this address made no native transfers" are opposite claims.
+    for candidate in router.candidates(chain, Capability.TOKEN_TRANSFERS):
+        if candidate not in ordered:
+            ordered.append(candidate)
+    if not ordered:
+        raise ValueError(f"no provider can enumerate transfers on {chain}")
+    return ordered
 
 
 def _run_over_store(

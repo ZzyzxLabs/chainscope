@@ -58,7 +58,9 @@ class _Store:
 
 
 def _run(monkeypatch, provider, **kw):
-    monkeypatch.setattr(local, "_asset_provider", lambda chain: provider)
+    # A list now: the fetcher tries providers in order, because the
+    # best-declared one is not always a working one.
+    monkeypatch.setattr(local, "_asset_provider", lambda chain: [provider])
     return local._fetch_into(_Store(), "0xabc", ETHEREUM, **kw)
 
 
@@ -122,7 +124,9 @@ def test_rows_land_in_page_order_whatever_the_network_did(monkeypatch) -> None:
 
     provider = Jittery([_rows(1000), _rows(1000, 1000), _rows(2, 2000)])
     store = _Store()
-    monkeypatch.setattr(local, "_asset_provider", lambda chain: provider)
+    # A list now: the fetcher tries providers in order, because the
+    # best-declared one is not always a working one.
+    monkeypatch.setattr(local, "_asset_provider", lambda chain: [provider])
     local._fetch_into(store, "0xabc", ETHEREUM, width=4)
     hashes = [row.tx.hash for row in store.written]
     assert hashes == sorted(hashes), "rows were stored in whatever order arrived"
