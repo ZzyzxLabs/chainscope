@@ -219,6 +219,29 @@ class CircuitBreaker:
             self._failures.pop(host, None)
             self._opened_at.pop(host, None)
 
+    def forgive(self, host: str) -> None:
+        """Take back one recorded failure.
+
+        For a caller that *provoked* the failure and is responding to it. A
+        log scan discovers an endpoint's block-range limit by asking for too
+        much and narrowing, and those refusals are probes rather than symptoms
+        --- but a timeout looks identical to an unwell host from here, so they
+        were counted, and four concurrent chunks each narrowing once spent the
+        threshold on a node that was answering in under a second.
+
+        Deliberately not `record_success`: that clears the count entirely, and
+        a host that is genuinely failing in between should not have its slate
+        wiped by an unrelated probe.
+        """
+        with self._lock:
+            remaining = self._failures.get(host, 0) - 1
+            if remaining > 0:
+                self._failures[host] = remaining
+            else:
+                self._failures.pop(host, None)
+            if remaining < self.threshold:
+                self._opened_at.pop(host, None)
+
     def record_failure(self, host: str) -> None:
         with self._lock:
             n = self._failures.get(host, 0) + 1

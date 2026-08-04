@@ -75,8 +75,10 @@ _SPAN_FLOOR = 500
 #: per step --- and a failed request that is a timeout is indistinguishable
 #: from an unwell host, which is what opened the circuit breaker mid-fetch.
 #: So the first chunk is cheap and cautious and the rest ride on what it
-#: learned.
-_SPAN_CEILING = 40_000
+#: learned. The ceiling is a measured value rather than an aspiration: one BSC
+#: endpoint served 20,000 blocks in seconds and timed out at 40,000, and a
+#: timeout costs far more than the request it saves.
+_SPAN_CEILING = 20_000
 
 #: How far back a scan reaches when the caller does not say.
 #:
@@ -567,6 +569,17 @@ class JsonRpcProvider(ReadOnlyProvider):
                 narrower = max(_SPAN_FLOOR, span // 2)
                 self._span_cap = min(self._span_cap, narrower)
                 self._span = narrower
+                # This failure was ours: we asked for more than the endpoint
+                # serves and are about to ask for less. Left on the breaker's
+                # tally it counts toward declaring a healthy node unwell ---
+                # measured, four concurrent chunks narrowing once each took
+                # down an endpoint answering in under a second.
+                # `getattr`: `client` is typed `Any` and a test double or an
+                # alternative transport need not carry a breaker. A scan must
+                # not fail because the thing it was being polite to is absent.
+                breaker = getattr(self.client, "breaker", None)
+                if breaker is not None:
+                    breaker.forgive(_host(self.url))
                 continue
             at += span
             # It worked, so try more next time. Doubling rather than jumping
