@@ -119,6 +119,9 @@ class JsonRpcProvider(ReadOnlyProvider):
         if trace:
             caps |= Capability.TRACE
         self.capabilities = caps
+        #: Token contract to (symbol, decimals). Per instance, so a scan asks
+        #: each contract once however many transfers it produced.
+        self._meta: dict[str, tuple[str, int]] = {}
 
     @classmethod
     def from_settings(cls, settings: Any, chain: ChainId, client: Any = None) -> list[Provider]:
@@ -442,6 +445,64 @@ class JsonRpcProvider(ReadOnlyProvider):
             at = until + 1
         return out
 
+    def _token_meta(self, token: str) -> tuple[str, int]:
+        """``(symbol, decimals)`` for a token contract, asked once each.
+
+        Two `eth_call`s per **distinct contract**, not per transfer: a scan of
+        eighty transfers across four tokens costs eight calls, and they are the
+        difference between an analysis and a list of numbers.
+
+        Skipping this was the first version and it cost the thing the scan was
+        for. `impersonation` decides whether a token is imitating a real one by
+        comparing its *symbol* against the canonical contract for that symbol.
+        With no symbol it has nothing to compare, so three counterfeit USDC
+        contracts on BSC --- one of them named with invisible characters ---
+        came back as "assets the registry says nothing about" instead of as
+        lookalikes.
+
+        A contract that does not answer is recorded as answering nothing rather
+        than being retried: a token with no `symbol()` is a real thing, and
+        `decimals` falls back to 18 only for display.
+        """
+        cached = self._meta.get(token)
+        if cached is not None:
+            return cached
+
+        def read_string(sig: str) -> str:
+            try:
+                raw = self.call(self._chain(), token, sig) or "0x"
+            except ProviderError:
+                return ""
+            body = raw[2:]
+            # ABI: offset word, length word, then the bytes. A `bytes32` symbol
+            # --- which several older tokens still use --- has no length word,
+            # so it is read as the whole word with its padding stripped.
+            if len(body) >= 128:
+                size = int(body[64:128], 16)
+                if size and 128 + size * 2 <= len(body):
+                    return bytes.fromhex(body[128 : 128 + size * 2]).decode(
+                        "utf-8", errors="replace"
+                    )
+            if len(body) == 64:
+                return bytes.fromhex(body).rstrip(b"\x00").decode("utf-8", errors="replace")
+            return ""
+
+        symbol = read_string("0x95d89b41")
+        try:
+            decimals = _hexint(self.call(self._chain(), token, "0x313ce567"))
+        except (ProviderError, ValueError):
+            # ValueError as well as ProviderError. A contract with no
+            # `decimals()` returns bare `0x`, which `_hexint` cannot parse ---
+            # and a ValueError is not a ProviderError, so it escaped the
+            # provider layer entirely and took down the whole scan on one
+            # unusual token. The Etherscan provider carries a guard for the
+            # same shape; this one did not, and a test asking what happens to a
+            # silent contract found it.
+            decimals = 18
+        meta = (symbol, decimals if 0 <= decimals <= 36 else 18)
+        self._meta[token] = meta
+        return meta
+
     def _transfer_from_log(self, chain: ChainId, log: dict[str, Any]) -> Transfer | None:
         """One log as a `Transfer`, or None when it is not one.
 
@@ -463,12 +524,13 @@ class JsonRpcProvider(ReadOnlyProvider):
         except ValueError:
             return None
         token = str(log.get("address") or "").lower()
+        symbol, decimals = self._token_meta(token)
         return Transfer(
             chain=chain,
             tx=TxRef(chain, str(log.get("transactionHash") or "").lower()),
             sender=self._addr("0x" + topics[1][-40:]),
             recipient=self._addr("0x" + topics[2][-40:]),
-            amount=Amount(raw, 18, ""),
+            amount=Amount(raw, decimals, symbol),
             kind=TransferKind.TOKEN,
             block=_hexint(log.get("blockNumber")),
             index=_hexint(log.get("logIndex")),
