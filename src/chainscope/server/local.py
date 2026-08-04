@@ -723,9 +723,7 @@ class _Handlers:
         from_sources: dict[str, tuple[str, str]] = {}
         store = self._store()
         try:
-            if not store.edges(address, chain, direction="out") and not store.edges(
-                address, chain, direction="in"
-            ):
+            if not store.is_expanded(address, chain):
                 # Fetch it. This used to refuse, on the grounds that spending
                 # somebody's rate limit is a decision --- which is true, and the
                 # refusal still made the tool useless the first time anybody
@@ -868,6 +866,70 @@ class _Handlers:
                 for h in found.hypotheses
             ],
             "warnings": list(found.warnings),
+        }
+
+    def trail(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """What actually moved in and out of an address, in order.
+
+        The answer to "it is hard to find the real path, there is too much of
+        it". The graph shows every edge because every edge exists; this shows
+        the ones worth reading, in both directions, and states what it folded
+        and what it set aside. See `analysis.trail`.
+        """
+        from ..analysis.trail import trail as build
+
+        address = (_first(query, "address") or "").strip()
+        if not address:
+            raise ValueError("address is required")
+        chain = self._chain(_first(query, "chain") or "1") or ChainId.evm(1)
+        _check_address(address, chain)
+
+        store = self._store()
+        try:
+            rows = list(store.transfers(Query(chain=chain, limit=50_000)))
+            # Whether this address was ever *followed*, as opposed to having
+            # turned up as somebody else's counterparty. The difference decides
+            # what the path means: an unexpanded address shows only the slice
+            # that leaked in from its neighbours, and presenting that as its
+            # history is the same claim this package refuses everywhere else.
+            expanded = store.is_expanded(address, chain)
+        finally:
+            store.close()
+
+        found = build(rows, address, chain=chain)
+
+        def step(item: Any) -> dict[str, Any]:
+            return {
+                "direction": item.direction.value,
+                "counterparty": item.counterparty,
+                "amount": str(item.human),
+                "symbol": item.symbol,
+                "asset": item.asset,
+                "block": item.block,
+                "at": item.at.isoformat() if item.at else None,
+                "tx": item.tx,
+                "minor": item.minor,
+            }
+
+        return {
+            "address": address,
+            "chain": str(chain),
+            "expanded": expanded,
+            "summary": found.summary()
+            + (
+                ""
+                if expanded
+                else " This address has never been fetched --- what is shown is "
+                "only what reached it from addresses that were, so treat it as "
+                "a fragment rather than its history."
+            ),
+            "considered": found.considered,
+            # Both, because a caller that only ever sees the folded view cannot
+            # tell a quiet address from a noisy one that was tidied.
+            "steps": [step(s) for s in found.steps],
+            "significant": [step(s) for s in found.significant],
+            "set_aside": {k.value: v for k, v in found.set_aside.items()},
+            "forged_assets": list(found.forged_assets),
         }
 
     def activity(self, query: dict[str, list[str]]) -> dict[str, Any]:
@@ -1460,6 +1522,27 @@ def _fetch_into(
 
     if rows:
         store.put_transfers(rows)
+    # Record that this address was *followed*, not merely seen.
+    #
+    # `mark_expanded` has existed on the Store protocol since the beginning,
+    # documents this exact distinction --- "an address that was seen but never
+    # followed looks identical to one that was followed and had nothing" ---
+    # and was called from nowhere. The gate below used `store.edges(...)`
+    # instead, which asks a different question and answers it wrongly: an
+    # address that appears in the case only as somebody else's counterparty
+    # has edges, so opening it never fetched its own history and the case
+    # showed the fraction that leaked in from its neighbour as though it were
+    # the whole.
+    #
+    # Marked even when nothing came back. "We looked and found nothing" is the
+    # answer that has to survive, and re-fetching an empty address on every
+    # open would spend a rate limit to rediscover it.
+    # `getattr`: a Store implementation predating this, or a test double, need
+    # not carry it. Losing the mark costs a redundant fetch; raising here would
+    # cost the fetch that just succeeded.
+    mark = getattr(store, "mark_expanded", None)
+    if mark is not None:
+        mark(address, chain)
     return len(rows), complete
 
 
@@ -1854,6 +1937,7 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
                 "/leads": handlers.leads,
                 "/notes": handlers.notes,
                 "/activity": handlers.activity,
+                "/trail": handlers.trail,
             }
             route = routes.get(parsed.path)
             if route is None:

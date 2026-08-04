@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Spinner } from "@/components/spinner";
+import { Trail } from "@/components/trail";
 import { api, boot, type ExpandReply, type ResolveReply } from "@/lib/api";
 
 type Props = {
@@ -256,6 +257,12 @@ export function Selected({
         </p>
       ) : null}
       {found?.note && !unreliable ? <p className="note small">{found.note}</p> : null}
+
+      {/* Before the controls, because "what happened here" is the question
+          somebody has on opening a node, and the fetch buttons are what they
+          do about the answer. */}
+      <h2>the path</h2>
+      <Trail address={address} chain={chain} />
 
       <h2>follow the money from here</h2>
       <div className="ctl">
