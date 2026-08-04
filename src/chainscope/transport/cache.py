@@ -128,9 +128,28 @@ CREATE INDEX IF NOT EXISTS ix_entries_stored ON entries(stored_at);
 class Cache:
     """SQLite-backed response cache.
 
-    Thread-safe for the concurrency pattern this project uses (a bounded pool
-    of workers fanning out block or address queries). SQLite serialises writes
-    itself; the lock here only guards connection setup.
+    **Every database call is serialised, and the reason is a bug this claimed
+    not to have.** This docstring used to say the lock "only guards connection
+    setup", because SQLite serialises writes itself. SQLite does; the Python
+    `sqlite3.Connection` object does not. `check_same_thread=False` disables
+    the *check* --- it does not make one connection safe to use from several
+    threads, and on a build where `sqlite3.threadsafety` is 1 the interleaved
+    `execute`/`fetchone`/`commit` of four concurrent readers corrupts the
+    statement state.
+
+    What that looked like: `sqlite3.InterfaceError: bad parameter or other API
+    misuse`, surfacing as "fetch failed" against page three of an address whose
+    pages one and two had just returned a thousand rows each. Nothing in that
+    message says "database", and the page a reader saw was empty.
+
+    Found by the read log added in `server.activity`, on the second case opened
+    after it existed --- which is the argument for that feature in one
+    sentence: the failure was not new, it was only now attributable.
+
+    The lock costs nothing measurable here. It is held for the microseconds of
+    a keyed lookup while the pool it serialises is overlapping hundreds of
+    milliseconds of network. `RLock` because the accessors call `_db()`, which
+    takes it too.
     """
 
     def __init__(
@@ -143,7 +162,7 @@ class Cache:
         self.path = Path(path)
         self.policy = policy or CachePolicy()
         self.enabled = enabled
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
 
     # ---------------------------------------------------------------- internals
@@ -169,18 +188,22 @@ class Cache:
         ttl = self.policy.ttl(volatility)
         if ttl == 0.0:
             return None
-        row = (
-            self._db()
-            .execute("SELECT value, stored_at FROM entries WHERE key = ?", (key,))
-            .fetchone()
-        )
-        if row is None:
-            return None
-        value, stored_at = row
-        if ttl is not None and (time.time() - stored_at) > ttl:
-            return None
-        self._db().execute("UPDATE entries SET hits = hits + 1 WHERE key = ?", (key,))
-        self._db().commit()
+        with self._lock:
+            row = (
+                self._db()
+                .execute("SELECT value, stored_at FROM entries WHERE key = ?", (key,))
+                .fetchone()
+            )
+            if row is None:
+                return None
+            value, stored_at = row
+            if ttl is not None and (time.time() - stored_at) > ttl:
+                return None
+            self._db().execute("UPDATE entries SET hits = hits + 1 WHERE key = ?", (key,))
+            self._db().commit()
+        # Decoded outside the lock: a cached page of a thousand transfers is a
+        # megabyte of JSON, and parsing it is the one part of this that is not
+        # microseconds.
         return json.loads(value)
 
     def put(
@@ -193,42 +216,46 @@ class Cache:
     ) -> None:
         if not self.enabled or self.policy.ttl(volatility) == 0.0:
             return
-        self._db().execute(
-            "INSERT OR REPLACE INTO entries "
-            "(key, value, volatility, stored_at, provider, hits) "
-            "VALUES (?, ?, ?, ?, ?, COALESCE("
-            "  (SELECT hits FROM entries WHERE key = ?), 0))",
-            (key, json.dumps(value, default=str), volatility.value, time.time(), provider, key),
-        )
-        self._db().commit()
+        encoded = json.dumps(value, default=str)
+        with self._lock:
+            self._db().execute(
+                "INSERT OR REPLACE INTO entries "
+                "(key, value, volatility, stored_at, provider, hits) "
+                "VALUES (?, ?, ?, ?, ?, COALESCE("
+                "  (SELECT hits FROM entries WHERE key = ?), 0))",
+                (key, encoded, volatility.value, time.time(), provider, key),
+            )
+            self._db().commit()
 
     def purge_expired(self) -> int:
         """Drop entries past their TTL. Returns the number removed."""
         now = time.time()
         removed = 0
-        for v in Volatility:
-            ttl = self.policy.ttl(v)
-            if ttl is None or ttl == 0.0:
-                continue
-            cur = self._db().execute(
-                "DELETE FROM entries WHERE volatility = ? AND stored_at < ?",
-                (v.value, now - ttl),
-            )
-            removed += cur.rowcount
-        self._db().commit()
+        with self._lock:
+            for v in Volatility:
+                ttl = self.policy.ttl(v)
+                if ttl is None or ttl == 0.0:
+                    continue
+                cur = self._db().execute(
+                    "DELETE FROM entries WHERE volatility = ? AND stored_at < ?",
+                    (v.value, now - ttl),
+                )
+                removed += cur.rowcount
+            self._db().commit()
         return removed
 
     def stats(self) -> dict[str, Any]:
-        total, hits = (
-            self._db()
-            .execute("SELECT COUNT(*), COALESCE(SUM(hits), 0) FROM entries")
-            .fetchone()
-        )
-        by_vol = dict(
-            self._db()
-            .execute("SELECT volatility, COUNT(*) FROM entries GROUP BY volatility")
-            .fetchall()
-        )
+        with self._lock:
+            total, hits = (
+                self._db()
+                .execute("SELECT COUNT(*), COALESCE(SUM(hits), 0) FROM entries")
+                .fetchone()
+            )
+            by_vol = dict(
+                self._db()
+                .execute("SELECT volatility, COUNT(*) FROM entries GROUP BY volatility")
+                .fetchall()
+            )
         size = self.path.stat().st_size if self.path.exists() else 0
         return {
             "entries": total,
@@ -239,9 +266,12 @@ class Cache:
         }
 
     def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        # Also under the lock: closing while another thread is mid-statement is
+        # the same class of misuse this file was just fixed for.
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     def __enter__(self) -> Cache:
         return self

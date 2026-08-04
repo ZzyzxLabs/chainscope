@@ -55,7 +55,14 @@ class BinanceKlines(PriceSource):
         for a liquid pair and still far tighter than the daily granularity most
         free APIs offer."""
 
-        self._lock = threading.Lock()
+        # RLock, and held for every statement rather than only for opening
+        # the connection. `check_same_thread=False` disables sqlite3's check
+        # without making one connection safe to share, which cost this project
+        # a day in `transport.cache` --- see the docstring there. Nothing
+        # reaches this store from a thread pool today and it has not been
+        # observed failing; it is fixed because it is the same shape, and
+        # "nothing calls it concurrently yet" is how the other one shipped.
+        self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
 
     def is_offline(self) -> bool:
@@ -69,7 +76,8 @@ class BinanceKlines(PriceSource):
         if not self.path.exists():
             return False
         try:
-            row = self._db().execute("SELECT 1 FROM klines LIMIT 1").fetchone()
+            with self._lock:
+                row = self._db().execute("SELECT 1 FROM klines LIMIT 1").fetchone()
         except sqlite3.Error:
             return False
         return row is not None
@@ -96,34 +104,39 @@ class BinanceKlines(PriceSource):
         search window, wrong in a report. The caller now decides what gap it can
         accept, and can say so.
         """
-        row = (
-            self._db()
-            .execute(
-                "SELECT close FROM klines WHERE symbol = ? AND minute = ?",
-                (symbol, minute),
+        with self._lock:
+            row = (
+                self._db()
+                .execute(
+                    "SELECT close FROM klines WHERE symbol = ? AND minute = ?",
+                    (symbol, minute),
+                )
+                .fetchone()
             )
-            .fetchone()
-        )
-        if row:
-            return Decimal(row[0]), minute
-        row = (
-            self._db()
-            .execute(
-                "SELECT close, minute FROM klines "
-                "WHERE symbol = ? AND minute BETWEEN ? AND ? "
-                "ORDER BY ABS(minute - ?) LIMIT 1",
-                (symbol, minute - self.max_gap_minutes, minute + self.max_gap_minutes, minute),
+            if row:
+                return Decimal(row[0]), minute
+            row = (
+                self._db()
+                .execute(
+                    "SELECT close, minute FROM klines "
+                    "WHERE symbol = ? AND minute BETWEEN ? AND ? "
+                    "ORDER BY ABS(minute - ?) LIMIT 1",
+                    (
+                        symbol,
+                        minute - self.max_gap_minutes,
+                        minute + self.max_gap_minutes,
+                        minute,
+                    ),
+                )
+                .fetchone()
             )
-            .fetchone()
-        )
         return (Decimal(row[0]), int(row[1])) if row else None
 
     def _store(self, symbol: str, rows: list[list[Any]]) -> int:
-        self._db().executemany(
-            "INSERT OR IGNORE INTO klines VALUES (?, ?, ?)",
-            [(symbol, int(r[0]) // 60_000, str(r[4])) for r in rows],
-        )
-        self._db().commit()
+        prepared = [(symbol, int(r[0]) // 60_000, str(r[4])) for r in rows]
+        with self._lock:
+            self._db().executemany("INSERT OR IGNORE INTO klines VALUES (?, ?, ?)", prepared)
+            self._db().commit()
         return len(rows)
 
     # ---------------------------------------------------------------- network
@@ -226,14 +239,15 @@ class BinanceKlines(PriceSource):
         )
 
     def coverage(self) -> list[tuple[str, int, datetime, datetime]]:
-        rows = (
-            self._db()
-            .execute(
-                "SELECT symbol, COUNT(*), MIN(minute), MAX(minute) "
-                "FROM klines GROUP BY symbol ORDER BY symbol"
+        with self._lock:
+            rows = (
+                self._db()
+                .execute(
+                    "SELECT symbol, COUNT(*), MIN(minute), MAX(minute) "
+                    "FROM klines GROUP BY symbol ORDER BY symbol"
+                )
+                .fetchall()
             )
-            .fetchall()
-        )
         return [
             (
                 s,
@@ -245,6 +259,7 @@ class BinanceKlines(PriceSource):
         ]
 
     def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None

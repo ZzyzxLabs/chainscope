@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { Activity } from "@/components/activity";
 import { AskDialog } from "@/components/ask-dialog";
 import { Busy } from "@/components/busy";
 import { Spinner } from "@/components/spinner";
@@ -494,7 +495,11 @@ export default function CasePage() {
         role="status"
         aria-live="polite"
       >
-        {status.text}
+        <span>{status.text}</span>
+        {/* Beside the counts, not below them: "29 flows" and "3 reads failed"
+            are one sentence, and separating them lets the first be read
+            without the second. */}
+        <Activity busy={busy || work.on} />
       </footer>
 
       {asking ? (

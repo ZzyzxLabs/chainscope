@@ -489,7 +489,40 @@ button[disabled] { opacity: .45; cursor: default; }
   flex: none; padding: 6px 14px; font-family: var(--cs-mono); font-size: 11.5px;
   border-top: var(--cs-hair) solid var(--cs-line); color: var(--cs-muted);
   min-height: 27px; background: var(--cs-paper);
+  display: flex; align-items: center; gap: 14px;
 }
+
+/* The read log. Collapsed to a count, because the answer somebody wants most
+   of the time is "none failed" and a scrolling log across the bottom of a case
+   is noise until it is not. */
+.activity { margin-left: auto; position: relative; }
+.activity > button {
+  display: flex; gap: 10px; align-items: center; cursor: pointer;
+  background: transparent; border: 0; color: var(--cs-muted);
+  font-family: var(--cs-mono); font-size: 11.5px; padding: 0;
+}
+.activity > button:hover { color: var(--cs-ink); }
+.activity .bad { color: var(--cs-absent); font-weight: 600; }
+.activity .quiet { opacity: .7; }
+.activity .rows {
+  position: absolute; right: 0; bottom: 24px; width: min(920px, 88vw);
+  max-height: 46vh; overflow: auto; background: var(--cs-paper);
+  border: var(--cs-hair) solid var(--cs-line); padding: 10px 12px;
+  box-shadow: 0 -6px 24px rgb(0 0 0 / .18);
+}
+.activity table { border-collapse: collapse; width: 100%; font-size: 11px; }
+.activity th {
+  text-align: left; font-weight: 500; color: var(--cs-muted);
+  border-bottom: var(--cs-hair) solid var(--cs-line-soft); padding: 3px 8px 5px;
+  position: sticky; top: 0; background: var(--cs-paper);
+}
+.activity td { padding: 2px 8px; white-space: nowrap; }
+.activity .num { text-align: right; }
+.activity tbody tr.failed td { color: var(--cs-absent); }
+.activity tbody tr.capped td { color: var(--cs-caution); }
+.activity .capped { color: var(--cs-caution); font-weight: 600; }
+.activity tbody tr:hover td { background: var(--cs-paper-2); }
+.activity .cannot { margin: 0 0 8px; }
 .case-status.warn { color: var(--cs-caution); }
 .case-status.bad { color: var(--cs-absent); }
 .case-status.ok { color: var(--cs-ink-2); }

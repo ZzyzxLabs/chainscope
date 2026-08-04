@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -54,6 +55,7 @@ from ..providers.base import Capability, ProviderError, ResultTruncated
 from ..store.base import Query
 from ..store.sqlite import SqliteStore
 from . import ask, site
+from .activity import LOG, is_ceiling
 from .static import EXPORT_DIR, StaticSite, cache_control, content_type
 from .webapp import page as _page
 
@@ -867,6 +869,21 @@ class _Handlers:
             "warnings": list(found.warnings),
         }
 
+    def activity(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """What this server has read from a chain, newest first.
+
+        The page draws counts --- "22 addresses, 29 flows" --- and those are
+        the same whether the walk saw everything or a provider refused half of
+        it. This is the other half of that sentence, and the `failed` count is
+        the part worth putting on screen: a picture built on three failed reads
+        is short by whatever they carried, and nothing else on the page says
+        so.
+
+        Reads the in-memory log only. No store, no network.
+        """
+        limit = max(1, min(int(_first(query, "limit") or "60"), 400))
+        return {"events": LOG.recent(limit), "counts": LOG.summary()}
+
     def leads(self, query: dict[str, list[str]]) -> dict[str, Any]:
         """Open questions for the case, so the page can show what is unfinished."""
         from ..case.leads import LeadStore
@@ -1197,18 +1214,58 @@ def _fetch_page(
     Blockscout reports as an error rather than an empty list, so the check has
     to be on the message. Treating that as fatal would discard everything
     already gathered, and on a paged read that is most of the answer.
+
+    **Every outcome is recorded**, including the ones that are not errors. This
+    is the only place a provider is read, which makes it the only place that
+    can tell an address with no transfers apart from a page that failed --- and
+    those two produce the same empty canvas. See `activity`.
     """
+    started = time.monotonic()
+    name = getattr(provider, "name", provider.__class__.__name__)
+
+    def note(outcome: Any, rows: int, detail: str = "") -> None:
+        LOG.record(
+            provider=name,
+            chain=str(chain),
+            what=f"asset_transfers page {page}",
+            address=address,
+            outcome=outcome,
+            rows=rows,
+            ms=int((time.monotonic() - started) * 1000),
+            detail=detail,
+        )
+
     try:
-        rows = provider.asset_transfers(chain, address, direction="all", limit=1000, page=page)
-        return list(rows), False
+        rows = list(
+            provider.asset_transfers(chain, address, direction="all", limit=1000, page=page)
+        )
+        note("ok" if rows else "empty", len(rows))
+        return rows, False
     except ResultTruncated as exc:
         # A full page is the expected outcome when paging, not a failure. The
         # signal still means "there is more", which is what the loop is for;
         # the rows it carries are this page.
-        return list(exc.rows), False
+        carried = list(exc.rows)
+        note("more", len(carried))
+        return carried, False
     except ProviderError as exc:
         if "not found" in str(exc).lower() or "no token transfers" in str(exc).lower():
+            # The provider answered. "Nothing here" is a result, not a failure,
+            # and recording it as one would put a red row against every address
+            # that simply has no history.
+            note("empty", 0, str(exc))
             return [], True
+        # A paging ceiling is not a fault. Blockscout stops at ten thousand
+        # rows and raises to say so; what came back is real and there is more
+        # it will not serve, which is a truncated answer rather than a broken
+        # one. Marked red as a failure, it read as an outage on a read that
+        # worked exactly as documented.
+        note("capped" if is_ceiling(str(exc)) else "failed", 0, str(exc))
+        raise
+    except Exception as exc:
+        # A read that dies some other way is still a read that produced no
+        # rows, and the picture is short by them either way.
+        note("failed", 0, f"{type(exc).__name__}: {exc}")
         raise
 
 
@@ -1603,6 +1660,7 @@ def _make_handler(handlers: _Handlers) -> type[BaseHTTPRequestHandler]:
                 "/analyses": handlers.analyses,
                 "/leads": handlers.leads,
                 "/notes": handlers.notes,
+                "/activity": handlers.activity,
             }
             route = routes.get(parsed.path)
             if route is None:
