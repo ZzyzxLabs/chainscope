@@ -499,7 +499,12 @@ class _Handlers:
         """
         store = self._store(create=True)
         try:
-            fetched, complete = _fetch_into(store, key, chain)
+            # Anchored on what the case already knows, when it knows anything.
+            # A counterparty is interesting around the money that reached it,
+            # not for four hundred thousand blocks back from the chain head.
+            fetched, complete = _fetch_into(
+                store, key, chain, start_block=_known_range(store, chain) or 0
+            )
             return fetched, complete, None
         except (ProviderError, OSError) as exc:
             return 0, False, f"{type(exc).__name__}: {exc}"
@@ -1202,7 +1207,12 @@ def _sift(
 
 
 def _fetch_page(
-    provider: Any, chain: ChainId, address: str, page: int
+    provider: Any,
+    chain: ChainId,
+    address: str,
+    page: int,
+    *,
+    start_block: int | str = 0,
 ) -> tuple[list[Any], bool, bool]:
     """One page. Returns ``(rows, ended)`` and never raises for an empty listing.
 
@@ -1248,7 +1258,14 @@ def _fetch_page(
 
     try:
         rows = list(
-            provider.asset_transfers(chain, address, direction="all", limit=1000, page=page)
+            provider.asset_transfers(
+                chain,
+                address,
+                direction="all",
+                limit=1000,
+                page=page,
+                start_block=start_block,
+            )
         )
         note("ok" if rows else "empty", len(rows))
         return rows, False, False
@@ -1281,8 +1298,55 @@ def _fetch_page(
         raise
 
 
+def _known_range(store: SqliteStore, chain: ChainId, margin: int = 50_000) -> int | None:
+    """The oldest block the case already knows about, less a margin.
+
+    Expansion has a cheaper question available than "everything this address
+    ever did", and the case already contains it. When a seed's transfers span
+    blocks 113.61M to 113.92M, its counterparties are interesting *around
+    that*, and scanning from there rather than from a fixed window back from
+    the chain head is the difference between reading 100,000 blocks and
+    400,000.
+
+    Measured on the endpoint this was failing against: response time is about
+    a millisecond per block scanned, flat, whatever the chunk width --- 500
+    blocks in 1.0s, 5,000 in 5.2s, 20,000 in 20.7s. Widening buys fewer
+    requests and no time at all, so the only lever that matters is scanning
+    fewer blocks. A 400,000-block window over two directions is roughly 800
+    seconds of somebody else's server, per address, which does not survive
+    expanding three of them.
+
+    The margin exists because the interesting thing about a counterparty is
+    frequently what it did *before* the money arrived --- the funding of the
+    LpdFi attacker sat two thousand blocks ahead of the exploit, and a range
+    starting exactly at the earliest known transfer would have missed it.
+
+    Returns None when the case is empty, which means the caller has nothing
+    better to go on and should use its own default.
+    """
+    # Guarded, because this is an optimisation and not a requirement. A store
+    # that cannot answer means "no better idea than the default", which is
+    # exactly what None already communicates --- failing here would break a
+    # fetch for the sake of making it cheaper.
+    reader = getattr(store, "transfers", None)
+    if reader is None:
+        return None
+    oldest: int | None = None
+    for row in reader(Query(chain=chain, limit=20_000)):
+        block = getattr(row, "block", None)
+        if block and (oldest is None or block < oldest):
+            oldest = block
+    return max(0, oldest - margin) if oldest else None
+
+
 def _fetch_into(
-    store: SqliteStore, address: str, chain: ChainId, *, max_pages: int = 15, width: int = 4
+    store: SqliteStore,
+    address: str,
+    chain: ChainId,
+    *,
+    max_pages: int = 15,
+    width: int = 4,
+    start_block: int | str = 0,
 ) -> tuple[int, bool]:
     """Pull an address's transfers into the store, paging until they run out.
 
@@ -1341,7 +1405,9 @@ def _fetch_into(
     refused: Exception | None = None
     for candidate in providers:
         try:
-            first, ended, short = _fetch_page(candidate, chain, address, 1)
+            first, ended, short = _fetch_page(
+                candidate, chain, address, 1, start_block=start_block
+            )
             provider = candidate
             break
         except ProviderError as exc:
@@ -1368,7 +1434,10 @@ def _fetch_into(
             window = list(range(page, min(page + span, max_pages + 1)))
             with ThreadPoolExecutor(max_workers=len(window)) as pool:
                 jobs = {
-                    n: pool.submit(_fetch_page, provider, chain, address, n) for n in window
+                    n: pool.submit(
+                        _fetch_page, provider, chain, address, n, start_block=start_block
+                    )
+                    for n in window
                 }
                 # Absorbed in page order regardless of completion order, so the
                 # rows land in the same sequence a serial read would produce

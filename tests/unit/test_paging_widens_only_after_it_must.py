@@ -30,7 +30,7 @@ class FakeProvider:
         self.asked: list[int] = []
         self._lock = threading.Lock()
 
-    def asset_transfers(self, chain, address, *, direction, limit, page):
+    def asset_transfers(self, chain, address, *, direction, limit, page, **_):
         with self._lock:
             self.asked.append(page)
         if self._delay:
@@ -115,7 +115,7 @@ def test_rows_land_in_page_order_whatever_the_network_did(monkeypatch) -> None:
     """Completion order must not decide the stored sequence."""
 
     class Jittery(FakeProvider):
-        def asset_transfers(self, chain, address, *, direction, limit, page):
+        def asset_transfers(self, chain, address, *, direction, limit, page, **_):
             # Later pages return sooner, so completion order is reversed.
             time.sleep(max(0.0, 0.3 - 0.1 * page))
             return FakeProvider.asset_transfers(
