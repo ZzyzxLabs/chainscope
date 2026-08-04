@@ -53,6 +53,15 @@ __all__ = [
 ]
 
 
+#: Unicode categories that occupy no width when rendered.
+#:
+#: ``Mn`` non-spacing mark, ``Me`` enclosing mark, ``Cf`` format, ``Cc``
+#: control. A ticker containing any of them displays one string and carries
+#: another, which is the whole mechanism behind ``U឵S឵Dꓚ`` --- ASCII letters
+#: with U+17B5 KHMER VOWEL INHERENT AA spliced between them. See `skeleton`.
+_INVISIBLE = frozenset({"Mn", "Me", "Cf", "Cc"})
+
+
 #: Characters that resemble an ASCII character, mapped to the one they resemble.
 #:
 #: A curated subset of UTS #39's confusables table, restricted to ASCII targets.
@@ -155,6 +164,37 @@ TO_ASCII: dict[str, str] = {
     "Ꮟ": "b",
     "Ᏼ": "B",
     "Ᏽ": "Y",
+    # Lisu (Fraser alphabet), whose letters were drawn from upright and rotated
+    # Latin capitals --- so a subset of the block is pixel-identical to ASCII.
+    # `ꓚ` was the `C` in `U឵S឵Dꓚ`, a counterfeit USDC on BSC.
+    #
+    # Only the upright ones are listed. The rotated letters (`ꓘ` from K, `ꓛ`
+    # from C) are *not* confusable --- a reader sees a mirrored glyph --- and
+    # folding them would turn a distinguishable symbol into a reported forgery,
+    # which is the failure this table is most careful about.
+    "ꓐ": "B",
+    "ꓑ": "P",
+    "ꓓ": "D",
+    "ꓔ": "T",
+    "ꓖ": "G",
+    "ꓗ": "K",
+    "ꓙ": "J",
+    "ꓚ": "C",
+    "ꓟ": "M",
+    "ꓠ": "N",
+    "ꓡ": "L",
+    "ꓢ": "S",
+    "ꓤ": "Z",
+    "ꓥ": "V",
+    "ꓧ": "H",
+    "ꓪ": "W",
+    "ꓬ": "Y",
+    "ꓮ": "A",
+    "ꓰ": "E",
+    "ꓲ": "I",
+    "ꓳ": "O",
+    "ꓴ": "U",
+    "ꓸ": ".",
 }
 
 # Fullwidth forms and mathematical alphanumerics are mechanical ranges, so they
@@ -245,6 +285,26 @@ def skeleton(text: str) -> str:
     Compatibility decomposition runs first, so ``ⓤ`` and ``ｕ`` reduce before
     the table is consulted.
 
+    **Characters that render as nothing are dropped, and this was a real
+    miss.** Two counterfeit tokens in the LpdFi case (BSC, August 2026) carried
+    the symbols ``U឵S឵Dꓚ`` and ``B឵N឵B``: ordinary ASCII letters with
+    U+17B5 KHMER VOWEL INHERENT AA spliced between them. It is a non-spacing
+    mark, so it occupies no width and the symbol *renders* as USDC and BNB --- and
+    NFKC preserves it, so the skeleton kept it, the comparison against ``USDC``
+    failed, and the tool filed a deliberate forgery under "no canonical entry
+    for this symbol". Honest, and useless: the whole point of the symbol was to
+    be read as USDC.
+
+    So: **NFKD**, then drop non-spacing marks, enclosing marks, and format and
+    control characters, then fold. NFKD also splits ``Ú`` (U+00DA) into ``U``
+    plus a combining acute, which the same step removes --- the third token in
+    that case was ``ÚЅDC``, and its ``Ú`` survived NFKC untouched.
+
+    Dropping marks is safe for a *ticker* specifically. A combining mark inside
+    a currency symbol is not a writing system doing its job; no legitimate
+    ticker needs one. This function is not a general-purpose identifier
+    normaliser and should not be used as one.
+
     **Partial by construction.** :data:`TO_ASCII` covers the blocks that
     impersonate ASCII in practice, not the whole confusables table. A skeleton
     that still contains non-ASCII is not evidence of innocence --- it means this
@@ -252,8 +312,9 @@ def skeleton(text: str) -> str:
     :func:`suspicious_characters` reports what was left over instead of
     swallowing it.
     """
-    decomposed = unicodedata.normalize("NFKC", text)
-    return "".join(TO_ASCII.get(ch, ch) for ch in decomposed)
+    decomposed = unicodedata.normalize("NFKD", text)
+    visible = (ch for ch in decomposed if unicodedata.category(ch) not in _INVISIBLE)
+    return "".join(TO_ASCII.get(ch, ch) for ch in visible)
 
 
 def confusable(left: str, right: str) -> bool:

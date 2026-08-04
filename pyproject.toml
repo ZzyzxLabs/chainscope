@@ -161,6 +161,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "src/chainscope/core/confusable.py" = ["RUF001", "RUF002", "RUF003"]
 "src/chainscope/analysis/impersonation.py" = ["RUF002"]
 "tests/unit/test_impersonation.py" = ["RUF001", "RUF002"]
+# Same reason: its fixtures are three real counterfeit tickers from the LpdFi
+# case, in the docstring that explains them and in the table that tests them.
+"tests/unit/test_invisible_characters_in_a_ticker.py" = ["RUF001", "RUF002"]
 
 
 [tool.mypy]
