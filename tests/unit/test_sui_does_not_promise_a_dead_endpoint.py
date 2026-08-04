@@ -16,6 +16,12 @@ The protocol is deprecated in the node software rather than removed, so an
 operator may still serve it. A *configured* endpoint is therefore still
 honoured; only the known-retired ones are refused, and the refusal says what
 happened and what to do instead.
+
+The default came back once there was something to default *to*: the
+Foundation's GraphQL RPC is public, needs no key, and answers. Requiring
+configuration for a working public endpoint would be its own kind of wrong ---
+the rule is that a default must be a promise the provider can keep, not that
+defaults are bad.
 """
 
 from __future__ import annotations
@@ -36,10 +42,18 @@ class _Settings:
         self.credentials: dict[str, object] = {}
 
 
-def test_nothing_configured_registers_nothing() -> None:
-    """Rather than registering a source certain to fail. `doctor` then reports
-    the chain as unconfigured, which is true and actionable."""
-    assert SuiProvider.from_settings(_Settings(None), SUI) == []
+def test_nothing_configured_uses_the_public_graphql_endpoint() -> None:
+    """A default is fine when it answers. This one does."""
+    (made,) = SuiProvider.from_settings(_Settings(None), SUI)
+    assert made.endpoint.endswith("/graphql")
+    assert "sui.io" in made.endpoint
+
+
+def test_the_default_is_not_one_of_the_retired_endpoints() -> None:
+    """The rule that outlives this particular migration: whatever is defaulted
+    to must not be on the list of things known not to answer."""
+    (made,) = SuiProvider.from_settings(_Settings(None), SUI)
+    assert made.endpoint not in RETIRED
 
 
 def test_a_retired_endpoint_is_refused_with_the_reason() -> None:

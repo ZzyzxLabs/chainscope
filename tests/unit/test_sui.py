@@ -10,6 +10,8 @@ well-formed, one entity that looks like two, a balance a billion times too
 small, and every outbound transfer overstated by its fee.
 """
 
+import re
+
 import pytest
 
 from chainscope.chains.base import InvalidAddressError
@@ -37,20 +39,45 @@ ONE_SUI = 10**9
 
 
 class FakeClient:
-    """Serves canned JSON-RPC results keyed by method."""
+    """Serves canned GraphQL results keyed by operation name.
+
+    The provider speaks GraphQL since the Sui Foundation switched off JSON-RPC
+    on its public fullnodes. Only the transport changed --- the balance-change
+    pairing these tests exercise is the same code --- so the fixtures below
+    produce GraphQL response shapes and the assertions are untouched.
+    """
 
     def __init__(self, results):
         self.results = results
         self.calls = []
 
-    def rpc(self, url, method, params=None, **kw):
-        self.calls.append((method, params))
-        value = self.results.get(method)
+    def post_json(self, url, payload, **kw):
+        query = payload.get("query", "")
+        variables = payload.get("variables") or {}
+        # `query History(...)` --- the operation name is what the tests key on.
+        name = re.search(r"query\s+(\w+)", query)
+        op = name.group(1) if name else ""
+        self.calls.append((op, variables))
+        value = self.results.get(op)
         if isinstance(value, Exception):
             raise value
         if callable(value):
-            return value(params)
-        return value
+            # Direction lives in the *query text* now --- `sentAddress` against
+            # `affectedAddress` --- rather than in a `FromAddress` key in the
+            # params, so it is handed over explicitly. Fixtures read
+            # `req["outbound"]`, which says what they mean better than the
+            # shape they used to pattern-match.
+            value = value(
+                {
+                    "outbound": "sentAddress" in query,
+                    "address": variables.get("a"),
+                    "cursor": variables.get("after"),
+                    "first": variables.get("n"),
+                }
+            )
+        # The provider unwraps `data` and raises on `errors`, so a fixture that
+        # is not a dict arrives as a malformed body rather than as a crash.
+        return value if isinstance(value, dict) and "errors" in value else {"data": value}
 
 
 def tx(
@@ -58,29 +85,50 @@ def tx(
     changes=(),
     gas=1_000_000,
     checkpoint=100,
-    timestamp_ms=1_700_000_000_000,
+    timestamp="2023-11-14T22:13:20Z",
+    rebate=0,
+    sender=None,
 ):
-    return {
+    node = {
         "digest": digest,
-        "checkpoint": str(checkpoint),
-        "timestampMs": str(timestamp_ms),
-        "balanceChanges": list(changes),
         "effects": {
-            "gasUsed": {
-                "computationCost": str(gas),
-                "storageCost": "0",
-                "storageRebate": "0",
-            }
+            "status": "SUCCESS",
+            "checkpoint": {"sequenceNumber": checkpoint, "timestamp": timestamp},
+            "gasEffects": {
+                "gasSummary": {
+                    "computationCost": str(gas),
+                    "storageCost": "0",
+                    "storageRebate": str(rebate),
+                }
+            },
+            "balanceChanges": {"nodes": list(changes)},
         },
     }
+    if sender is not None:
+        node["sender"] = {"address": sender}
+    return node
 
 
 def change(owner, amount, coin=SUI_TYPE):
-    return {"owner": {"AddressOwner": owner}, "coinType": coin, "amount": str(amount)}
+    """A balance change.
+
+    `owner` is an object rather than a tagged union now: GraphQL exposes the
+    account directly and reports None for an object owner, which is the
+    distinction `_owner` exists to keep."""
+    return {
+        "owner": {"address": owner} if owner else None,
+        "coinType": {"repr": coin},
+        "amount": str(amount),
+    }
 
 
 def page(items, more=False, cursor=None):
-    return {"data": list(items), "hasNextPage": more, "nextCursor": cursor}
+    return {
+        "transactions": {
+            "pageInfo": {"hasNextPage": more, "endCursor": cursor},
+            "nodes": list(items),
+        }
+    }
 
 
 def provider(results):
@@ -171,9 +219,9 @@ class TestProviderShape:
 
     def test_the_cache_is_scoped_by_chain_not_url(self):
         """Two fullnodes serving mainnet must share cache entries."""
-        p = provider({"suix_getBalance": {"totalBalance": "0"}})
+        p = provider({"Bal": {"address": {"balance": {"totalBalance": "0"}}}})
         p.get_account(SUI_MAINNET, ALICE)
-        assert p.client.calls[0][0] == "suix_getBalance"
+        assert p.client.calls[0][0] == "Bal"
 
     def test_a_bad_direction_is_rejected(self):
         with pytest.raises(ProviderError, match="direction"):
@@ -183,7 +231,7 @@ class TestProviderShape:
 class TestGasCorrection:
     def _one_transfer(self, gas):
         return {
-            "suix_queryTransactionBlocks": lambda params: (
+            "History": lambda req: (
                 page(
                     [
                         tx(
@@ -195,7 +243,7 @@ class TestGasCorrection:
                         )
                     ]
                 )
-                if params[0]["filter"].get("FromAddress")
+                if req["outbound"]
                 else page([])
             )
         }
@@ -215,9 +263,9 @@ class TestGasCorrection:
         """After the correction the net movement is zero, which is the truth:
         paying a fee is not sending anyone anything."""
         results = {
-            "suix_queryTransactionBlocks": lambda params: (
+            "History": lambda req: (
                 page([tx(changes=[change(ALICE, -1_000_000)], gas=1_000_000)])
-                if params[0]["filter"].get("FromAddress")
+                if req["outbound"]
                 else page([])
             )
         }
@@ -226,24 +274,12 @@ class TestGasCorrection:
     def test_the_storage_rebate_reduces_the_gas(self):
         """Ignoring the rebate overstates gas, which then under-reports the
         transfer it is subtracted from."""
-        raw = {
-            "digest": "0x" + "d" * 64,
-            "checkpoint": "100",
-            "timestampMs": "1700000000000",
-            "balanceChanges": [change(ALICE, -(ONE_SUI + 3_000_000)), change(BOB, ONE_SUI)],
-            "effects": {
-                "gasUsed": {
-                    "computationCost": "5000000",
-                    "storageCost": "0",
-                    "storageRebate": "2000000",
-                }
-            },
-        }
-        results = {
-            "suix_queryTransactionBlocks": lambda params: (
-                page([raw]) if params[0]["filter"].get("FromAddress") else page([])
-            )
-        }
+        raw = tx(
+            changes=[change(ALICE, -(ONE_SUI + 3_000_000)), change(BOB, ONE_SUI)],
+            gas=5_000_000,
+            rebate=2_000_000,
+        )
+        results = {"History": lambda req: page([raw]) if req["outbound"] else page([])}
         (transfer,) = provider(results).asset_transfers(SUI_MAINNET, ALICE, direction="out")
         assert transfer.amount.raw == ONE_SUI
 
@@ -251,7 +287,7 @@ class TestGasCorrection:
 class TestTransfers:
     def _results(self):
         return {
-            "suix_queryTransactionBlocks": lambda params: (
+            "History": lambda req: (
                 page(
                     [
                         tx(
@@ -262,7 +298,7 @@ class TestTransfers:
                         )
                     ]
                 )
-                if params[0]["filter"].get("FromAddress")
+                if req["outbound"]
                 else page([])
             )
         }
@@ -285,7 +321,7 @@ class TestTransfers:
 
     def test_a_non_native_coin_is_marked_token(self):
         results = {
-            "suix_queryTransactionBlocks": lambda params: (
+            "History": lambda req: (
                 page(
                     [
                         tx(
@@ -296,7 +332,7 @@ class TestTransfers:
                         )
                     ]
                 )
-                if params[0]["filter"].get("FromAddress")
+                if req["outbound"]
                 else page([])
             )
         }
@@ -308,7 +344,7 @@ class TestTransfers:
         """Only AddressOwner is an account. An object id in the graph looks
         like something somebody controls."""
         results = {
-            "suix_queryTransactionBlocks": lambda params: (
+            "History": lambda req: (
                 page(
                     [
                         {
@@ -327,17 +363,17 @@ class TestTransfers:
                         }
                     ]
                 )
-                if params[0]["filter"].get("FromAddress")
+                if req["outbound"]
                 else page([])
             )
         }
         assert provider(results).asset_transfers(SUI_MAINNET, ALICE, direction="out") == []
 
     def test_addresses_are_normalised_in_the_query(self):
-        results = {"suix_queryTransactionBlocks": lambda params: page([])}
+        results = {"History": lambda req: page([])}
         p = provider(results)
         p.asset_transfers(SUI_MAINNET, FRAMEWORK_SHORT, direction="out")
-        sent = p.client.calls[0][1][0]["filter"]["FromAddress"]
+        sent = p.client.calls[0][1]["a"]
         assert sent == FRAMEWORK_FULL
 
 
@@ -350,22 +386,22 @@ class TestPagination:
         ]
         calls = {"n": 0}
 
-        def serve(params):
-            if not params[0]["filter"].get("FromAddress"):
+        def serve(req):
+            if not req["outbound"]:
                 return page([])
             result = pages[min(calls["n"], len(pages) - 1)]
             calls["n"] += 1
             return result
 
-        p = provider({"suix_queryTransactionBlocks": serve})
+        p = provider({"History": serve})
         p.asset_transfers(SUI_MAINNET, ALICE, direction="out", limit=100)
         assert calls["n"] == 2
 
     def test_a_missing_cursor_does_not_loop_forever(self):
         """hasNextPage true with no cursor would re-request the same page."""
         results = {
-            "suix_queryTransactionBlocks": lambda params: page(
-                [tx()] if params[0]["filter"].get("FromAddress") else [],
+            "History": lambda req: page(
+                [tx()] if req["outbound"] else [],
                 more=True,
                 cursor=None,
             )
@@ -376,14 +412,14 @@ class TestPagination:
 
     def test_a_malformed_page_is_rejected(self):
         with pytest.raises(ProviderError, match="unexpected response shape"):
-            provider({"suix_queryTransactionBlocks": "not a dict"}).asset_transfers(
+            provider({"History": "not a dict"}).asset_transfers(
                 SUI_MAINNET, ALICE, direction="out"
             )
 
 
 class TestAccount:
     def test_balance_uses_nine_decimals(self):
-        p = provider({"suix_getBalance": {"totalBalance": str(3 * ONE_SUI)}})
+        p = provider({"Bal": {"address": {"balance": {"totalBalance": str(3 * ONE_SUI)}}}})
         account = p.get_account(SUI_MAINNET, ALICE)
         assert account.balance.raw == 3 * ONE_SUI
         assert str(account.balance) == "3 SUI"
@@ -391,16 +427,28 @@ class TestAccount:
     def test_there_is_no_nonce(self):
         """Sui has none, so completeness cannot be checked that way. None is
         honest; zero would read as "no transactions"."""
-        p = provider({"suix_getBalance": {"totalBalance": "0"}})
+        p = provider({"Bal": {"address": {"balance": {"totalBalance": "0"}}}})
         assert p.get_account(SUI_MAINNET, ALICE).tx_count is None
 
     def test_all_balances_report_unknown_decimals_as_base_units(self):
         p = provider(
             {
-                "suix_getAllBalances": [
-                    {"coinType": SUI_TYPE, "totalBalance": str(ONE_SUI)},
-                    {"coinType": "0xdead::coin::USDC", "totalBalance": "5000000"},
-                ]
+                "All": {
+                    "address": {
+                        "balances": {
+                            "nodes": [
+                                {
+                                    "coinType": {"repr": SUI_TYPE},
+                                    "totalBalance": str(ONE_SUI),
+                                },
+                                {
+                                    "coinType": {"repr": "0xdead::coin::USDC"},
+                                    "totalBalance": "5000000",
+                                },
+                            ]
+                        }
+                    }
+                }
             }
         )
         native, token = p.balances(ALICE)
@@ -413,7 +461,7 @@ class TestHistory:
         """Not a gap: a Sui transaction can touch many addresses, so the detail
         lives in `transfers` rather than in a top-level counterparty."""
         results = {
-            "suix_queryTransactionBlocks": lambda params: (
+            "History": lambda req: (
                 page(
                     [
                         tx(
@@ -425,7 +473,7 @@ class TestHistory:
                         )
                     ]
                 )
-                if params[0]["filter"].get("FromAddress")
+                if req["outbound"]
                 else page([])
             )
         }
@@ -436,7 +484,7 @@ class TestHistory:
 
     def test_a_block_range_filters_client_side(self):
         results = {
-            "suix_queryTransactionBlocks": lambda params: (
+            "History": lambda req: (
                 page(
                     [
                         tx(
@@ -451,7 +499,7 @@ class TestHistory:
                         ),
                     ]
                 )
-                if params[0]["filter"].get("FromAddress")
+                if req["outbound"]
                 else page([])
             )
         }
@@ -480,7 +528,7 @@ class TestCoinTypeAnchoring:
 class TestTokenDecimalsAreNotGuessed:
     def _usdc_tx(self):
         return {
-            "suix_queryTransactionBlocks": lambda params: (
+            "History": lambda req: (
                 page(
                     [
                         tx(
@@ -491,7 +539,7 @@ class TestTokenDecimalsAreNotGuessed:
                         )
                     ]
                 )
-                if params[0]["filter"].get("FromAddress")
+                if req["outbound"]
                 else page([])
             )
         }
@@ -507,11 +555,11 @@ class TestTokenDecimalsAreNotGuessed:
 
     def test_the_native_asset_still_gets_nine(self):
         results = {
-            "suix_queryTransactionBlocks": lambda params: (
+            "History": lambda req: (
                 page(
                     [tx(changes=[change(ALICE, -(ONE_SUI + 1_000_000)), change(BOB, ONE_SUI)])]
                 )
-                if params[0]["filter"].get("FromAddress")
+                if req["outbound"]
                 else page([])
             )
         }
@@ -521,7 +569,7 @@ class TestTokenDecimalsAreNotGuessed:
     def test_two_coins_from_one_package_are_distinct_assets(self):
         """Keying on the package alone collapses them into one asset."""
         results = {
-            "suix_queryTransactionBlocks": lambda params: (
+            "History": lambda req: (
                 page(
                     [
                         tx(
@@ -535,7 +583,7 @@ class TestTokenDecimalsAreNotGuessed:
                         )
                     ]
                 )
-                if params[0]["filter"].get("FromAddress")
+                if req["outbound"]
                 else page([])
             )
         }

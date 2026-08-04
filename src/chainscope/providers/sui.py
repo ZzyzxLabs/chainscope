@@ -1,9 +1,23 @@
-"""Sui provider.
+"""Sui provider, over the Foundation's public GraphQL RPC.
 
-Sui answers "what did this address do" directly --- ``suix_queryTransactionBlocks``
-takes a ``FromAddress`` or ``ToAddress`` filter --- so unlike EVM there is no gap
-between what JSON-RPC offers and what an investigation needs, and no explorer
-key is required for address history.
+Sui answers "what did this address do" directly --- ``transactions`` takes a
+``sentAddress`` or ``affectedAddress`` filter --- so unlike EVM there is no gap
+between what the RPC offers and what an investigation needs, and no key is
+required for address history.
+
+**GraphQL, not JSON-RPC, and not gRPC.** The Foundation disabled JSON-RPC on
+its public fullnodes in the week of 27 July 2026; every method this file used
+to call now answers "Method not found". Of the two replacements, gRPC means
+protobuf over HTTP/2 with a `grpcio` dependency and generated stubs, and it
+would bypass this project's entire transport layer --- the response cache, the
+audit log, the circuit breaker, the credential scrubber. GraphQL is an HTTP
+POST with a JSON body and keeps all of it. Sui positions gRPC for real-time
+access and execution and GraphQL for structured queries over live and
+historical data, which is what an investigation is.
+
+Only the transport changed. The balance-change pairing below, and the traps in
+it, are the same as they were --- which is why the port is a new `_query_blocks`
+and not a new provider.
 
 The data it returns is unusually convenient and has one trap in it.
 
@@ -26,6 +40,14 @@ dust and skipped.
 
 Pagination is cursor-based rather than offset-based, and the cursor is opaque.
 ``hasNextPage`` is authoritative; a short page is not evidence of the end.
+
+**Inbound is ``affectedAddress``, which is wider than the old ``ToAddress``.**
+It matches any transaction the address took part in, senders included, so the
+"in" direction over-collects rather than under-collects. The pairing step
+discards anything whose balance change has the wrong sign, so the result is the
+same and the cost is requests --- the right way round, since the alternative
+misses inbound value that arrived without the address being the named
+recipient.
 """
 
 from __future__ import annotations
@@ -79,16 +101,43 @@ SUI_MAINNET_RPC = "https://fullnode.mainnet.sui.io:443"
 #: provider that was registered, selected, and certain to fail --- which is the
 #: capability-overstatement `Capability` warns about, in the form of a URL.
 NETWORK_RPC = {
-    "mainnet": SUI_MAINNET_RPC,
-    "testnet": "https://fullnode.testnet.sui.io:443",
-    "devnet": "https://fullnode.devnet.sui.io:443",
+    "mainnet": "https://graphql.mainnet.sui.io/graphql",
+    "testnet": "https://graphql.testnet.sui.io/graphql",
+    "devnet": "https://graphql.devnet.sui.io/graphql",
 }
 
-#: Endpoints known to have stopped serving JSON-RPC. Registering a provider
-#: against one is worse than registering none: the router selects it, every
-#: call fails, and the failure looks like an outage rather than a decision
-#: somebody made about the protocol.
-RETIRED = frozenset(NETWORK_RPC.values())
+
+#: Endpoints known to have stopped serving JSON-RPC.
+#:
+#: Kept as a refusal rather than deleted: somebody's config, or a bundle
+#: recorded before the switch-off, still names one. Registering a provider
+#: against it is worse than registering none --- the router selects it, every
+#: call fails, and the failure reads like an outage rather than like a
+#: decision somebody made about a protocol.
+def _ms(iso: Any) -> int | None:
+    """A GraphQL checkpoint timestamp as epoch milliseconds.
+
+    JSON-RPC gave `timestampMs` directly and GraphQL gives ISO-8601, so the
+    conversion lives here rather than in the parsing below --- which still
+    reads `timestampMs`, because the protocol change is meant to stop at the
+    transport.
+    """
+    if not isinstance(iso, str) or not iso:
+        return None
+    try:
+        return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+RETIRED = frozenset(
+    {
+        SUI_MAINNET_RPC,
+        "https://fullnode.mainnet.sui.io:443",
+        "https://fullnode.testnet.sui.io:443",
+        "https://fullnode.devnet.sui.io:443",
+    }
+)
 
 #: Page size the public fullnodes accept. Asking for more is refused rather
 #: than silently reduced.
@@ -168,13 +217,16 @@ class SuiProvider(ReadOnlyProvider):
         """
         if not cls.serves(chain):
             return []
-        url = settings.rpc.get("sui")
+        # A default again, now that there is a public endpoint that answers.
+        #
+        # It was removed an hour ago and correctly: the JSON-RPC default had
+        # been switched off, so registering against it promised a capability
+        # the provider could not deliver. The Foundation's GraphQL RPC is
+        # public, needs no key, and answers --- so the default is a promise
+        # that holds, and requiring configuration for a working public endpoint
+        # would be its own kind of wrong.
+        url = settings.rpc.get("sui") or NETWORK_RPC.get(chain.reference)
         if not url:
-            # No default. There is no public endpoint left that serves this
-            # protocol, so a default here is a promise the provider cannot
-            # keep. `doctor` reports the chain as unconfigured, which is true
-            # and actionable, rather than reporting a provider that fails on
-            # every call.
             return []
         if url.rstrip("/") in RETIRED:
             raise ProviderError(
@@ -189,86 +241,176 @@ class SuiProvider(ReadOnlyProvider):
 
     # ---------------------------------------------------------------- request
 
-    def _rpc(
+    _HISTORY = """
+query History($a: SuiAddress!, $n: Int!, $after: String) {
+  transactions(filter: {FILTER: $a}, first: $n, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      digest
+      effects {
+        status
+        checkpoint { sequenceNumber timestamp }
+        gasEffects { gasSummary { computationCost storageCost storageRebate } }
+        balanceChanges { nodes { owner { address } coinType { repr } amount } }
+      }
+    }
+  }
+}"""
+
+    def _graphql(
         self,
-        method: str,
-        params: list[Any],
+        query: str,
+        variables: dict[str, Any],
         *,
         volatility: Volatility = Volatility.SETTLED,
     ) -> Any:
+        """One GraphQL request, through the same transport as everything else.
+
+        `Client.rpc` is a JSON POST with a cache key, an audit entry, a circuit
+        breaker and a credential scrubber attached. GraphQL is a JSON POST.
+        Reusing it is the whole reason this is GraphQL and not gRPC.
+
+        **A GraphQL 200 can carry errors.** Unlike JSON-RPC there is no
+        transport-level failure to trip on: the body arrives with `data: null`
+        and an `errors` array, and a caller reading `data` sees an absence. So
+        errors are raised here, before anything downstream can read the shape
+        as an empty history.
+        """
         try:
-            return self.client.rpc(
+            body = self.client.post_json(
                 self.url,
-                method,
-                params,
+                {"query": query, "variables": variables},
                 volatility=volatility,
                 provider=self.name,
-                # Scope by chain, not URL: two fullnodes serving mainnet must
+                # Scope by chain, not URL: two endpoints serving mainnet must
                 # share cache entries, and a bundle recorded against one has to
                 # replay against the other.
                 scope=str(self.chain),
             )
         except TransportError as exc:
-            raise ProviderError(f"{method}: {exc}") from exc
+            raise ProviderError(f"graphql: {exc}") from exc
+
+        if not isinstance(body, dict):
+            raise ProviderError(f"graphql: unexpected response shape {type(body).__name__}")
+        if body.get("errors"):
+            first = body["errors"][0] if isinstance(body["errors"], list) else body["errors"]
+            message = (first or {}).get("message") if isinstance(first, dict) else str(first)
+            raise ProviderError(f"graphql: {message}")
+        data = body.get("data")
+        if data is None:
+            raise ProviderError("graphql: the response carried no data and no error")
+        if not isinstance(data, dict):
+            # A `ProviderError`, not whatever `.get` raises on a string. An
+            # AttributeError escapes the provider layer, so `Router.dispatch`
+            # cannot fall back and one malformed body takes down the call ---
+            # the same shape as the `_hexint` crash on a token with no
+            # `decimals()`, which is why the guard is here and not at the call
+            # site.
+            raise ProviderError(
+                f"graphql: unexpected response shape "
+                f"--- data is {type(data).__name__}, not an object"
+            )
+        return data
 
     def _query_blocks(
         self, address: str, *, direction: str, limit: int
     ) -> list[dict[str, Any]]:
-        """Paginate ``suix_queryTransactionBlocks`` for one address.
+        """Paginate ``transactions`` for one address, oldest cursor onward.
 
         ``hasNextPage`` decides when to stop. A page shorter than requested is
-        not evidence of the end --- the node may return fewer for its own
+        not evidence of the end --- the service may return fewer for its own
         reasons --- and treating it as such is how a history silently ends
         early.
 
         **The first page is not settled data.** It contains the tip, and an
-        address's history is a changing aggregate: cached for thirty days, as
-        `_rpc`'s default did, a second look at the same address a week later
-        returns the same answer and silently misses everything since. Later
-        pages are reached through a cursor into older checkpoints, which do not
-        change, so those keep the long TTL --- the deep history of a busy
-        address is exactly what is worth caching hard.
+        address's history is a changing aggregate: cached for thirty days a
+        second look a week later returns the same answer and silently misses
+        everything since. Later pages are reached through a cursor into older
+        checkpoints, which do not change, so those keep the long TTL --- the
+        deep history of a busy address is exactly what is worth caching hard.
+
+        Rows are reshaped into what the pairing step already expects, so the
+        protocol change stops here.
         """
-        key = "FromAddress" if direction == "out" else "ToAddress"
+        field = "sentAddress" if direction == "out" else "affectedAddress"
+        query = self._HISTORY.replace("FILTER", field)
         owner = normalize_address(address)
         out: list[dict[str, Any]] = []
-        cursor: Any = None
+        cursor: str | None = None
 
         while len(out) < limit:
-            page = self._rpc(
-                "suix_queryTransactionBlocks",
-                [
-                    {
-                        "filter": {key: owner},
-                        "options": {
-                            "showBalanceChanges": True,
-                            # Only gasUsed is read, but without effects the
-                            # sender's change cannot be corrected for gas.
-                            "showEffects": True,
-                            "showInput": False,
-                        },
-                    },
-                    cursor,
-                    min(MAX_PAGE, limit - len(out)),
-                    True,  # descending: most recent first
-                ],
-                # Page one holds the tip and goes stale; anything behind a
-                # cursor is older checkpoints, which do not.
+            data = self._graphql(
+                query,
+                {"a": owner, "n": min(MAX_PAGE, limit - len(out)), "after": cursor},
                 volatility=Volatility.SLOW if cursor is None else Volatility.SETTLED,
             )
-            if not isinstance(page, dict):
-                raise ProviderError("queryTransactionBlocks: unexpected response shape")
-
-            out.extend(page.get("data") or [])
-            if not page.get("hasNextPage"):
+            page = (data or {}).get("transactions") or {}
+            for node in page.get("nodes") or []:
+                out.append(self._as_row(node))
+            info = page.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
                 break
-            cursor = page.get("nextCursor")
-            if cursor is None:
+            cursor = info.get("endCursor")
+            if not cursor:
                 # hasNextPage true with no cursor would loop forever on the
                 # same page.
                 break
 
         return out[:limit]
+
+    @staticmethod
+    def _as_row(node: dict[str, Any]) -> dict[str, Any]:
+        """One GraphQL transaction as the dict the pairing step reads.
+
+        Deliberately a translation and not a redesign. The balance-change
+        pairing below is the part with the hard-won corrections in it --- net
+        changes, gas inside the sender's delta, nine decimals --- and rewriting
+        it alongside the transport would have made a protocol migration into a
+        rewrite of the logic that migration exists to preserve.
+        """
+        effects = node.get("effects") or {}
+        summary = ((effects.get("gasEffects") or {}).get("gasSummary")) or {}
+        checkpoint = effects.get("checkpoint") or {}
+        changes = []
+        for change in (effects.get("balanceChanges") or {}).get("nodes") or []:
+            owner = (change.get("owner") or {}).get("address")
+            coin = (change.get("coinType") or {}).get("repr")
+            changes.append(
+                {
+                    # Rewrapped into the tagged-union shape `_owner` reads. The
+                    # GraphQL `owner` is already an account or absent, so an
+                    # object owner arrives as None and is dropped there rather
+                    # than entering the graph as though somebody held it.
+                    "owner": {"AddressOwner": owner} if owner else None,
+                    "coinType": coin or SUI_TYPE,
+                    "amount": change.get("amount"),
+                }
+            )
+        sender = (node.get("sender") or {}).get("address")
+        return {
+            "digest": node.get("digest"),
+            # Rewrapped into the shapes the readers below already expect ---
+            # `_sender_of` looks under `transaction.data`, and the success test
+            # reads `effects.status.status` in lower case. GraphQL gives a flat
+            # `sender` and an upper-case `status`, and translating both here is
+            # what keeps the protocol change inside the transport. The first
+            # draft left them in GraphQL's shape, which made every transaction
+            # senderless and unsuccessful --- both silently, since "no sender"
+            # and "failed" are values those fields legitimately take.
+            "transaction": {"data": {"sender": sender}} if sender else {},
+            # The checkpoint number is what `block` is built from. Dropping it
+            # in the first draft of this translation cost every Sui transfer
+            # its position: ordering, `_known_range`, and the block column in
+            # every view all read None, which looks like data that simply has
+            # no block rather than a field the translation forgot.
+            "checkpoint": checkpoint.get("sequenceNumber"),
+            "timestampMs": _ms(checkpoint.get("timestamp")),
+            "balanceChanges": changes,
+            "effects": {
+                "gasUsed": summary,
+                "status": {"status": str(effects.get("status") or "").lower()},
+            },
+        }
 
     # ---------------------------------------------------------------- helpers
 
@@ -543,20 +685,26 @@ class SuiProvider(ReadOnlyProvider):
         still no single ``recipient``: a programmable transaction block can
         touch many addresses, so the detail is in ``transfers``.
         """
-        raw = self._rpc(
-            "sui_getTransactionBlock",
-            [
-                tx_hash,
-                {
-                    "showBalanceChanges": True,
-                    "showEffects": True,
-                    "showInput": True,
-                },
-            ],
+        data = self._graphql(
+            """
+query Tx($d: String!) {
+  transaction(digest: $d) {
+    digest
+    sender { address }
+    effects {
+      status
+      checkpoint { timestamp }
+      gasEffects { gasSummary { computationCost storageCost storageRebate } }
+      balanceChanges { nodes { owner { address } coinType { repr } amount } }
+    }
+  }
+}""",
+            {"d": tx_hash},
         )
-        if not isinstance(raw, dict) or not raw.get("digest"):
+        node = (data or {}).get("transaction")
+        if not isinstance(node, dict) or not node.get("digest"):
             raise ProviderError(f"transaction {tx_hash} not found")
-
+        raw = self._as_row(node)
         sender = self._sender_of(raw)
         gas = self._gas_cost(raw)
         transfers = self._transfers_from(raw, subject=sender)
@@ -673,17 +821,20 @@ class SuiProvider(ReadOnlyProvider):
         an order-of-magnitude error waiting to happen.
         """
         owner = normalize_address(address)
-        body = self._rpc(
-            "suix_getBalance",
-            [owner, SUI_TYPE],
+        data = self._graphql(
+            """
+query Bal($a: SuiAddress!, $c: String!) {
+  address(address: $a) { balance(coinType: $c) { totalBalance } }
+}""",
+            {"a": owner, "c": SUI_TYPE},
             volatility=Volatility.LIVE,
         )
         total = 0
-        if isinstance(body, dict):
-            try:
-                total = int(body.get("totalBalance", 0))
-            except (TypeError, ValueError):
-                total = 0
+        held = ((data or {}).get("address") or {}).get("balance") or {}
+        try:
+            total = int(held.get("totalBalance") or 0)
+        except (TypeError, ValueError):
+            total = 0
         return Account(
             address=Address(self.chain, address, owner),
             balance=Amount(total, SUI_DECIMALS, "SUI"),
@@ -702,14 +853,24 @@ class SuiProvider(ReadOnlyProvider):
         most tokens.
         """
         owner = normalize_address(address)
-        body = self._rpc("suix_getAllBalances", [owner], volatility=Volatility.LIVE)
-        if not isinstance(body, list):
+        data = self._graphql(
+            """
+query All($a: SuiAddress!) {
+  address(address: $a) {
+    balances(first: 50) { nodes { coinType { repr } totalBalance } }
+  }
+}""",
+            {"a": owner},
+            volatility=Volatility.LIVE,
+        )
+        nodes = (((data or {}).get("address") or {}).get("balances") or {}).get("nodes")
+        if not isinstance(nodes, list):
             return []
         out: list[Amount] = []
-        for entry in body:
+        for entry in nodes:
             if not isinstance(entry, dict):
                 continue
-            coin = str(entry.get("coinType") or "")
+            coin = str((entry.get("coinType") or {}).get("repr") or "")
             try:
                 total = int(entry.get("totalBalance", 0))
             except (TypeError, ValueError):

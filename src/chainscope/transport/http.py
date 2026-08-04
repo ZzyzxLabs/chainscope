@@ -398,6 +398,54 @@ class Client:
             self.cache.put(key, result, volatility, provider=provider)
         return result
 
+    def post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        volatility: Volatility = Volatility.SETTLED,
+        headers: dict[str, str] | None = None,
+        provider: str | None = None,
+        scope: str | None = None,
+    ) -> Any:
+        """A JSON POST that reads rather than writes. GraphQL, in practice.
+
+        Sibling of `rpc` rather than a use of it, because the two differ in the
+        one place that matters: JSON-RPC signals failure with an `error` member
+        beside a null `result`, and GraphQL returns HTTP 200 with `data: null`
+        and an `errors` array. Unwrapping GraphQL through `rpc` would look for
+        `result`, find nothing, and hand back `None` --- an error arriving as an
+        empty answer, which is the failure this package exists to refuse. The
+        whole body is returned and the caller inspects it.
+
+        `assert_payload_read_only` still applies: a GraphQL document naming a
+        mutation is refused here, so the read-only guarantee does not depend on
+        every provider remembering it.
+
+        Keyed by `scope` for the same reason `rpc` is --- chain identity is what
+        decides the answer, and a URL key makes a recorded bundle unreplayable
+        against a second endpoint.
+        """
+        assert_payload_read_only(payload)
+        key = cache_key("POST", scope or endpoint_identity(url), scrub_params(payload))
+        if (hit := self._from_cache(key, volatility, url, provider)) is not _MISS:
+            return hit
+
+        body = self._send(
+            url=url,
+            method_="POST",
+            key=key,
+            volatility=Volatility.NEVER,
+            provider=provider,
+            json=payload,
+            headers=headers,
+        )
+        # Not cached when the body carries errors: a GraphQL failure is a 200,
+        # so caching on status alone would remember an outage for thirty days.
+        if self.cache is not None and not (isinstance(body, dict) and body.get("errors")):
+            self.cache.put(key, body, volatility, provider=provider)
+        return body
+
     # ---------------------------------------------------------------- internals
 
     def _from_cache(

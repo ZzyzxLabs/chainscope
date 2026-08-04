@@ -23,27 +23,40 @@ R = "0x" + "b" * 64
 SUI = "0x2::sui::SUI"
 
 
-def reply(**over):
-    body = {
-        "digest": D,
-        "checkpoint": "42",
-        "timestampMs": "1700000000000",
-        "transaction": {"data": {"sender": S}},
-        "effects": {
-            "status": {"status": "success"},
-            "gasUsed": {
-                "computationCost": "1000000",
-                "storageCost": "2000000",
-                "storageRebate": "500000",
+def reply(status="SUCCESS", changes=None, digest=D, sender=S):
+    """One transaction, in the shape Sui's GraphQL returns.
+
+    The provider moved to GraphQL when the Foundation switched JSON-RPC off on
+    its public fullnodes. Only the transport changed --- the gas correction and
+    the sender/recipient pairing these tests pin are the same code --- so this
+    fixture changed shape and the assertions did not.
+    """
+    if changes is None:
+        changes = [
+            {"owner": {"address": S}, "coinType": {"repr": SUI}, "amount": "-1002500000"},
+            {"owner": {"address": R}, "coinType": {"repr": SUI}, "amount": "1000000000"},
+        ]
+    return {
+        "transaction": {
+            "digest": digest,
+            "sender": {"address": sender} if sender else None,
+            "effects": {
+                "status": status,
+                "checkpoint": {
+                    "sequenceNumber": 42,
+                    "timestamp": "2023-11-14T22:13:20Z",
+                },
+                "gasEffects": {
+                    "gasSummary": {
+                        "computationCost": "1000000",
+                        "storageCost": "2000000",
+                        "storageRebate": "500000",
+                    }
+                },
+                "balanceChanges": {"nodes": list(changes)},
             },
-        },
-        "balanceChanges": [
-            {"owner": {"AddressOwner": S}, "coinType": SUI, "amount": "-1002500000"},
-            {"owner": {"AddressOwner": R}, "coinType": SUI, "amount": "1000000000"},
-        ],
+        }
     }
-    body.update(over)
-    return body
 
 
 class Stub(SuiProvider):
@@ -51,7 +64,7 @@ class Stub(SuiProvider):
         super().__init__()
         self._body = body
 
-    def _rpc(self, method, params, **kw):
+    def _graphql(self, query, variables, **kw):
         return self._body
 
 
@@ -82,14 +95,15 @@ def test_value_excludes_gas():
 
 
 def test_a_failed_transaction_says_so():
-    body = reply()
-    body["effects"]["status"]["status"] = "failure"
-    assert not Stub(body).get_transaction(SUI_MAINNET, D).success
+    assert not Stub(reply(status="FAILURE")).get_transaction(SUI_MAINNET, D).success
 
 
 def test_a_missing_status_is_not_success():
+    """Absent is not success. GraphQL reports the status as a plain enum, so
+    the shape that used to be missing is now empty --- the guarantee is the
+    same and the way to write it is not."""
     body = reply()
-    body["effects"].pop("status")
+    body["transaction"]["effects"].pop("status")
     assert not Stub(body).get_transaction(SUI_MAINNET, D).success
 
 

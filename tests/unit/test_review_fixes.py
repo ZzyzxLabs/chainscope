@@ -350,45 +350,48 @@ class TestSuiTransactionTransfersAreIndexed:
         from chainscope.providers.sui import SuiProvider
 
         sender, recipient = "0x" + "a" * 64, "0x" + "b" * 64
+
+        def change(owner, coin, amount):
+            return {
+                "owner": {"address": owner},
+                "coinType": {"repr": coin},
+                "amount": amount,
+            }
+
+        # Sui's GraphQL shape --- the provider moved off JSON-RPC when the
+        # Foundation switched it off. The indexing this class pins is the same
+        # code.
         body = {
-            "digest": "0x" + "1" * 64,
-            "checkpoint": "42",
-            "timestampMs": "1700000000000",
-            "transaction": {"data": {"sender": sender}},
-            "effects": {
-                "status": {"status": "success"},
-                "gasUsed": {
-                    "computationCost": "0",
-                    "storageCost": "0",
-                    "storageRebate": "0",
+            "transaction": {
+                "digest": "0x" + "1" * 64,
+                "sender": {"address": sender},
+                "effects": {
+                    "status": "SUCCESS",
+                    "checkpoint": {
+                        "sequenceNumber": 42,
+                        "timestamp": "2023-11-14T22:13:20Z",
+                    },
+                    "gasEffects": {
+                        "gasSummary": {
+                            "computationCost": "0",
+                            "storageCost": "0",
+                            "storageRebate": "0",
+                        }
+                    },
+                    "balanceChanges": {
+                        "nodes": [
+                            change(sender, "0x2::sui::SUI", "-1000"),
+                            change(recipient, "0x2::sui::SUI", "1000"),
+                            change(sender, "0x9::usdc::USDC", "-1000"),
+                            change(recipient, "0x9::usdc::USDC", "1000"),
+                        ]
+                    },
                 },
-            },
-            "balanceChanges": [
-                {
-                    "owner": {"AddressOwner": sender},
-                    "coinType": "0x2::sui::SUI",
-                    "amount": "-1000",
-                },
-                {
-                    "owner": {"AddressOwner": recipient},
-                    "coinType": "0x2::sui::SUI",
-                    "amount": "1000",
-                },
-                {
-                    "owner": {"AddressOwner": sender},
-                    "coinType": "0x9::usdc::USDC",
-                    "amount": "-1000",
-                },
-                {
-                    "owner": {"AddressOwner": recipient},
-                    "coinType": "0x9::usdc::USDC",
-                    "amount": "1000",
-                },
-            ],
+            }
         }
 
         class Stub(SuiProvider):
-            def _rpc(self, *a, **k):
+            def _graphql(self, *a, **k):
                 return body
 
         return Stub().get_transaction(SUI_MAINNET, "0x" + "1" * 64)
