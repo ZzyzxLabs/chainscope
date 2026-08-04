@@ -909,6 +909,7 @@ class _Handlers:
                 "at": item.at.isoformat() if item.at else None,
                 "tx": item.tx,
                 "minor": item.minor,
+                "boundary": item.boundary,
             }
 
         return {
@@ -930,6 +931,7 @@ class _Handlers:
             "significant": [step(s) for s in found.significant],
             "set_aside": {k.value: v for k, v in found.set_aside.items()},
             "forged_assets": list(found.forged_assets),
+            "boundaries": list(found.boundaries),
         }
 
     def activity(self, query: dict[str, list[str]]) -> dict[str, Any]:

@@ -689,3 +689,4 @@ label.asset input { accent-color: var(--cs-accent); }
   padding: 3px 9px; cursor: pointer;
 }
 .trail .fold:hover { color: var(--cs-ink); border-color: var(--cs-line); }
+.trail td.stop { color: var(--cs-caution); white-space: normal; padding-left: 8px; }

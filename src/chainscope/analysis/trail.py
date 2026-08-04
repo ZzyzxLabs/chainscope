@@ -52,12 +52,33 @@ from ..chains import address_key
 from ..core.chainid import ChainId
 
 __all__ = [
+    "SERVICE_DEGREE",
     "Direction",
     "SetAside",
     "Step",
     "Trail",
     "trail",
 ]
+
+#: Distinct counterparties above which an address behaves like a service.
+#:
+#: A shape, never an identification --- the result says "behaves like", and a
+#: reader who needs the name still has to find it. But the shape is enough to
+#: decide the only thing this module does with it, which is stop.
+#:
+#: Measured on the address this rule was added for: `0xb92fe925…4fff4f` paid
+#: into the LpdFi attacker's funder and received the proceeds back, and I read
+#: that closed loop as one party's treasury. It is not. In the *fragment* the
+#: case happened to hold it has 1,127 distinct senders and 1,565 distinct
+#: recipients across 176 assets. A private wallet does not receive a hundred
+#: and seventy-six different tokens from a thousand addresses; value arriving
+#: at and leaving a service says nothing whatever about a single owner.
+#:
+#: Forty is far below that and far above a person. It is deliberately not
+#: tuned finely: the cost of calling a busy individual a service is a trail
+#: that stops one hop early and says so, and the cost of the reverse is the
+#: omnibus error --- attributing a thousand strangers' money to one of them.
+SERVICE_DEGREE = 40
 
 
 #: Below this share of the largest movement in the same asset, a step is folded.
@@ -109,6 +130,17 @@ class Step:
     block: int | None
     at: datetime | None
     tx: str
+    boundary: bool = False
+    """This counterparty behaves like a service, so the trail stops here.
+
+    Not an accusation and not an identification. Money entering a router, a
+    bridge or an exchange is pooled with everybody else's, so following it
+    onward produces a path that is an artefact of shared infrastructure. Every
+    other module here already stops at one --- `linked_holders` treats a
+    service as a boundary rather than an edge, taint stops at a terminal
+    category --- and this one did not, which is how a closed loop through a
+    router got read as one party's treasury."""
+
     minor: bool = False
     """Small relative to the largest step on this trail. **Kept**, because the
     smallest movement in a case is routinely the one that proves intent --- a
@@ -133,6 +165,15 @@ class Trail:
     forged_assets: tuple[str, ...] = ()
     """Contracts the impersonation check named. Listed so the reader can check
     the call rather than take it."""
+
+    boundaries: tuple[str, ...] = ()
+    """Counterparties that behave like services. The trail reaches them and
+    stops; what happened to the money inside is not visible from here and is
+    not guessed at."""
+
+    @property
+    def stops_at_a_service(self) -> bool:
+        return bool(self.boundaries)
 
     @property
     def funding(self) -> tuple[Step, ...]:
@@ -185,6 +226,13 @@ class Trail:
                 f"{n} {reason.value}" for reason, n in sorted(self.set_aside.items())
             )
             parts.append(f"{removed} set aside ({why}).")
+        if self.boundaries:
+            parts.append(
+                f"{len(self.boundaries)} counterparty(ies) behave like services "
+                f"and the trail stops at them --- their funds are pooled with "
+                f"everybody else's, so following further would trace shared "
+                f"infrastructure rather than this money."
+            )
         return " ".join(parts)
 
 
@@ -201,12 +249,34 @@ def _minor_below(steps: Sequence[tuple[str, int]], share: Decimal) -> dict[str, 
     return {asset: int(Decimal(top) * share) for asset, top in largest.items()}
 
 
+def _service_shaped(rows: list[Any], key: Any, degree: int) -> set[str]:
+    """Counterparties with more distinct counterparties than a person has.
+
+    Counted over the transfers in hand, so it *under*-reports --- an address
+    the case has barely seen looks quiet. That direction is the safe one: a
+    missed boundary shows as a trail that continued, which a reader can see and
+    argue with, where a false boundary shows as a trail that stopped, which
+    looks identical to the money stopping.
+    """
+    peers: dict[str, set[str]] = {}
+    for row in rows:
+        sender = getattr(row, "sender", None)
+        recipient = getattr(row, "recipient", None)
+        if sender is None or recipient is None:
+            continue
+        a, b = key(sender.raw), key(recipient.raw)
+        peers.setdefault(a, set()).add(b)
+        peers.setdefault(b, set()).add(a)
+    return {who for who, seen in peers.items() if len(seen) >= degree}
+
+
 def trail(
     transfers: Iterable[Any],
     address: str,
     *,
     chain: ChainId | None = None,
     minor_share: Decimal = _DUST_SHARE,
+    service_degree: int = SERVICE_DEGREE,
 ) -> Trail:
     """Material movements touching ``address``, both directions, oldest first.
 
@@ -218,6 +288,7 @@ def trail(
     key = (lambda a: address_key(chain, a)) if chain is not None else (lambda a: a.strip())
     wanted = key(address)
 
+    services = _service_shaped(rows, key, service_degree) - {wanted}
     aside: dict[SetAside, int] = {}
     kept: list[dict[str, Any]] = []
     for row in rows:
@@ -262,6 +333,7 @@ def trail(
             at=getattr(k["row"], "timestamp", None),
             tx=str(getattr(getattr(k["row"], "tx", None), "hash", "")),
             minor=k["row"].amount.raw < floors.get(k["asset_key"], 0),
+            boundary=key(k["counterparty"]) in services,
         )
         for k in kept
     ]
@@ -272,6 +344,7 @@ def trail(
         steps=tuple(steps),
         set_aside=aside,
         forged_assets=tuple(sorted(forged)),
+        boundaries=tuple(sorted({s.counterparty for s in steps if s.boundary})),
     )
 
 

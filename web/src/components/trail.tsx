@@ -33,6 +33,7 @@ type Step = {
   at: string | null;
   tx: string;
   minor: boolean;
+  boundary: boolean;
 };
 
 type Reply = {
@@ -44,6 +45,7 @@ type Reply = {
   significant: Step[];
   set_aside: Record<string, number>;
   forged_assets: string[];
+  boundaries: string[];
 };
 
 function money(step: Step): string {
@@ -62,6 +64,11 @@ function Row({ step }: { step: Step }) {
       <td className="mono sym">{step.symbol || "?"}</td>
       <td className="mono quiet">{step.direction === "in" ? "←" : "→"}</td>
       <td className="mono">{short(step.counterparty)}</td>
+      {/* Said on the row, not only in the summary. The reader is following a
+          line down the table and this is where the line ends. */}
+      <td className="mono stop">
+        {step.boundary ? "stops — behaves like a service" : ""}
+      </td>
     </tr>
   );
 }

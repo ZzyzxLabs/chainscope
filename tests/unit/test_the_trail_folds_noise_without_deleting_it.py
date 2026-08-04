@@ -163,3 +163,57 @@ def test_transfers_that_do_not_touch_the_address_are_ignored_silently() -> None:
     found = trail([row(PEER, other, REAL, 1)], ME)
     assert found.considered == 0
     assert not found.set_aside
+
+
+# ------------------------------------------------------- the service boundary
+
+
+def _busy(hub: str, n: int) -> list[Any]:
+    """A counterparty with more distinct peers than a person has."""
+    return [row(f"0x{i:040x}", hub, REAL, 100 + i) for i in range(n)]
+
+
+def test_a_high_degree_counterparty_stops_the_trail() -> None:
+    """Money entering a router or an exchange is pooled with everybody else's,
+    so following it onward traces shared infrastructure rather than this
+    money. Every other module here already stops at one; this one did not,
+    which is how a closed loop through a router got read as one party's
+    treasury."""
+    hub = "0x" + "b9" * 20
+    rows = [row(ME, hub, REAL, 1), *_busy(hub, 60)]
+    found = trail(rows, ME)
+    (step,) = found.significant
+    assert step.boundary
+    assert hub in found.boundaries
+    assert found.stops_at_a_service
+
+
+def test_an_ordinary_counterparty_does_not() -> None:
+    rows = [row(ME, PEER, REAL, 1), *_busy(PEER, 3)]
+    found = trail(rows, ME)
+    assert not any(s.boundary for s in found.significant)
+    assert not found.stops_at_a_service
+
+
+def test_the_subject_itself_is_never_its_own_boundary() -> None:
+    """A busy subject is the thing being investigated, not a wall."""
+    rows = [row(ME, PEER, REAL, 1), *[row(ME, f"0x{i:040x}", REAL, 200 + i) for i in range(60)]]
+    found = trail(rows, ME)
+    assert ME not in found.boundaries
+
+
+def test_the_summary_says_the_trail_stopped() -> None:
+    """A trail that stopped and one that ran out are opposite claims."""
+    hub = "0x" + "b9" * 20
+    said = trail([row(ME, hub, REAL, 1), *_busy(hub, 60)], ME).summary()
+    assert "behave like services" in said
+    assert "pooled" in said
+
+
+def test_the_threshold_is_a_shape_not_an_identification() -> None:
+    """`boundary` says how an address behaves. Naming it is somebody else's
+    job, and the result must not pretend otherwise."""
+    hub = "0x" + "b9" * 20
+    found = trail([row(ME, hub, REAL, 1), *_busy(hub, 60)], ME)
+    assert not hasattr(found, "services")
+    assert found.boundaries == (hub,)
