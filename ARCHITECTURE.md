@@ -439,6 +439,42 @@ the person doing it should never need to fork this repository.
 
 ---
 
+### 4.12 Exposure describes; policy decides; neither is a score
+
+`risk/` answers "can this deposit be accepted", and the split inside it is the
+whole design. `Exposure` is a list of typed claims --- source, category, how
+much of *this* deposit, how many hops, whose word, why the trace stopped. There
+is no method that reduces the list to a number, and a test asserts the absence
+of `risk_score`, `severity` and `verdict`.
+
+The reason is what happens six months later. `risk_score: 82` is a summary with
+the findings thrown away, and the findings are the part that has to survive
+being challenged. A policy consumes the list and produces a decision naming the
+rule that fired and the policy version that contained it; the list stays
+attached to the decision.
+
+Three refusals are enforced in the type:
+
+* **an exposure with no evidence cannot be constructed** --- "which source said
+  so" is the first question asked of any decision built from it;
+* **a role needs the incident it was played in** --- "attacker" unqualified is a
+  claim about a person, "attacker in incident X" is a claim about an event;
+* **`clean` requires both no exposure and no failed source** --- most tools
+  report "no exposure found" identically whether every source answered or none
+  did.
+
+`StopReason` carries why a backward trace ended, and only `EXHAUSTED` means the
+origin was reached. Stopping at a custodial service is deliberate --- exchanges
+pool thousands of unrelated customers through one address, so a path running
+onward through a hot wallet is an artefact of shared infrastructure rather than
+a flow --- and it makes the screen incomplete rather than concluded.
+
+The taint model is recorded on every screen because FIFO, haircut and poison
+disagree. FIFO is the default: it is the rule English law already applies to
+mixed funds (Clayton's Case, 1816), so a customer defending a freeze can cite
+something other than a vendor convention. See `docs/risk.md` for the design and
+the literature behind it.
+
 ## 5. Package layout
 
 ```
@@ -451,6 +487,7 @@ chainscope/
 ├── attribution/   sources + conflict-resolving resolver
 ├── analysis/      one module per technique; see `chainscope analyze --list`
 ├── osint/         leads: somewhere to look next, kept apart from conclusions
+├── risk/          deposit screening: exposure describes, policy decides
 ├── watch/         Watch, predicates, evaluate(); no scheduler
 ├── pricing/       historical rate sources with local cache
 ├── case/          append-only case log, correspondence ledger, bundles
