@@ -6,15 +6,21 @@ records --- and none of the three is allowed to collapse into a score.
 """
 
 from .agreement import Agreement, ModelOutcome, compare_taint_models
-from .exposure import Directness, Exposure, ExposureError, Screen, StopReason
+from .decision import Action, Counterfactual, Decision, DecisionError
+from .exposure import Directness, Exposure, ExposureError, Screen, Signal, StopReason
 
 __all__ = [
+    "Action",
     "Agreement",
+    "Counterfactual",
+    "Decision",
+    "DecisionError",
     "Directness",
     "Exposure",
     "ExposureError",
     "ModelOutcome",
     "Screen",
+    "Signal",
     "StopReason",
     "compare_taint_models",
 ]

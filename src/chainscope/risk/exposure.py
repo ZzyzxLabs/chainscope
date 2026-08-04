@@ -38,7 +38,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 
-from ..core.attribution import Attribution, Category
+from ..core.attribution import Attribution, Category, Confidence
 from ..core.entity import Entity, RoleKind
 from ..core.units import Amount
 
@@ -47,6 +47,7 @@ __all__ = [
     "Exposure",
     "ExposureError",
     "Screen",
+    "Signal",
     "StopReason",
 ]
 
@@ -181,6 +182,60 @@ class Exposure:
 
 
 @dataclass(frozen=True, slots=True)
+class Signal:
+    """Something the *shape* of the money says, with nobody vouching for it.
+
+    The gap `Exposure` cannot fill, and the one that decides whether this
+    system is useful on the day of an incident rather than a week after it.
+
+    An `Exposure` requires an `Attribution`: somebody, somewhere, has said this
+    address is a mixer or a sanctioned entity. At the moment an exploit
+    happens, **that sentence does not exist yet**. Nobody has labelled the
+    attacker, the analysts are still reading the transaction, and a screening
+    system built only on attribution answers "clean" to the most dangerous
+    deposit it will see all year --- correctly, and uselessly.
+
+    What does exist at t=0 is behaviour. The depositing address was created
+    forty minutes ago. It was funded once and is forwarding everything. It sent
+    a small test payment first and the real one straight after. Those are
+    observations about structure, and `analysis/` already produces them:
+    `probing`, `impersonation`, `linked_holders`, `peel_chain`, `consolidation`.
+
+    **A signal is capped at MEDIUM and cannot support an irreversible action.**
+    That is not caution for its own sake. A shape is consistent with a great
+    many innocent explanations --- a new address forwarding everything is also
+    what a person moving to a new wallet looks like --- and the same reasoning
+    that caps `Hypothesis` at MEDIUM applies here for the same reason. The
+    policy layer enforces it: a signal can produce `hold`, `enhanced_kyc` or
+    `escalate`, and only an attributed exposure can produce `reject`.
+
+    The honest summary of what this buys: it converts "we had no idea" into "we
+    held it for review", which is the difference the day a customer's money
+    goes out the door.
+    """
+
+    name: str
+    """The analyzer that produced it, e.g. ``probing``."""
+
+    summary: str
+    detail: str = ""
+    confidence: Confidence = Confidence.LOW
+    observed_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not self.name.strip() or not self.summary.strip():
+            raise ExposureError("a signal needs a name and a summary")
+        if self.confidence > Confidence.MEDIUM:
+            raise ExposureError(
+                f"a behavioural signal cannot exceed MEDIUM confidence; got "
+                f"{self.confidence.name}. A shape is consistent with innocent "
+                f"explanations, and this is the same cap `Hypothesis` carries "
+                f"for the same reason. If somebody has actually attributed the "
+                f"address, that is an Exposure with evidence, not a signal"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class Screen:
     """Everything found about one deposit, and everything that was not found.
 
@@ -207,6 +262,15 @@ class Screen:
     than a vendor convention."""
 
     exposures: tuple[Exposure, ...] = ()
+    signals: tuple[Signal, ...] = ()
+    """What the shape of the money says, where nobody has attributed anything.
+
+    Kept apart from `exposures` rather than merged, because they carry
+    different weight and expire differently: an attribution stays true until
+    somebody retracts it, and a signal is superseded the moment a real
+    attribution lands. Merging them would let a shape borrow an attribution's
+    standing --- which is how a heuristic ends up justifying a freeze."""
+
     unreachable_sources: tuple[str, ...] = ()
     """Sources that could not be read. Non-empty makes this screen incomplete,
     and a policy must not answer `allow` on the strength of a source that
@@ -226,6 +290,16 @@ class Screen:
         return all(e.is_conclusive for e in self.exposures)
 
     @property
+    def unattributed(self) -> bool:
+        """Signals fired but nothing is attributed.
+
+        The state a real-time incident produces before anyone has labelled
+        anything, and the one a policy most needs to name: there is something
+        to look at and nothing to point at.
+        """
+        return bool(self.signals) and not self.exposures
+
+    @property
     def clean(self) -> bool:
         """No exposure found **and** nothing was missing.
 
@@ -234,7 +308,7 @@ class Screen:
         A screen with zero exposures and a failed source is not clean; it is
         unknown, and this returns False for it.
         """
-        return not self.exposures and self.complete
+        return not self.exposures and not self.signals and self.complete
 
     def of(self, category: Category) -> tuple[Exposure, ...]:
         return tuple(e for e in self.exposures if e.category is category)
