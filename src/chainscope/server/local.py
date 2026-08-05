@@ -723,13 +723,34 @@ class _Handlers:
         from_sources: dict[str, tuple[str, str]] = {}
         store = self._store()
         try:
-            if not store.is_expanded(address, chain):
-                # Fetch it. This used to refuse, on the grounds that spending
-                # somebody's rate limit is a decision --- which is true, and the
-                # refusal still made the tool useless the first time anybody
-                # typed an address into it. The honest form of that principle is
-                # to *say* the network was used, not to withhold the feature:
-                # `fetched` travels back and the status line reports it.
+            # Fetch only when there is nothing at all to show.
+            #
+            # Three states, not two, and the middle one is the one that matters:
+            #
+            #   expanded          --- followed; show it
+            #   has edges, not    --- seen as somebody's counterparty. Show what
+            #     expanded            there is and say it is a fragment; do not
+            #                         spend three minutes re-reading a chain
+            #                         because a flag is missing
+            #   nothing           --- fetch, since there is no page to draw
+            #
+            # Auto-fetching whenever the mark was absent was the first version
+            # of this and it made every existing case unopenable: the flag was
+            # introduced after those stores were written, so every address in
+            # them re-fetched on open --- 193 seconds on BSC, staring at a
+            # spinner, for data already on disk.
+            #
+            # It also contradicted the page's own sentence. "Reading never
+            # reaches the network; only follow the money from here does, and
+            # only when you press it" is printed on the empty state, and a
+            # `/graph` that fetches on open makes it untrue. The honesty the
+            # mark exists for is carried by `/trail`, which says outright when
+            # an address has never been followed --- a claim, not a three-minute
+            # wait.
+            known = store.edges(address, chain, direction="out") or store.edges(
+                address, chain, direction="in"
+            )
+            if not known and not store.is_expanded(address, chain):
                 fetched, complete = _fetch_into(store, address, chain)
                 if not fetched:
                     raise ValueError(_nothing_found(address, chain))
