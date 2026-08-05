@@ -67,15 +67,41 @@ _PALETTE: dict[str, str] = {
 
 
 def layer_nodes(graph: Graph) -> dict[str, int]:
-    """Hop distance from the nearest seed, for every node.
+    """Signed hop distance from the nearest seed, for every node.
 
     Breadth-first over directed edges, so a column is "how many hops the money
     travelled", not "how far apart these are in the drawing".
 
-    Nodes unreachable from any seed get the last column rather than being
-    dropped. They are usually inbound counterparties of a seed --- money coming
-    *in* --- and a flow view that silently omits them shows an address that only
-    ever sent.
+    **Negative upstream, positive downstream, and the sign is the fix.** A
+    renderer lays these out left to right, so the sign is what puts the people
+    who *paid* the seed on its left and the people it paid on its right --- the
+    way money is read on every diagram anybody has seen.
+
+    Without it, a funder is not reachable from the seed by following edges
+    forwards, so it fell through to the ``furthest + 1`` clause below and was
+    drawn in the **rightmost** column: the picture said the seed's money ended
+    up at the address that had started it. Verified on the LpdFi case, where
+    both addresses that staked the attacker --- one of them 689,529 USDC --- sat
+    to the right of him, in the position a reader takes to mean "where it went".
+    That is worse than omitting them. An absent funder is a gap somebody can
+    notice; a funder drawn as a recipient is a wrong answer that looks like a
+    picture.
+
+    **Upstream wins a tie**, and the LpdFi case is why. Both addresses that
+    staked the attacker were also paid by him --- 689,429 USDC back to one,
+    116,495 to the other --- so with forward winning they both landed
+    downstream again and the funding was still invisible. For an address on
+    both sides no single column is true; the *arrows* carry the direction and
+    the column carries the emphasis, and the emphasis belongs to the half a
+    reader cannot otherwise see. Outbound is already obvious --- it is the
+    direction a trace fans out in --- while "who paid this address" is the
+    question that goes unanswered. So a box on the left paid the seed at least
+    once, and may also have been paid by it.
+
+    Anything reachable in neither direction still gets the last column. That is
+    now genuinely rare --- the graph is built from the seed's own edges --- and
+    it stays rather than being dropped, because a node with no path to the seed
+    is exactly the thing a reader should be able to see and ask about.
     """
     # Keyed by `address_key`, matching `_node_payload`'s ids. These were
     # `.lower()`, which on Solana, Sui or Bitcoin produced depth keys that
@@ -86,23 +112,30 @@ def layer_nodes(graph: Graph) -> dict[str, int]:
         for s in graph.seeds
     ]
     outgoing: dict[str, list[str]] = defaultdict(list)
+    incoming: dict[str, list[str]] = defaultdict(list)
     for edge in graph.edges.values():
-        outgoing[address_key(edge.chain, edge.source)].append(
-            address_key(edge.chain, edge.target)
-        )
+        source = address_key(edge.chain, edge.source)
+        target = address_key(edge.chain, edge.target)
+        outgoing[source].append(target)
+        incoming[target].append(source)
 
     depth: dict[str, int] = {}
-    queue: deque[tuple[str, int]] = deque()
-    for seed in seeds:
-        depth[seed] = 0
-        queue.append((seed, 0))
 
-    while queue:
-        address, level = queue.popleft()
-        for nxt in outgoing.get(address, ()):
-            if nxt not in depth:
-                depth[nxt] = level + 1
-                queue.append((nxt, level + 1))
+    def walk(adjacent: dict[str, list[str]], step: int) -> None:
+        queue: deque[tuple[str, int]] = deque()
+        for seed in seeds:
+            depth[seed] = 0
+            queue.append((seed, 0))
+        while queue:
+            address, level = queue.popleft()
+            for nxt in adjacent.get(address, ()):
+                if nxt not in depth:
+                    depth[nxt] = level + step
+                    queue.append((nxt, level + step))
+
+    # Upstream first, so it wins the tie described above.
+    walk(incoming, -1)
+    walk(outgoing, 1)
 
     furthest = max(depth.values(), default=0)
     for node in graph.nodes.values():

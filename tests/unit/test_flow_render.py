@@ -237,3 +237,83 @@ class TestKeyboardAndDrag:
         arranged."""
         html = to_flow_html(chain_graph())
         assert "keeps what the reader arranged" in html
+
+
+class TestWhichSideOfTheSeedAFunderLandsOn:
+    """A funder drawn to the right of the seed is a wrong answer, not a gap.
+
+    `layer_nodes` walked forwards only, so an address that *paid* the seed was
+    unreachable and fell through to the "put it in the last column" clause ---
+    the rightmost one, which on a left-to-right flow diagram is where the money
+    ended up. On the LpdFi case both addresses that staked the attacker, one of
+    them with 689,529 USDC, were drawn downstream of him.
+
+    An omitted funder is something a reader can notice is missing. A funder in
+    the recipient's position is a picture that reads cleanly and says the
+    opposite of what happened.
+    """
+
+    def _funded(self):
+        """F → A → B. A is the seed; F paid it; B was paid by it."""
+        funder = "0x" + "f" * 40
+        g = chain_graph()
+        g.add_node(Node(address=funder, chain=str(ETHEREUM), expanded=True))
+        g.add_edge(
+            Edge(
+                source=funder,
+                target=A,
+                chain=str(ETHEREUM),
+                symbol="ETH",
+                decimals=18,
+                total_raw=10**20,
+                transfer_count=1,
+            )
+        )
+        return g, funder
+
+    def test_a_funder_sits_upstream_of_the_seed(self):
+        g, funder = self._funded()
+        depth = layer_nodes(g)
+        assert depth[funder] < depth[A], (
+            "the address that paid the seed has to be drawn on the side a "
+            "reader takes to mean 'before'"
+        )
+
+    def test_a_funder_is_not_parked_in_the_last_column(self):
+        """The specific old behaviour, pinned so it cannot come back."""
+        g, funder = self._funded()
+        depth = layer_nodes(g)
+        assert depth[funder] < max(depth.values()), (
+            "it used to get `furthest + 1`, which put it further downstream "
+            "than every address the money actually reached"
+        )
+
+    def test_hop_distance_is_still_the_magnitude(self):
+        g, funder = self._funded()
+        depth = layer_nodes(g)
+        assert depth[funder] == -1
+        assert [depth[x] for x in (A, B, C, D)] == [0, 1, 2, 3]
+
+    def test_an_address_on_both_sides_is_placed_upstream(self):
+        """B is paid by the seed and also pays it.
+
+        No column is true for such an address --- the arrows carry the
+        direction, the column carries the emphasis --- and the emphasis goes to
+        the half a reader cannot otherwise see. This is not hypothetical: both
+        of the LpdFi attacker's funders were also paid by him, so with
+        downstream winning they landed on the right again and the funding
+        stayed invisible, which is the whole complaint this fixes.
+        """
+        g = chain_graph()
+        g.add_edge(
+            Edge(
+                source=B,
+                target=A,
+                chain=str(ETHEREUM),
+                symbol="ETH",
+                decimals=18,
+                total_raw=10**18,
+                transfer_count=1,
+            )
+        )
+        assert layer_nodes(g)[B] == -1

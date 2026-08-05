@@ -27,7 +27,16 @@ export const GUTTER = 300;
 export type Placed = GraphNode & { x: number; y: number };
 
 /**
- * Columns by hop depth, left to right.
+ * Columns by signed hop depth, left to right.
+ *
+ * The sign carries the direction of the money: `layer_nodes` gives an address
+ * that **paid** the seed a negative depth and one the seed paid a positive one,
+ * so sorting numerically puts funders to the left of the seed and recipients to
+ * the right. That is the only arrangement in which the picture agrees with how
+ * everybody already reads a flow diagram — and before the sign existed, a
+ * funder was unreachable going forwards and landed in the *rightmost* column,
+ * so the graph showed the address that staked an attacker 689,529 USDC sitting
+ * where the money ended up.
  *
  * Deliberately not a force layout. Force arranges by connectivity, and then a
  * five-hop laundering chain and a five-way split look identical — the one

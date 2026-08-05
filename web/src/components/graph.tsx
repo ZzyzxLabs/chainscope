@@ -398,8 +398,9 @@ export function Graph({
             </dd>
             <dt className="wide" />
             <dd className="wide">
-              Columns are <b>hops</b>, not time. A box further right is further
-              from the seed, not later.
+              <b>Left of the seed paid it; right of it was paid.</b> Columns are{" "}
+              <b>hops</b>, not time — a box further out is further from the seed,
+              not later.
             </dd>
           </dl>
         ) : null}
