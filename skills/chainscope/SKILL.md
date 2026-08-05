@@ -386,6 +386,31 @@ fails to evaluate, its saved position is *not* advanced, so the gap does not
 silently become a period nobody watched. There is no delivery: events go to
 stdout and an exit code, and cron or a person decides what happens next.
 
+### Decide whether a deposit can be accepted
+
+```bash
+chainscope screen 0x5d28… -c bsc --store case.db          # starter policy
+chainscope screen 0x5d28… -c bsc --policy ours.yaml       # your rules
+```
+
+Walks the money **backwards** — who funded this address, and who funded them —
+and hands what it finds to an ordered, versioned rule set. What comes back is an
+*action* (`allow`, `hold`, `enhanced_kyc`, `escalate`, `reject`, `report`), the
+rule id that produced it, that rule's own justification, and **what would have
+had to be absent for the answer to differ**. There is deliberately no score: a
+number cannot be argued with, which is usually sold as a feature.
+
+Reads the store only; it never fetches. Where the store is short, that shows up
+as an incomplete screen, and `allow` is unreachable while a screen is
+incomplete — so an unread chain cannot come out of this as a clean one. Run
+`chainscope investigate` first if the case is empty.
+
+Two kinds of finding, kept apart on purpose. An **exposure** requires somebody
+to have attributed an address; a **signal** is what the shape of the money says
+when nobody has yet, which is the state every incident is in on the day it
+happens. A signal is capped at MEDIUM and can produce a hold — never a
+rejection or a report.
+
 ### Refresh the sanctions snapshot
 
 ```bash

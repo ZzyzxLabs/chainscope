@@ -937,12 +937,18 @@ class _Handlers:
             "address": address,
             "chain": str(chain),
             "expanded": expanded,
+            # "Never followed", not "never fetched". The store records that an
+            # address was *followed*; it does not record that it was never
+            # fetched, and stores written before the mark existed hold every
+            # address's transfers with no marks at all. Saying "never fetched"
+            # about those is a claim the store cannot support --- it was being
+            # said about an address whose own transfers were on the same page.
             "summary": found.summary()
             + (
                 ""
                 if expanded
-                else " This address has never been fetched --- what is shown is "
-                "only what reached it from addresses that were, so treat it as "
+                else " This address has not been followed --- what is shown is "
+                "whatever reached it from addresses that were, so treat it as "
                 "a fragment rather than its history."
             ),
             "considered": found.considered,
