@@ -54,11 +54,11 @@ analytics = ["duckdb>=1.0"]
 agent = ["mcp>=2.0"]
 all = ["chainscope[evm,bitcoin,solana,tron,sui,report,analytics,agent]"]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
-    "hypothesis>=6.100",
-    "mypy>=1.11",
-    "ruff>=0.6",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "hypothesis>=6.167.1",
+    "mypy>=2.3.1",
+    "ruff>=0.16.5",
     # Stubs for the optional extras that `all` pulls in, so `mypy` sees the
     # same thing in CI as on a machine where somebody happened to install them
     # once. Without this every push failed on
