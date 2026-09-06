@@ -65,7 +65,7 @@ dev = [
     # `Library stubs not installed for "yaml"` --- an error nobody could
     # reproduce locally, because a local venv that has ever installed the stub
     # keeps it.
-    "types-PyYAML>=6.0",
+    "types-PyYAML>=6.0.12.20260815",
 ]
 
 [project.urls]
