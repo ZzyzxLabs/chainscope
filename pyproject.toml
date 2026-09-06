@@ -51,7 +51,7 @@ analytics = ["duckdb>=1.0"]
 # The server imports mcp.server.mcpserver, which is a v2 API. `>=1.2` admits
 # a 1.x install that satisfies the constraint and then fails at first import
 # with a missing-module error that reads like a broken package.
-agent = ["mcp>=2.0"]
+agent = ["mcp>=2.1.1"]
 all = ["chainscope[evm,bitcoin,solana,tron,sui,report,analytics,agent]"]
 dev = [
     "pytest>=8.0",
