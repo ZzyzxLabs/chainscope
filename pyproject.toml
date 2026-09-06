@@ -29,24 +29,24 @@ classifiers = [
 # Core stays deliberately thin. Chain- and provider-specific deps are extras,
 # so `pip install chainscope` never drags in a Solana SDK you will not use.
 dependencies = [
-    "httpx>=0.27",
-    "platformdirs>=4.0",
+    "httpx>=0.28.1",
+    "platformdirs>=4.11.7",
 ]
 
 [project.optional-dependencies]
 # eth-utils delegates keccak to eth-hash, which ships no backend of its own.
 # Declaring eth-utils alone installs cleanly and then fails at first hash --
 # so the backend is pinned here explicitly.
-evm = ["eth-utils>=5.0", "eth-abi>=5.0", "eth-hash[pycryptodome]>=0.7"]
-bitcoin = ["base58>=2.1", "bech32>=1.2"]
-solana = ["base58>=2.1"]
+evm = ["eth-utils>=6.0.0", "eth-abi>=6.0.0", "eth-hash[pycryptodome]>=0.8.0"]
+bitcoin = ["base58>=2.1.1", "bech32>=1.2"]
+solana = ["base58>=2.1.1"]
 # TagPacks are YAML. Optional, because the corpus is a separate 500k-address
 # download and somebody who never fetches it should not carry the parser.
 tagpacks = ["PyYAML>=6.0"]
-tron = ["base58>=2.1"]
+tron = ["base58>=2.1.1"]
 # Sui needs nothing extra: addresses are hex and the RPC is plain JSON.
 sui = []
-report = ["rich>=13.0"]
+report = ["rich>=15.0.0"]
 analytics = ["duckdb>=1.0"]
 # The server imports mcp.server.mcpserver, which is a v2 API. `>=1.2` admits
 # a 1.x install that satisfies the constraint and then fails at first import
